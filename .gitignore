@@ -1,0 +1,46 @@
+# Local runtimes and generated builds
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+node_modules/
+build/
+dist/
+*.app/
+*.zip
+*.dmg
+
+# Local workspaces, browser profiles, credentials, and imported documents
+.env
+.env.*
+!.env.example
+data/
+workspace/
+preview-data/
+sources/
+interface/
+documents/
+uploads/
+*.db
+*.db-*
+*.sqlite*
+session.lock
+window.lock
+agent.connection.json
+Cookies*
+Login Data*
+History*
+*.pem
+*.key
+*.p12
+*.pfx
+*.pdf
+*.docx
+*.log
+
+# Machine metadata and local screenshots
+.DS_Store
+._*
+*.png
+*.icns

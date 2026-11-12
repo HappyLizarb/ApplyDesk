@@ -1,0 +1,90 @@
+/* Full-page chat keeps navigation available and centers the conversation for reading. */
+.assistant-toggle{margin-top:14px;display:flex;align-items:center;justify-content:flex-start;padding:11px 13px;gap:12px;text-align:left}
+#assistant-panel{position:fixed;left:224px;right:0;top:0;bottom:0;z-index:12;background:var(--bg);border-left:0;display:flex;flex-direction:column;min-width:0}
+#assistant-panel[hidden]{display:none}
+body.assistant-open{overflow:hidden}
+body.assistant-open #main{display:none}
+body.assistant-open nav button.active{background:transparent;border-color:transparent;color:var(--muted)}
+body.assistant-open nav button.active>.icon{color:var(--muted)}
+.assistant-toggle{background:transparent;border-color:transparent;color:var(--muted)}
+.assistant-toggle[aria-expanded="true"]{background:var(--selection);color:var(--text);border-color:transparent}
+.assistant-head{padding:12px 20px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);gap:12px}
+.assistant-head h2{font-size:17px;margin:0}
+.assistant-head button{padding:7px 10px;border:0;background:transparent}.assistant-head button:hover{background:var(--soft)}
+.assistant-head #reset-assistant{font-size:12px;border:1px solid var(--border);background:var(--panel)}
+#assistant-messages{flex:1;overflow:auto;padding:28px max(24px,calc((100% - 860px)/2));min-height:100px;overscroll-behavior:contain}
+.chat-empty{padding:20px 0;color:var(--muted);line-height:1.6}
+.chat-empty h3{color:var(--text);font-size:17px}
+.chat-message{margin-bottom:22px;overflow-wrap:anywhere}
+.chat-message.user{width:fit-content;max-width:85%;margin-left:auto;background:var(--composer);border-radius:20px;padding:13px 17px}
+.chat-message-heading{display:flex;gap:10px;align-items:center;font-size:12px;font-weight:600;margin-bottom:8px}
+.chat-message-heading span{color:var(--muted);font-weight:400}
+.chat-message-text{white-space:pre-wrap;line-height:1.6;font-size:14px}
+#assistant-form{position:relative;width:min(860px,calc(100% - 48px));align-self:center;padding:14px;margin:12px 0 24px;border:1px solid var(--border);border-radius:26px;background:var(--composer);box-shadow:none}
+#assistant-form:focus-within{border-color:color-mix(in srgb,var(--accent) 45%,var(--border));box-shadow:none}
+#assistant-input{min-height:56px;max-height:200px;resize:none;width:100%;font:inherit;font-size:14px;line-height:1.6;border:0;background:transparent;margin:0;padding:4px 2px;outline:0;overflow-y:auto}
+/* The model picker and send control share one quiet composer toolbar. */
+.assistant-compose-actions{display:flex;justify-content:flex-end;gap:12px;align-items:center;margin-top:6px;min-width:0}
+#send-assistant{width:32px;height:32px;min-width:32px;flex:none;padding:0;border:0;border-radius:50%;box-shadow:none}
+#send-assistant .icon{width:19px;height:19px;stroke-width:1.8}
+#send-assistant:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+#composer-agents{min-width:0;max-width:calc(100% - 96px)}
+.agent-menu-trigger{display:flex;align-items:center;gap:8px;min-height:36px;min-width:0;padding:5px 0;list-style:none;color:var(--text);font-size:13px;cursor:pointer}
+.agent-menu-trigger::-webkit-details-marker{display:none}
+.agent-menu-trigger:hover{color:var(--accent)}
+.agent-menu-trigger:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+.agent-menu-trigger .icon{width:16px;height:16px;flex:none}
+#composer-model-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#composer-thinking-label{color:var(--complete);white-space:nowrap}
+.agent-menu-popover{position:absolute;right:12px;bottom:calc(100% + 12px);z-index:14;width:min(440px,calc(100% - 24px));max-height:65dvh;overflow:auto;overscroll-behavior:contain;padding:16px;background:var(--panel);border:1px solid var(--border);border-radius:22px;box-shadow:var(--modal-shadow)}
+.agent-menu-row{display:grid;grid-template-columns:minmax(0,1fr);gap:2px;padding:8px 0;border-bottom:1px solid var(--border)}
+.agent-menu-row:first-child{padding-top:0}
+.agent-menu-row h3{margin:0;font-size:13px}
+.agent-menu-row label:not(.sr-only){display:flex;align-items:center;gap:12px;min-width:0;font-size:11px;color:var(--muted)}
+.agent-menu-row select{flex:1;min-width:0;margin:0;padding:4px 0;font-size:12px;color:var(--text);border:0;background:transparent}
+#agent-menu-status{font-size:12px;line-height:1.5;margin:8px 0 4px;color:var(--muted)}
+#agent-menu-status:empty{display:none}
+.agent-menu-popover a{display:inline-block;margin-top:8px;font-size:12px}
+/* Native range controls keep keyboard support while matching the Mist palette. */
+.agent-slider-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.agent-effort-label{color:var(--complete);font-size:12px;white-space:nowrap}
+.agent-thinking-slider{appearance:none;-webkit-appearance:none;width:100%;height:24px;padding:0;margin:2px 0;border:0;background:transparent;cursor:pointer;accent-color:var(--accent)}
+.agent-thinking-slider::-webkit-slider-runnable-track{height:14px;border-radius:7px;background:linear-gradient(90deg,var(--accent),var(--complete))}
+.agent-thinking-slider::-moz-range-track{height:14px;border-radius:7px;background:linear-gradient(90deg,var(--accent),var(--complete))}
+.agent-thinking-slider::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:22px;height:22px;margin-top:-4px;border:1px solid #9ba6b9;border-radius:50%;background:#fff;box-shadow:0 1px 4px #0002}
+.agent-thinking-slider::-moz-range-thumb{width:20px;height:20px;border:1px solid #9ba6b9;border-radius:50%;background:#fff;box-shadow:0 1px 4px #0002}
+.agent-thinking-slider:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.agent-thinking-slider:disabled{opacity:.45;cursor:not-allowed}
+.composer-account-link{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;flex:none;margin-right:auto;color:var(--muted)}
+.composer-account-link:hover{color:var(--text);text-decoration:none}
+.composer-account-link .icon{width:18px;height:18px}
+.assistant-connect{display:block;padding:12px 20px;font-size:13px}
+#assistant-error{font-size:13px;color:var(--danger);padding:0 16px;max-height:85px;overflow:auto}
+#assistant-error:not(:empty){padding-top:10px;padding-bottom:10px}
+#application-run-status{width:min(860px,calc(100% - 48px));align-self:center;font-size:12px;color:var(--muted)}
+#application-run-status:empty{display:none}
+@media(max-width:760px){#application-run-status{width:calc(100% - 32px)}}
+.agent-activity{padding:0 max(4px,calc((100% - 900px)/2));font-size:12px}
+.agent-activity summary{padding:10px 20px;cursor:pointer;color:var(--muted)}
+#agent-runs{max-height:180px;overflow:auto;padding:0 20px 10px}
+.agent-run{display:grid;grid-template-columns:1fr auto;gap:4px 10px;padding:8px 0;border-top:1px solid var(--border)}
+.agent-run small{grid-column:1/-1;color:var(--muted)}
+.agent-config-row{display:grid;grid-template-columns:190px minmax(180px,1fr) minmax(130px,190px);align-items:center;gap:18px;padding:16px 0;border-bottom:1px solid var(--border)}
+.agent-config-row h3{font-size:14px;margin:0}.agent-config-row label{margin:0;min-width:0}
+.agent-auto{display:flex;align-items:center;gap:10px;margin:20px 0 12px}.agent-auto input{width:auto}
+.account-select{display:inline-block;max-width:440px;width:100%;margin-right:14px}.account-note{margin-top:18px}
+@media(max-width:1200px){#assistant-panel{left:204px}}
+@media(max-width:1100px){.agent-config-row{grid-template-columns:1fr 1fr}.agent-config-row h3{grid-column:1/-1}}
+@media(max-width:760px){#assistant-panel{left:0;border-left:0}#assistant-messages{padding:20px}#assistant-form{width:calc(100% - 32px);padding:12px;margin-bottom:18px}.agent-config-row{grid-template-columns:1fr}.agent-config-row h3{grid-column:auto}.assistant-toggle{margin:0}.account-select{max-width:100%;margin-right:0}}
+
+main[data-view="settings"] .panel-heading{align-items:center;flex-wrap:wrap}
+@media(max-width:760px){body.assistant-open{overflow:hidden;height:100dvh}}
+
+@media(max-width:500px){.assistant-head{padding:12px 16px;gap:8px}.assistant-head h2{font-size:15px}.assistant-head .actions{gap:4px}#reset-assistant span{display:none}}
+
+@media(max-width:500px){
+  #assistant-form{border-radius:22px;padding:14px 12px 12px}
+  .assistant-compose-actions{gap:8px}
+  .agent-menu-trigger{gap:6px;font-size:12px}
+  .agent-menu-popover{right:0;width:100%;padding:14px}
+}
