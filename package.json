@@ -1,0 +1,9 @@
+{
+  "name": "applydesk-local",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local macOS job application workspace and guarded Playwright controller",
+  "scripts": {"test:browser": "node tests/browser.test.cjs"},
+  "dependencies": {"playwright": "1.62.1"}
+}

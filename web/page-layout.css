@@ -1,0 +1,159 @@
+/* Reading widths and section cards keep long forms grouped without boxing every row. */
+main:not([data-view=applications])>*{max-width:1120px;margin-left:auto;margin-right:auto}
+main:not([data-view=applications])>.page-head{margin-bottom:24px}
+main:not([data-view=applications]) .page-head h1{font-size:27px;letter-spacing:-.7px}
+.panel-heading h2{margin:0;line-height:1.4}
+.panel-heading h2+p{margin-top:5px}
+.panel-heading>.actions{justify-content:flex-end}
+main button:not(.quiet):not(.doc-link):not(.inline-link):not(.job-title):not(.row-remove){border-radius:4px}
+main .panel-heading>button:not(.primary),main .template-choice>button:not(.primary){border-color:var(--border)}
+main .panel-heading>button:hover{border-color:var(--accent)}
+main .panel-heading>.actions button{padding:7px 10px}
+.form-grid>label,.form-grid>fieldset{min-width:0}
+.form-grid input,.form-grid select{min-height:42px}
+.form-grid textarea{min-height:108px}
+.row-editor+.row-editor{margin-top:22px}
+.row-editor .row-remove{padding:5px 0}
+.form-footer{z-index:2;box-shadow:0 4px 18px #00000008}
+.documents-stack{display:grid;gap:20px}
+.documents-stack>.panel{margin:0;min-width:0}
+.documents-stack .empty{padding:36px 20px 42px}
+.documents-stack .empty-symbol{color:var(--accent)}
+.documents-stack .file-icon{background:transparent;border:0}
+.documents-stack .template-choice{margin-top:20px;padding-top:20px;border-top:1px solid var(--border)}
+.documents-stack .resume-row:first-of-type{padding-top:0}
+.documents-stack input[type=file]{background:var(--panel)}
+.documents-stack+p{padding:0 4px;margin-top:16px}
+/* Account cards keep source selection, credentials, and provider status distinct. */
+.connection-overview{display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap}
+.connection-overview>div{min-width:0}
+.connection-overview label{display:block;margin-bottom:8px}
+.connection-overview select{width:min(100%,340px);min-width:240px;margin-top:0}
+.connection-overview p{max-width:650px;margin:8px 0 0}
+.connection-overview .actions{align-self:flex-end}
+.account-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;align-items:stretch;margin-bottom:20px}
+.account-grid>.panel{margin:0;min-width:0}
+.provider-card{display:flex;flex-direction:column;min-width:0}
+.provider-card-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px}
+.provider-card-heading h2,.provider-card-heading h3{margin:0}
+.provider-card-heading .badge{flex:none}
+.provider-card form{display:grid;gap:16px;min-width:0}
+.provider-card form label{min-width:0}
+.provider-card form input{width:100%}
+.provider-card .actions{gap:8px;flex-wrap:wrap}
+.provider-card .actions button{padding:8px 12px}
+.provider-card .field-help{margin:6px 0 0}
+.provider-card p{overflow-wrap:anywhere}
+.provider-card .panel-heading{align-items:flex-start;flex-wrap:wrap}
+.account-grid #account-actions{width:100%;justify-content:flex-start}
+.account-grid #account-picker{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}
+.account-grid .account-select{flex:1;min-width:180px;margin:0}
+.account-grid .account-note{margin-top:auto;padding-top:20px;font-size:12px}
+.connection-setup>.panel:last-child .agent-auto{margin:0}
+@media(max-width:1050px){
+  .account-grid{grid-template-columns:1fr}
+}
+@media(max-width:720px){
+  .shell{padding-bottom:0}
+  .sidebar{display:grid;grid-template-columns:1fr auto;gap:6px}
+  .sidebar nav{grid-column:1/-1}
+  .sidebar .assistant-toggle{justify-content:flex-start}
+  .sidebar-bottom{position:static;align-self:center;margin:0;padding:9px}
+
+  main:not([data-view=applications])>.page-head{margin-bottom:20px}
+  .panel-heading{align-items:center;flex-wrap:wrap}
+  .panel-heading h2{font-size:17px}
+  main[data-view=applications]>.applications-panel{margin:0}
+  .row-editor{grid-template-columns:minmax(0,1fr);gap:10px}
+  .row-editor .row-remove{justify-self:end;margin:0}
+  .form-footer{bottom:12px}
+  .documents-stack,.account-grid{gap:16px}
+  .connection-overview{gap:16px}
+  .connection-overview select{min-width:0;width:100%}
+  .connection-overview>div{width:100%}
+  .provider-card-heading{align-items:flex-start;flex-wrap:wrap}
+}
+/* Editable timeline rows preserve profile hierarchy without enclosing each field. */
+.profile-entry{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;padding:24px 0;border-bottom:1px solid var(--border)}
+.profile-entry:first-child{padding-top:0}
+.profile-entry:last-child{padding-bottom:0;border-bottom:0}
+.entry-body{min-width:0}
+.profile-entry input,.profile-entry textarea{margin:0;padding:4px 5px;border:1px solid transparent;background:transparent;border-radius:4px;min-width:0}
+.profile-entry input:hover,.profile-entry textarea:hover{background:var(--input);border-color:var(--border)}
+.profile-entry input:focus,.profile-entry textarea:focus{background:var(--input);border-color:var(--accent)}
+.profile-entry input::placeholder,.profile-entry textarea::placeholder{color:var(--muted);opacity:1;font-weight:400}
+.entry-title input{font-size:18px;font-weight:600;line-height:1.4;min-height:36px}
+.entry-line{display:flex;align-items:center;flex-wrap:wrap;gap:2px 6px;min-width:0}
+.entry-line>span{color:var(--muted);flex:none}
+.entry-company{width:min(260px,100%);min-width:0}
+.entry-job-type{width:160px;max-width:100%;min-width:0}
+.entry-employer input{font-size:14px}
+.entry-dates{column-gap:4px}
+.entry-date{width:auto;max-width:100%;min-width:0;flex:0 1 auto}
+.entry-date input{width:auto;max-width:100%;min-width:2ch;padding:4px 1px}
+.entry-dates input,.entry-duration{font-size:12px;color:var(--muted)}
+.entry-duration{padding:4px 0;white-space:nowrap}
+.entry-duration:empty{display:none}
+.entry-location{width:100%}
+.entry-location input{font-size:12px;color:var(--muted)}
+.entry-description{margin-top:8px}
+.entry-description textarea{line-height:1.6;min-height:80px;resize:vertical}
+.entry-url{margin-top:4px}
+.entry-url input{font-size:12px;color:var(--accent)}
+.entry-remove{align-self:start;margin-top:4px;padding:5px 0;font-size:11px}
+/* Supporting browsers size short inline facts to their content, like ordinary text. */
+@supports(field-sizing:content){
+  .entry-company,.entry-job-type{width:auto;max-width:100%}
+  .entry-company input,.entry-job-type input{field-sizing:content;min-width:10ch;max-width:min(42ch,100%)}
+  .entry-date input{field-sizing:content;min-width:2ch;max-width:100%}
+}
+.profile-languages{position:relative;min-width:0;border:0;margin:26px 0 0;padding:0}
+.profile-languages legend{font-size:14px;font-weight:600;padding:0 0 12px}
+.language-heading{display:flex;justify-content:flex-end;margin-top:-34px;margin-bottom:12px}
+.language-heading button{padding:5px 0;font-size:12px;color:var(--accent)}
+.language-row{display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:10px 0;border-bottom:1px solid var(--border)}
+.language-row:last-child{border-bottom:0;padding-bottom:0}
+.language-row input,.language-row select{min-width:0;margin:0;padding:6px 5px;border:1px solid transparent;background:transparent}
+.language-row input:hover,.language-row select:hover{background:var(--input);border-color:var(--border)}
+.language-row input:focus,.language-row select:focus{background:var(--input);border-color:var(--accent)}
+.language-row>span{color:var(--muted);flex:none}
+.language-row input{width:140px;max-width:100%;flex:0 1 140px}
+.language-row select{width:300px;max-width:100%;flex:0 1 300px}
+.language-row .row-remove{margin:0 0 0 auto;padding:5px 0;flex:none}
+@supports(field-sizing:content){
+  .language-row input{field-sizing:content;width:auto;min-width:8ch;max-width:min(24ch,100%);flex-basis:auto}
+  .language-row select{field-sizing:content;width:auto;flex-basis:auto}
+}
+@media(max-width:720px){
+  .profile-entry{grid-template-columns:minmax(0,1fr);gap:10px;padding:20px 0}
+  .entry-remove{justify-self:end;margin:0}
+  .entry-title input{font-size:17px}
+  .language-row select{flex-shrink:1}
+  .language-row .row-remove{margin-left:auto}
+}
+
+/* Compact lists use inline facts and row dividers instead of repeated form boxes. */
+.profile-list-row{display:flex;align-items:center;flex-wrap:wrap;gap:4px 6px;padding:12px 0;border-bottom:1px solid var(--border)}
+.profile-list-row:first-child{padding-top:0}
+.profile-list-row:last-child{padding-bottom:0;border-bottom:0}
+.profile-list-row>span{color:var(--muted);flex:none}
+.profile-list-row .list-primary,.profile-list-row .list-secondary{min-width:0;max-width:100%}
+.profile-list-row .list-primary{flex:0 1 240px}
+.profile-list-row .list-secondary{display:flex;align-items:center;gap:4px;flex:0 1 auto;color:var(--muted);font-size:13px}
+.profile-list-row input,.profile-list-row select{min-width:0;max-width:100%;margin:0;padding:5px 4px;border:1px solid transparent;background:transparent;border-radius:4px}
+.profile-list-row input:hover,.profile-list-row select:hover{background:var(--input);border-color:var(--border)}
+.profile-list-row input:focus,.profile-list-row select:focus{background:var(--input);border-color:var(--accent)}
+.profile-list-row .list-secondary select{width:auto;max-width:100%}
+.profile-list-row .list-secondary input{width:auto;min-width:2ch;max-width:100%}
+.profile-list-row .row-remove,.profile-list-row .list-remove{flex:none;margin:0 0 0 auto;padding:5px 0;font-size:11px}
+@supports(field-sizing:content){
+  .profile-list-row .list-primary{flex-basis:auto}
+  .profile-list-row .list-primary input{field-sizing:content;width:auto;min-width:10ch;max-width:min(42ch,100%)}
+  .profile-list-row select{field-sizing:content;width:auto}
+  .profile-list-row .list-secondary input{field-sizing:content;width:auto;min-width:2ch}
+}
+@media(max-width:720px){
+  .profile-list-row{row-gap:6px}
+  .profile-list-row .list-primary{max-width:100%}
+  .profile-list-row .list-secondary{max-width:100%}
+}
