@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from .documents import DocumentService
+from .employer_accounts import EmployerAccounts
 from .keychain import Keychain
 from .profile import PROFILE_SCHEMA_VERSION, empty_profile, model_profile, profile_with_defaults, public_job_url, validate_profile
 from .agent_tasks import AgentTasks
@@ -63,7 +64,7 @@ class Workspace:
                 "discovery": self.store.get("discovery", "main", {}),
                 "recommendations": self.recommendations.state(),
                 "recommendation_preferences": self.recommendations.preferences(),
-                "jobs": [job for job in self.store.all("job") if not job.get("removed_at")], "templates": self.docs.list_templates(),
+                "jobs": [EmployerAccounts(self).display(job) for job in self.store.all("job") if not job.get("removed_at")], "templates": self.docs.list_templates(),
                 "documents": self.docs.list_documents(), "library": self.store.all("library"),
                 "resumes": self.resumes.list(), "resume_categories": self.resumes.categories(),
                 "tasks": list(self.tasks.values()), "data_path": str(self.root)}
@@ -91,10 +92,14 @@ class Workspace:
         """Changing facts invalidates pending readiness until eligibility is checked again."""
         profile = validate_profile(data, self.profile())
         self.store.put("profile", "main", profile)
+        self.invalidate_profile_jobs("Profile changed. Prepare again to check eligibility and answers.")
+        return profile
+
+    def invalidate_profile_jobs(self, message):
+        """Changed confirmed inputs require fresh checks while preserving completed applications."""
         for job in self.store.all("job"):
             if job["status"] not in {"new", "submitted"}:
-                self.store.job(job["id"], status="needs_review", exceptions=["Profile changed. Prepare again to check eligibility and answers."])
-        return profile
+                self.store.job(job["id"], status="needs_review", exceptions=[message])
 
     def add_job(self, data):
         """Accept only a user-supplied public job URL and avoid duplicate rows."""
@@ -132,9 +137,7 @@ class Workspace:
             profile["transcript_id"] = record["id"]
             profile["revision"] += 1
             self.store.put("profile", "main", profile)
-            for job in self.store.all("job"):
-                if job["status"] not in {"new", "submitted"}:
-                    self.store.job(job["id"], status="needs_review", exceptions=["Transcript changed. Prepare again to check the attachment."])
+            self.invalidate_profile_jobs("Transcript changed. Prepare again to check the attachment.")
         return record
 
     def start(self, name, action, *args):

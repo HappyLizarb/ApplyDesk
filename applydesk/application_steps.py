@@ -2,9 +2,10 @@
 
 import hashlib
 import re
-import secrets
 from urllib.parse import urlsplit
 
+from .account_scope import https_origin as _https_origin, sign_in_scope
+from .employer_accounts import EmployerAccounts
 from .mapping import answer_field, document_kind, normalize, plan_fields
 
 
@@ -13,38 +14,24 @@ def authenticate(workspace, session, job, snapshot):
     if not any(field["type"] == "password" and not field.get("disabled") for field in snapshot["fields"]):
         return snapshot
     button, fields, origin = _auth_context(snapshot)
-    account = job.get("account") or workspace.profile()["identity"]["email"]
-    answers, passwords = _auth_inputs(fields, button["action"], account, workspace.profile())
-    saved_origin = job.get("account_origin")
-    if (saved_origin and saved_origin != origin) or (job.get("account") and not saved_origin):
-        raise ValueError("Save this account with the current HTTPS origin before filling credentials.")
-    key = "account:" + job["id"]
-    password = workspace.secrets.get(key)
-    if password and not saved_origin:
-        raise ValueError("This saved password has no verified origin. Save the account again or sign in manually.")
-    if not password and button["action"] == "create_account":
-        password = secrets.token_urlsafe(24)
-        workspace.secrets.set(key, password)
-    if not password:
-        raise ValueError("Enter this employer account's password in the application row, or sign in manually.")
-    answers.extend({"field_id": field["field_id"], "value": password} for field in passwords)
-    job.update(account=account, account_origin=origin, has_password=True)
-    workspace.store.job(job["id"], account=account, account_origin=origin, has_password=True, live_url=snapshot["url"])
-    updated = session.call("fill", {"snapshot_id": snapshot["snapshot_id"], "answers": answers})
-    if updated.get("intervention"):
-        raise ValueError(updated["intervention"])
-    intent = "sign_in" if button["action"] == "login" else "create_account"
-    return session.call("authenticate", {"snapshot_id": updated["snapshot_id"], "field_id": button["field_id"], "intent": intent})
-
-
-def _https_origin(url):
-    """Credential scope is the exact HTTPS host and port, never a hostname suffix."""
-    parsed = urlsplit(url)
-    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
-        raise ValueError("Credentials require an HTTPS page and form destination without embedded credentials.")
-    host = parsed.hostname.lower()
-    host = f"[{host}]" if ":" in host else host
-    return "https://" + host + (f":{parsed.port}" if parsed.port and parsed.port != 443 else "")
+    with workspace.store.lock:
+        accounts = EmployerAccounts(workspace)
+        current = workspace.store.get("job", job["id"])
+        if not current:
+            raise ValueError("Application not found.")
+        realm = sign_in_scope(current, snapshot, button)
+        account = accounts.display(current).get("account") or workspace.profile()["identity"]["email"]
+        answers, passwords = _auth_inputs(fields, button["action"], account, workspace.profile())
+        saved_account, password = accounts.credentials(current, origin, realm, button["action"])
+        if saved_account != account:
+            answers, passwords = _auth_inputs(fields, button["action"], saved_account, workspace.profile())
+        answers.extend({"field_id": field["field_id"], "value": password} for field in passwords)
+        job.update(workspace.store.job(job["id"], live_url=snapshot["url"]))
+        updated = session.call("fill", {"snapshot_id": snapshot["snapshot_id"], "answers": answers})
+        if updated.get("intervention"):
+            raise ValueError(updated["intervention"])
+        intent = "sign_in" if button["action"] == "login" else "create_account"
+        return session.call("authenticate", {"snapshot_id": updated["snapshot_id"], "field_id": button["field_id"], "intent": intent})
 
 
 def _auth_context(snapshot):

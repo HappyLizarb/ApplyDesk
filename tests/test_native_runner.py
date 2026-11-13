@@ -94,6 +94,7 @@ class NativeRunnerTests(unittest.TestCase):
         engine.runner, engine.accounts = self.runner, self.accounts
         engine.cancelled, engine.stop = self.cancelled, threading.Event()
         engine.paused, engine.generation = False, self.accounts.generation
+        engine.history, engine.active = SimpleNamespace(live={"id": "test-turn"}), None
         engine._stream = Mock()
         engine.tools = Mock()
         engine.tools.call.return_value = {'confirmed': True}

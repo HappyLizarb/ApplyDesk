@@ -133,6 +133,37 @@ async function testAuthentication(session, fixtureServer) {
   assert.equal(snapshot.guard.manual, false);
 }
 
+// Hidden tenant controls invalidate auth even when associated from outside the form.
+async function testHiddenAuthenticationScope(session, fixtureServer) {
+  for (const [external, type] of [[false, 'hidden'], [true, 'hidden'], [true, 'email'], [true, 'text'], [false, 'password']]) {
+    let snapshot = await dispatch(session, 'open', {url: fixtureServer.url + '/login'});
+    assert.equal(snapshot.buttons[0].auth_form, true);
+    const password = snapshot.fields.find(field => field.type === 'password');
+    snapshot = await dispatch(session, 'fill', {snapshot_id: snapshot.snapshot_id,
+      answers: [{field_id: password.field_id, value: 'synthetic-private-password'}]});
+    const postsBefore = fixtureServer.received.length;
+    await session.page.evaluate(({external, type}) => {
+      const form = document.querySelector('form'); form.id = 'employer-login';
+      const hidden = document.createElement('input');
+      hidden.type = type; hidden.name = type === 'hidden' ? 'tenant' : 'username'; hidden.value = 'synthetic-private-tenant';
+      hidden.style[type === 'text' ? 'visibility' : 'display'] = type === 'text' ? 'hidden' : 'none';
+      if (external) hidden.setAttribute('form', form.id);
+      (external ? document.body : form).append(hidden);
+    }, {external, type});
+    const changed = await dispatch(session, 'snapshot', {});
+    assert.equal(changed.buttons[0].auth_form, false);
+    assert(!changed.fields.some(field => ['tenant', 'username'].includes(field.name)));
+    assert(!JSON.stringify(changed).includes('synthetic-private-tenant'));
+    assert(!JSON.stringify(snapshot).includes('synthetic-private-password'));
+    assert(!JSON.stringify(changed).includes('synthetic-private-password'));
+    await assert.rejects(dispatch(session, 'authenticate', {snapshot_id: snapshot.snapshot_id,
+      field_id: snapshot.buttons[0].field_id, intent: 'sign_in'}), /form changed/);
+    await assert.rejects(dispatch(session, 'authenticate', {snapshot_id: changed.snapshot_id,
+      field_id: changed.buttons[0].field_id, intent: 'sign_in'}), /verified authentication form/);
+    assert.equal(fixtureServer.received.length, postsBefore);
+  }
+}
+
 // Handoff is the only action that releases submission guards, and it disables automation.
 async function testHandoff(session, fixtureServer) {
   await dispatch(session, 'open', {url: fixtureServer.url});
@@ -160,8 +191,9 @@ async function main() {
     await testDynamic(session, fixtureServer.url);
     await testSubmissionGuard(session, fixtureServer);
     await testAuthentication(session, fixtureServer);
+    await testHiddenAuthenticationScope(session, fixtureServer);
     await testHandoff(session, fixtureServer);
-    console.log('Browser guard tests passed: identity, readback, stale/dynamic forms, attachments, auth, blocked submission, manual handoff.');
+    console.log('Browser guard tests passed: identity, readback, stale/dynamic forms, attachments, auth scope, blocked submission, manual handoff.');
   } finally {
     await session.context.close();
     await new Promise(resolve => fixtureServer.server.close(resolve));

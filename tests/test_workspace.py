@@ -253,12 +253,21 @@ class HttpBoundaryTests(unittest.TestCase):
         self.assertEqual(self.secrets.get("api:openai"), "synthetic-original")
         self.assertEqual(self.workspace.settings(), original)
 
-    def test_account_password_is_bound_to_job_and_signin_origin(self):
-        # Account or origin changes require re-entering the password rather than reusing it.
+    def test_account_password_is_shared_by_employer_and_bound_to_signin_origin(self):
+        # Different roles reuse one saved employer account without exposing its password.
         job = self.workspace.store.add_job("https://jobs.example.test/role")
+        self.workspace.store.job(job["id"], company="Example Company")
         data = {"id": job["id"], "account": "alex@example.test", "account_origin": "https://careers.example.test", "password": "synthetic-password"}
         self.assertEqual(self.request("POST", "/api/job/account", data)[0], 200)
-        self.assertEqual(self.secrets.get("account:" + job["id"]), "synthetic-password")
+        account = self.workspace.store.all("employer_account")[0]
+        self.assertEqual(self.secrets.get(account["secret_key"]), "synthetic-password")
+        second = self.workspace.store.add_job("https://jobs.example.test/another-role")
+        self.workspace.store.job(second["id"], company="EXAMPLE COMPANY")
+        shown = next(row for row in self.workspace.state()["jobs"] if row["id"] == second["id"])
+        self.assertEqual((shown["account"], shown["employer_account_id"]), (data["account"], account["id"]))
+        conflict = {**data, "id": second["id"], "account": "different@example.test"}
+        self.assertEqual(self.request("POST", "/api/job/account", conflict)[0], 400)
+        self.assertEqual(len(self.workspace.store.all("employer_account")), 1)
         changed = {**data, "account_origin": "https://different.example.test", "password": ""}
         self.assertEqual(self.request("POST", "/api/job/account", changed)[0], 400)
         self.assertEqual(self.workspace.store.get("job", job["id"])["account_origin"], data["account_origin"])

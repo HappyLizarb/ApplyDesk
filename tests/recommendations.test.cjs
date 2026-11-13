@@ -141,9 +141,9 @@ async function testLinkedIn(directory, fixture) {
     await signIn(session, 'linkedin');
     const context = session.context;
     const evaluateHandle = session.page.evaluateHandle.bind(session.page);
-    session.page.evaluateHandle = expression => {
-      assert(!expression.includes('return locateFeedLink(args)'), 'LinkedIn navigation must use the observed URL.');
-      return evaluateHandle(expression);
+    session.page.evaluateHandle = (expression, args) => {
+      assert(!String(expression).includes('return locateFeedLink(args)'), 'LinkedIn navigation must use the observed URL.');
+      return evaluateHandle(expression, args);
     };
     const report = await dispatch(session, 'source_scan', {limit: 10});
     assert.equal(session.context, context);

@@ -112,11 +112,11 @@ export function jobDetails(id) {
   });
 }
 
-// Credentials are bound to the exact authentication origin and stored in Keychain.
+// One confirmed employer account is shared across roles, with exact sign-in boundaries.
 function accountDialog(id) {
   const job=state.data.jobs.find(item=>item.id===id);
   const destination=job.live_url||job.recommendation_source?.employer_url||(!job.recommendation_source?job.url:'');
   const origin=job.account_origin||(destination?new URL(destination).origin:'');
-  const dialog=modal('Employer account',`<form><div class="modal-body"><label>Account email or username<input name="account" value="${h(job.account||state.data.profile.identity.email)}" autocomplete="off" required></label><label class="detail-section">Exact sign-in website origin<input name="origin" type="url" value="${h(origin)}" required></label><p class="field-help">Example: https://careers.company.com. Credentials will not be reused on a different origin.</p><label class="detail-section">Password<input name="password" type="password" autocomplete="new-password" placeholder="${job.has_password?'Saved in Keychain · leave blank to keep':'Choose or paste the account password'}"></label><p class="muted small">Passwords are saved only in macOS Keychain and never sent to an AI provider.</p></div><div class="modal-foot"><button class="primary">Save account</button></div></form>`);
+  const dialog=modal('Employer account',`<form><div class="modal-body"><label>Account email or username<input name="account" value="${h(job.account||state.data.profile.identity.email)}" autocomplete="off" required></label><label class="detail-section">Exact sign-in website origin<input name="origin" type="url" value="${h(origin)}" required></label><p class="field-help">Example: https://careers.company.com. Credentials will not be reused on a different origin.</p><label class="detail-section">Password<input name="password" type="password" autocomplete="new-password" placeholder="${job.has_password?'Saved in Keychain · leave blank to keep':'Enter the existing account password'}"></label><p class="muted small">Use this existing account for all roles at ${h(job.company||'this employer')}. Passwords stay in macOS Keychain.</p></div><div class="modal-foot"><button class="primary">Save for this employer</button></div></form>`);
   dialog.querySelector('form').onsubmit=event=>{event.preventDefault();busy(event.submitter,async()=>{const form=event.target;await api('job/account',{id,account:form.account.value,account_origin:form.origin.value,password:form.password.value});form.password.value='';await refresh();dialog.close();toast('Account saved.');});};
 }

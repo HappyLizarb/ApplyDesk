@@ -13,6 +13,8 @@ from .chatgpt_inference import ChatGPTRunner, output_text
 from .orchestrator_prompts import MASTER
 from .orchestrator_tools import MasterTools, master_tools
 from .orchestrator_workflow import DraftWorkflow
+from .tool_progress import ToolProgress
+from .application_window import status as application_browser_status
 
 
 class Orchestrator:
@@ -45,6 +47,7 @@ class Orchestrator:
         current = self.runner.current
         runs = [run for run in self.w.store.all("agent_run") if run.get("started_at", "") >= self.history.since]
         return {"account": self.accounts.state(), "signin": {"status": self.signin.status, "error": self.signin.error},
+                "application_browser": application_browser_status(self.w),
                 "settings": self.settings.read(), "paused": self.paused, "active": self.active,
                 "current_run": current if current and current.get("started_at", "") >= self.history.since else None, "error": self.error, "messages": self.history.read(),
                 "runs": runs[-40:], "application_runs": self.w.store.all("application_run")[-10:]}
@@ -110,7 +113,8 @@ class Orchestrator:
     def run_agent(self, role, prompt, inputs, context=None, tools=None):
         """Each delegated role receives a fresh request and its own app-owned execution record."""
         self.check_active()
-        task = {"id": context["task"]["id"], "version": context["version"]} if context else None
+        task = {"id": context["task"]["id"], "version": context["version"]} if context else {}
+        task["turn_id"] = (self.history.live or {}).get("id") or ((self.active or {}).get("message") or {}).get("id")
         result = self.runner.run(role, prompt, inputs, self.cancelled, self._stream if role == "master" else lambda _: None, tools, task)
         self.check_active()
         return result
@@ -197,9 +201,9 @@ class Orchestrator:
                 raise
 
     def _master(self, history):
-        """Bound tool rounds; preserve function outputs locally for the current planning turn."""
-        text = []
-        for _ in range(8):
+        """Keep working through tool results until the agent finishes or the user stops it."""
+        text, progress = [], ToolProgress(self.tools.call)
+        while True:
             _, response = self.run_agent("master", MASTER, history, tools=master_tools())
             output = response.get("output", [])
             text.append(output_text(response))
@@ -210,16 +214,10 @@ class Orchestrator:
                     raise ValueError("ChatGPT returned no completed text or tool calls. Please retry your message.")
                 return answer
             history.extend(output)
-            for call in calls[:8]:
+            for call in calls:
                 self.check_active()
-                try:
-                    result = self.tools.call(call)
-                except InterruptedError:
-                    raise
-                except Exception as exc:
-                    result = {"error": str(exc)[:1000]}
+                result = progress.execute(call)
                 history.append({"type": "function_call_output", "call_id": call["call_id"], "output": json.dumps(result)})
-        raise ValueError("The master reached its task-step limit. Continue with a narrower request.")
 
     def close(self):
         """Stop callbacks and inference before closing SQLite; unfinished tasks remain resumable."""

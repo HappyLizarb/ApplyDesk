@@ -97,6 +97,17 @@ class RecommendationSelectionTests(ChatFixture):
         self.assertEqual(self.agent.call_count, 1)
         self.assertEqual(self.browser.call_count, 1)
 
+    def test_blocked_capture_is_not_reported_as_zero_matching_jobs(self):
+        """Unreadable listings are a source error, not evidence that the requested roles do not exist."""
+        self.session.call.side_effect = lambda method, params=None: {
+            "source": "handshake", "status": "blocked", "jobs": [],
+            "message": "The job description could not be read.", "issues": ["The job description could not be read."]}
+        result = find_jobs(self.engine, "handshake")
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["message"], "The job description could not be read.")
+        self.assertNotIn("matching job", result["message"])
+        self.agent.assert_not_called()
+
     def test_invalid_selection_and_source_quotes_add_nothing(self):
         """The relevance model cannot inject a source or replace the supporting job facts."""
         records = [normalize_job("handshake", self.hardware)]

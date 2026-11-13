@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 
 from applydesk.application_steps import attachment_plan, audit_snapshot, authenticate, choose_attachment, cover_text_plan
 from applydesk.mapping import answer_field, document_kind, plan_fields
+from applydesk.storage import Store
 
 
 def profile():
@@ -35,7 +36,8 @@ def auth_page(action="login"):
               field("password", "Password", type="password", value=None, form_action=endpoint)]
     button = {"field_id": "login", "action": action, "disabled": False, "auth_form": True,
               "type": "submit", "form_id": "form", "form_action": endpoint, "form_method": "POST"}
-    return {"url": endpoint, "snapshot_id": "first", "fields": fields, "buttons": [button]}
+    return {"url": endpoint, "snapshot_id": "first", "fields": fields, "buttons": [button],
+            "text": "Example Company applicant account"}
 
 
 class MappingTests(unittest.TestCase):
@@ -163,12 +165,17 @@ class AuthenticationTests(unittest.TestCase):
     """No credential is filled until origin and the native auth form are proven."""
 
     def setUp(self):
-        """Secrets and browser operations are mocked; no live credentials are accessed."""
-        self.w = SimpleNamespace(secrets=Mock(), store=Mock(), profile=profile)
+        """Use a temporary real store with fictional secrets and browser responses."""
+        temporary = tempfile.TemporaryDirectory(prefix="applydesk-auth-test-")
+        self.addCleanup(temporary.cleanup)
+        self.w = SimpleNamespace(secrets=Mock(), store=Store(Path(temporary.name)), profile=profile)
+        self.addCleanup(self.w.store.close)
         self.w.secrets.get.return_value = "fictional-secret"
         self.session = Mock()
         self.session.call.side_effect = [{"snapshot_id": "filled"}, {"snapshot_id": "authenticated"}]
-        self.job = {"id": "job", "account": "avery@example.test", "account_origin": "https://jobs.example.test"}
+        created = self.w.store.add_job("https://jobs.example.test/role")
+        self.job = self.w.store.job(created["id"], company="Example Company", account="avery@example.test",
+                                    account_origin="https://jobs.example.test", has_password=True)
 
     def test_bound_login_fills_then_uses_exact_button(self):
         authenticate(self.w, self.session, self.job, auth_page())
@@ -178,13 +185,16 @@ class AuthenticationTests(unittest.TestCase):
 
     def test_unbound_or_changed_origin_never_fills_saved_credentials(self):
         for origin in (None, "https://other.example.test", "http://jobs.example.test"):
+            self.w.store.job(self.job["id"], account_origin=origin)
             with self.subTest(origin=origin), self.assertRaises(ValueError):
-                authenticate(self.w, self.session, {**self.job, "account_origin": origin}, auth_page())
+                authenticate(self.w, self.session, self.job, auth_page())
         self.session.call.assert_not_called()
+        self.w.secrets.get.assert_not_called()
 
     def test_saved_password_without_account_origin_cannot_be_reused_for_signup(self):
+        self.w.store.job(self.job["id"], account="", account_origin=None, has_password=False)
         with self.assertRaises(ValueError):
-            authenticate(self.w, self.session, {"id": "job"}, auth_page("create_account"))
+            authenticate(self.w, self.session, self.job, auth_page("create_account"))
         self.session.call.assert_not_called()
         self.w.secrets.set.assert_not_called()
 
@@ -206,22 +216,24 @@ class AuthenticationTests(unittest.TestCase):
             cases.append(snapshot)
         for snapshot in cases:
             with self.subTest(snapshot=snapshot), self.assertRaises(ValueError):
-                authenticate(self.w, self.session, {"id": "job"}, snapshot)
+                authenticate(self.w, self.session, self.job, snapshot)
         self.w.secrets.get.assert_not_called()
         self.session.call.assert_not_called()
 
     def test_new_signup_binds_origin_before_browser_fill(self):
         self.w.secrets.get.return_value = None
-        job = {"id": "job"}
+        job = self.w.store.job(self.job["id"], account="", account_origin=None, has_password=False)
         def browser_call(method, parameters):
-            """The account binding must already be durable at the first browser write."""
-            self.assertEqual(self.w.store.job.call_args.kwargs["account_origin"], "https://jobs.example.test")
+            """The shared reservation must already be durable at the first browser write."""
+            saved = self.w.store.get("job", job["id"])
+            self.assertEqual(saved["account_origin"], "https://jobs.example.test")
+            record = self.w.store.get("employer_account", saved["employer_account_id"])
+            self.assertEqual(record["status"], "creation_attempted")
             return {"snapshot_id": method}
         self.session.call.side_effect = browser_call
         authenticate(self.w, self.session, job, auth_page("create_account"))
         self.assertEqual(job["account_origin"], "https://jobs.example.test")
-        self.assertEqual(self.w.store.job.call_args.kwargs["account_origin"], job["account_origin"])
-        self.assertEqual(self.w.store.job.call_args.kwargs["live_url"], "https://jobs.example.test/register")
+        self.assertEqual(self.w.store.get("job", job["id"])["live_url"], "https://jobs.example.test/register")
         self.w.secrets.set.assert_called_once()
 
     def test_audit_stamp_requires_nonempty_verified_fields(self):

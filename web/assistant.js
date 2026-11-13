@@ -3,6 +3,8 @@ import {apiProviders} from './api-key-settings.js';
 import {roles as roleNames} from './agent-settings.js';
 import {agentMenu,initializeAgentMenu,updateAgentMenu} from './composer-agents.js';
 import {submitComposer,updateComposeAction} from './composer-send.js';
+import {groupAgentRuns} from './agent-activity.js';
+import {initializeApplicationWindow,updateApplicationWindow} from './application-window.js';
 
 let open=false,lastMessages='',lastRuns='';
 
@@ -13,6 +15,7 @@ export function initializeAssistant() {
   document.querySelector('#toggle-assistant').onclick=()=>toggleAssistant(!open);
   panel.querySelector('#close-assistant').onclick=()=>toggleAssistant(false);
   panel.querySelector('#reset-assistant').onclick=resetChat;
+  initializeApplicationWindow(panel);
   initializeAgentMenu(panel);
   panel.querySelector('#assistant-input').oninput=updateComposeAction;
   panel.querySelector('#assistant-form').onsubmit=event=>{event.preventDefault();submitComposer();};
@@ -57,6 +60,7 @@ export function updateAssistant() {
   const engine=state.data?.orchestrator,panel=document.querySelector('#assistant-panel');if(!engine||!panel.querySelector('#assistant-status'))return;
   const activeRole=engine.current_run?.role;
   updateApplicationRun(panel,engine.application_runs||[]);
+  updateApplicationWindow(panel,engine);
   panel.querySelector('#assistant-status').textContent=engine.paused?(engine.active?'Stopping agents…':'Paused'):activeRole?`${roleNames[activeRole]} working…`:engine.active?'Agents working…':engine.account.connected?`Connected to ${apiProviders[engine.account.source?.replace('_api','')]||'ChatGPT'}`:'Connect an account to begin';
   panel.querySelector('#assistant-connection').innerHTML=engine.account.connected?'':'<a class="assistant-connect" href="#settings">Open Account setup</a>';
   updateComposeAction();updateAgentMenu();
@@ -67,7 +71,7 @@ export function updateAssistant() {
     messages.innerHTML=engine.messages.length?engine.messages.map(message=>`<article class="chat-message ${h(message.role)}"><div class="chat-message-heading">${message.role==='user'?'You':'ApplyDesk'}${message.status!=='complete'?`<span>${h(message.status)}</span>`:''}</div><div class="chat-message-text">${h(message.text||'Thinking…')}</div></article>`).join(''):'<div class="chat-empty"><h3>What would you like to work on?</h3><p>Plan your next steps, ask about a job, or prepare queued drafts.</p></div>';
     if(bottom)messages.scrollTop=messages.scrollHeight;lastMessages=serialized;
   }
-  const runs=JSON.stringify(engine.runs);if(runs!==lastRuns){panel.querySelector('#agent-runs').innerHTML=engine.runs.slice(-12).reverse().map(run=>`<div class="agent-run"><strong>${h(roleNames[run.role]||run.role)}</strong><span>${h(run.status)}</span><small>${h(run.model)}</small></div>`).join('')||'<p class="muted small">No agent runs yet.</p>';panel.querySelector('#activity-count').textContent=engine.runs.length||'';lastRuns=runs;}
+  const runs=JSON.stringify(engine.runs);if(runs!==lastRuns){const groups=groupAgentRuns(engine.runs);panel.querySelector('#agent-runs').innerHTML=groups.slice(-12).reverse().map(run=>`<div class="agent-run"><strong>${h(roleNames[run.role]||run.role)}</strong><span>${h(run.status)}</span><small>${h(run.model)}${run.steps>1?` · ${run.steps} steps`:''}</small></div>`).join('')||'<p class="muted small">No agent runs yet.</p>';panel.querySelector('#activity-count').textContent=groups.length||'';lastRuns=runs;}
 }
 
 // Show actual receipts and uncertain attempts without treating a model reply as submission proof.

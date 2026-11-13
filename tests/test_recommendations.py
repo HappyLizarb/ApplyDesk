@@ -11,20 +11,7 @@ from unittest.mock import ANY, Mock, patch
 
 from applydesk.recommendations import normalize_job, source_identity
 from applydesk.workspace import Workspace
-from recommendation_helpers import accept_captured
-
-
-def listing(identity="123", platform="linkedin", **changes):
-    # Known source URLs and invented descriptions keep these tests entirely local.
-    url = f"https://www.linkedin.com/jobs/view/{identity}/" if platform == "linkedin" else f"https://app.joinhandshake.com/job-search/{identity}"
-    return {"id": identity, "url": url, "title": "Software Engineer", "company": "Example Labs",
-            "location": "San Francisco", "text": "Required: Python and testing experience. " * 6,
-            "employer_url": f"https://careers.example.test/jobs/{identity}", "complete": True, "issues": [], **changes}
-
-
-def response(status="ready", platform="linkedin", **changes):
-    # The mock retains the controlled browser protocol rather than a page snapshot.
-    return {"source": platform, "status": status, "jobs": [], "issues": [], **changes}
+from recommendation_helpers import accept_captured, listing, response
 
 
 class RecommendationTests(unittest.TestCase):
@@ -62,6 +49,13 @@ class RecommendationTests(unittest.TestCase):
                 self.w.recommendations.begin(data)
         self.browser.assert_not_called()
         self.secrets.get.assert_not_called()
+
+    def test_query_is_kept_in_report_and_forwarded_to_visible_browser_search(self):
+        """The worker scans the requested keyword results, not the default home recommendations."""
+        self.w.recommendations.begin({"platform": "linkedin", "query": "hardware new grad", "limit": 2})
+        report = self.finished()
+        self.assertEqual(report["query"], "hardware new grad")
+        self.session.call.assert_any_call("source_scan", {"limit": 2, "query": "hardware new grad"})
 
     def test_import_is_unverified_and_canonical_without_model_calls(self):
         # A read listing never implies applicant eligibility or document approval.

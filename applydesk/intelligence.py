@@ -1,14 +1,9 @@
 """Evidence-bound AI tasks with deterministic checks before any caller can act."""
 
 import json
-import re
 from collections import Counter
 
 from . import ai_prompts as prompts
-
-
-PROFESSIONAL_KINDS = {"employment", "experience", "professional_experience",
-                      "industry", "industries", "industry_years", "role"}
 
 
 def _facts(profile):
@@ -77,27 +72,28 @@ def analyze_job(client, profile, page) -> dict:
     return result
 
 
-def _requirement_errors(requirement, facts):
-    """Validate evidence identity and prevent borrowing coursework for work years."""
+def _requirement_errors(requirement, facts, source):
+    """Validate observed requirements without turning assumed qualifications into facts."""
     if not isinstance(requirement, dict) or not isinstance(requirement.get("text"), str):
         return ["A required qualification is missing or malformed."]
     label = requirement["text"].strip()
-    if not label or requirement.get("met") is not True:
-        return [f"Required qualification lacks a confirmed match: {label or 'unknown'}"]
+    if not label or type(requirement.get("met")) is not bool:
+        return ["A required qualification has missing text or an invalid match flag."]
+    if source and label not in source:
+        return ["A required qualification does not quote the observed description."]
     ids = requirement.get("evidence_ids")
-    errors = _evidence_errors(ids, facts)
-    if not errors and re.search(r"\b(years?|yrs?)\b", label, re.I) and re.search(
-        r"\b(experience|professional|industry|commercial|work)\b", label, re.I
-    ):
-        if any(facts[item].get("kind") not in PROFESSIONAL_KINDS for item in ids):
-            errors.append("Professional years must cite only confirmed professional experience.")
+    if not isinstance(ids, list):
+        return ["Qualification evidence IDs must be a list; use an empty list for assumed qualifications."]
+    errors = _evidence_errors(ids, facts) if ids else []
     return [f"{label}: {error}" for error in errors]
 
 
 def validate_eligibility(analysis, profile) -> dict:
-    """Fail closed on unknown mandatory requirements; semantic support needs audit."""
+    """Honor assumed qualifications while checking the description and supplied evidence structure."""
     reasons = []
     facts = _facts(profile)
+    if not isinstance(analysis, dict):
+        return {"eligible": False, "reasons": ["Job analysis is missing or malformed."]}
     if profile.get("confirmed") is not True:
         reasons.append("Confirm the profile before checking eligibility.")
     required = analysis.get("required")
@@ -105,20 +101,18 @@ def validate_eligibility(analysis, profile) -> dict:
         reasons.append("The complete set of mandatory qualifications is not confirmed.")
     if not isinstance(required, list):
         reasons.append("Required qualifications are unknown.")
-    elif not required:
-        quote, source = analysis.get("no_required_quote", ""), analysis.get("source_text", "")
-        explicit = isinstance(quote, str) and quote and isinstance(source, str) and quote in source
-        explicit = explicit and re.search(r"\bno (?:minimum )?qualifications (?:are )?required\b", quote, re.I)
-        if not explicit:
-            reasons.append("No mandatory qualifications were identified; the job needs clarification.")
     else:
+        source = analysis.get("source_text", "")
+        if not isinstance(source, str):
+            reasons.append("The captured job description must be text.")
+            source = ""
         for requirement in required:
-            reasons.extend(_requirement_errors(requirement, facts))
+            reasons.extend(_requirement_errors(requirement, facts, source))
     return {"eligible": not reasons, "reasons": reasons}
 
 
 def audit_eligibility(client, profile, page, analysis) -> dict:
-    """Independently check omitted requirements and the meaning of cited evidence."""
+    """Review the source and process prerequisites without re-screening assumed qualifications."""
     baseline = validate_eligibility(analysis, profile)
     if not baseline["eligible"]:
         return {"passed": False, "issues": baseline["reasons"]}
@@ -128,9 +122,10 @@ def audit_eligibility(client, profile, page, analysis) -> dict:
     checks = validate_eligibility(result, profile)
     review = _review(result)
     review["issues"].extend(checks["reasons"])
-    if isinstance(page, dict) and page.get("recommendation_source"):
+    source = (page.get("recommendation_source") or page.get("public_source")) if isinstance(page, dict) else None
+    if source:
         from .recommendation_checks import process_issues
-        review["issues"].extend(process_issues(result, page["recommendation_source"], result["source_text"]))
+        review["issues"].extend(process_issues(result, source, result["source_text"]))
     review["passed"] = review["passed"] and checks["eligible"]
     review["passed"] = review["passed"] and not review["issues"]
     return review

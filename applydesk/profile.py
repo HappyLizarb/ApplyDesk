@@ -25,7 +25,7 @@ ROW_FIELDS = {
 def empty_profile():
     """Default sensitive answers to unknown rather than an assumed no."""
     return {"identity": {key: "" for key in ["legal_name", "given_name", "family_name", "preferred_name", "email", "phone_country_code", "phone", "street_address", "city", "region", "country"]},
-            **{key: [] for key in ROW_FIELDS}, "skills": [], "facts": [],
+            **{key: [] for key in ROW_FIELDS}, "skills": [], "facts": [], "chat_evidence": [],
             "preferences": {"levels": [], "disability": "unknown", "veteran": "unknown"},
             "confirmed": False, "revision": 0, "transcript_id": None}
 
@@ -76,6 +76,7 @@ def validate_profile(raw, previous):
         raise ValueError("Legal name and email are required before confirming your profile.")
     result["revision"] = previous.get("revision", 0) + 1
     result["transcript_id"] = previous.get("transcript_id")
+    result["chat_evidence"] = copy.deepcopy(previous.get("chat_evidence", []))
     result["facts"] = facts_for(result) if result["confirmed"] else []
     return result
 
@@ -143,6 +144,7 @@ def facts_for(profile):
     for key in ("disability", "veteran"):
         if profile["preferences"][key] != "unknown":
             facts.append({"id": f"preferences.{key}", "text": profile["preferences"][key], "kind": "disclosure", "confirmed": True})
+    facts.extend(copy.deepcopy(profile.get("chat_evidence", [])))
     return facts
 
 

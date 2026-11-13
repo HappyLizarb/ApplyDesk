@@ -67,6 +67,10 @@ class OrchestratorTests(ChatFixture):
         self.assertEqual(self.w.store.get("job", self.job["id"])["status"], "draft")
         layout = next(call for call in self.calls if call["instructions"] == REVIEWER)
         self.assertTrue(any(item["type"] == "input_image" for item in layout["input"][0]["content"]))
+        masters = [run for run in self.w.store.all("agent_run") if run["role"] == "master"]
+        self.assertEqual(len(masters), 2)
+        self.assertEqual(len({run["turn_id"] for run in masters}), 1)
+        self.assertTrue(masters[0]["turn_id"])
 
     def test_failed_reviews_block_retry_and_cannot_be_forged_by_external_chat(self):
         """A failed reviewer remains a blocker; a client cannot claim app-created run identity."""
