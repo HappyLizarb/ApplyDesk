@@ -26,8 +26,17 @@ class Recommendations:
                 self.w.store.put("recommendation", platform, report)
 
     def state(self):
-        """Expose only persisted operation summaries, never browser processes or cookies."""
-        return {platform: self.w.store.get("recommendation", platform, {}) for platform in sorted(PLATFORMS)}
+        """Display historic blocked captures truthfully without changing the saved operation records."""
+        reports = {}
+        for platform in sorted(PLATFORMS):
+            report = dict(self.w.store.get("recommendation", platform, {}))
+            if report.get("status") == "blocked" and report.get("message") == "Found 0 matching job(s).":
+                issues = report.get("issues", [])
+                issues = issues if isinstance(issues, list) else []
+                report["message"] = next((item.strip() for item in issues if isinstance(item, str) and item.strip()),
+                                         "The listings could not be read. Try the search again.")
+            reports[platform] = report
+        return reports
 
     def preferences(self):
         """Source selection is explicit and never inferred from past imports or profile facts."""
@@ -60,6 +69,10 @@ class Recommendations:
         if not isinstance(data, dict):
             raise ValueError("Supply a recommendation source and limit.")
         platform, limit = data.get("platform"), data.get("limit", 5)
+        query = data.get("query", "")
+        if not isinstance(query, str) or len(query) > 300:
+            raise ValueError("Use a search query of at most 300 characters.")
+        query = " ".join(query.split())
         connect_only = data.get("connect_only", False)
         if type(connect_only) is not bool:
             raise ValueError("Choose whether to connect or search.")
@@ -68,12 +81,12 @@ class Recommendations:
         with self.w.lock:
             if self.closed or platform in self.active:
                 raise ValueError("This source is already active or the workspace is closing.")
-            run = {"run_id": uuid.uuid4().hex, "event": threading.Event(), "request": request, "connect_only": connect_only, "session": BrowserSession(self.w.root / "sources" / platform, source=platform)}
+            run = {"run_id": uuid.uuid4().hex, "event": threading.Event(), "request": request, "query": query, "connect_only": connect_only, "session": BrowserSession(self.w.root / "sources" / platform, source=platform)}
             run["thread"] = threading.Thread(target=self._run, args=(platform, run, limit), daemon=True)
             self.active[platform] = run
             self.w.store.put("recommendation", platform, {"platform": platform, "run_id": run["run_id"], "status": "connecting", "connected": False,
                              "message": "Opening the source browser…", "limit": limit, "added_count": 0,
-                             "connect_only": connect_only, "request_id": request.get("message_id") if request else None,
+                             "connect_only": connect_only, "query": query, "request_id": request.get("message_id") if request else None,
                              "added_job_ids": [], "job_ids": [], "excluded_count": 0, "existing_count": 0,
                              "updated_count": 0, "issues": [], "started_at": now()})
             run["thread"].start()
@@ -108,13 +121,13 @@ class Recommendations:
         """Scan once after sign-in; cancelled operations can never commit later job rows."""
         try:
             result = self._wait_ready(platform, run)
-            if not self._publish(platform, run, status="scanning", connected=result.get("status") == "ready", message="Reading recommended jobs…"):
+            if not self._publish(platform, run, status="scanning", connected=result.get("status") == "ready", message="Searching jobs…" if run["query"] else "Reading recommended jobs…"):
                 return
             if result.get("status") == "ready" and run["connect_only"]:
                 self._publish(platform, run, status="complete", message="Connected.", finished_at=now())
                 return
             if result.get("status") == "ready":
-                result = run["session"].call("source_scan", {"limit": limit})
+                result = run["session"].call("source_scan", {"limit": limit, **({"query": run["query"]} if run["query"] else {})})
             if result.get("source") != platform or result.get("status") not in {"ready", "blocked"}:
                 self._publish(platform, run, status="blocked", message="The source could not be read. Open it and try again.", issues=["The source did not confirm readable recommendations."], finished_at=now())
                 return
@@ -126,7 +139,7 @@ class Recommendations:
             issues.extend([item[:600] for item in reported if isinstance(item, str) and item.strip()][:20] if isinstance(reported, list) else ["The source report details were invalid."])
             self._stage(platform, run, records)
             status = "blocked" if result["status"] == "blocked" or issues else "complete" if records else "no_results"
-            message = "Some recommendations could not be read." if status == "blocked" else "Recommendations ready to check against your request." if records else "No recommendations were found."
+            message = "Some listings could not be read." if status == "blocked" else "Jobs ready to check against your request." if records else "No jobs were found."
             if status == "blocked" and isinstance(result.get("message"), str) and result["message"].strip():
                 message = result["message"][:600]
             self._publish(platform, run, status=status, message=message, issues=list(dict.fromkeys(issues))[:20], finished_at=now())

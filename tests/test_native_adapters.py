@@ -42,7 +42,8 @@ class NativeAdapterTests(unittest.TestCase):
         self.assertEqual(body['thinking'], {'type': 'adaptive'})
         self.assertEqual(body['output_config'], {'effort': 'high'})
         declaration = next(tool for tool in body['tools'] if tool['name'] == 'run_applications')
-        self.assertEqual(declaration['input_schema']['properties']['limit']['maximum'], 100)
+        self.assertEqual(declaration['input_schema']['properties'], {})
+        self.assertEqual(declaration['input_schema']['required'], [])
         self.assertFalse(declaration['input_schema']['additionalProperties'])
 
     def test_anthropic_signed_thinking_tool_round_trip(self):

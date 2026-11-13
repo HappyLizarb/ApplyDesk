@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from .agent_http import AgentRoutes, publish_connection
 from .document_tasks import DocumentTasks
 from .document_deletion import DocumentDeletion
+from .employer_accounts import EmployerAccounts
 from .orchestrator_http import orchestrator_action
 
 WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
@@ -158,30 +159,11 @@ class Handler(AgentRoutes, BaseHTTPRequestHandler):
                   "/api/resume/tag": lambda: w.resumes.tag(data),
                   "/api/document/delete": lambda: DocumentDeletion(w).delete(data),
                   "/api/document/save": lambda: w.start("save-document", docs.save, data),
-                  "/api/job/account": lambda: self._account(data),
+                  "/api/job/account": lambda: EmployerAccounts(w).save(data),
                   "/api/shutdown": self._shutdown}
         if path not in routes:
             raise ValueError("Unknown action.")
         return routes[path]()
-
-    def _account(self, data):
-        """Store the username in the row and the password solely in Keychain."""
-        w = self.server.workspace
-        if not w.store.get("job", data["id"]):
-            raise ValueError("Application not found.")
-        origin = urlparse(str(data.get("account_origin", "")))
-        if origin.scheme != "https" or not origin.hostname or origin.username or origin.password or origin.path not in {"", "/"} or origin.query or origin.fragment:
-            raise ValueError("Enter the exact HTTPS sign-in origin, without a path, credentials, or query.")
-        normalized = f"https://{origin.netloc.lower()}"
-        job = w.store.get("job", data["id"])
-        account = str(data.get("account", ""))[:500]
-        if job.get("has_password") and (job.get("account_origin") != normalized or job.get("account") != account) and not data.get("password"):
-            raise ValueError("Enter the password again when changing the account or sign-in origin.")
-        changes = {"account": account, "account_origin": normalized}
-        if data.get("password"):
-            w.secrets.set("account:" + data["id"], str(data["password"]))
-            changes["has_password"] = True
-        return w.store.job(data["id"], **changes)
 
     def _shutdown(self):
         """End the server after this response has been returned."""

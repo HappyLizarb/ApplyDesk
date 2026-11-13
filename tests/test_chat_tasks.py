@@ -27,17 +27,29 @@ class ChatTaskTests(ChatFixture):
         self.assertEqual(self.w.chat.enqueue({"kind": "application", "target_id": self.job["id"]})["id"], task["id"])
         self.assertNotIn("disability", str(self.w.chat.get(task["id"])["inputs"]))
 
-    def test_unknown_fields_and_unmet_or_uncited_requirements_are_rejected(self):
+    def test_unknown_fields_and_invented_requirements_or_evidence_are_rejected(self):
         """A chat result cannot smuggle ready status or replace actual supporting evidence."""
         cases = []
         payload = self.payload();payload["status"] = "ready";cases.append(payload)
-        payload = self.payload();payload["result"]["analysis"]["required"][0]["met"] = False;cases.append(payload)
         payload = self.payload();payload["result"]["analysis"]["required"][0]["evidence_ids"] = ["invented"];cases.append(payload)
         payload = self.payload();payload["result"]["analysis"]["required"][0]["text"] = "Made up";cases.append(payload)
         for payload in cases:
             with self.assertRaises(ValueError):
                 self.w.chat.submit(payload)
         self.assertIsNone(self.w.chat.get(self.task["id"])["task"]["result"])
+
+    def test_assumed_qualification_allows_draft_but_not_invented_answers(self):
+        """A broad qualification assumption never supplies a specific professional history answer."""
+        payload = self.payload()
+        payload["result"]["analysis"]["required"][0].update(met=False, evidence_ids=[])
+        payload["result"].update(form_text="How many years of professional Python experience?", answers=[
+            {"question": "How many years of professional Python experience?", "answer": "5", "fact_ids": []}])
+        with self.assertRaisesRegex(ValueError, "confirmed supporting facts"):
+            self.w.chat.submit(payload)
+        payload["result"]["answers"] = []
+        context = self.w.chat.submit(payload)
+        self.assertEqual(context["task"]["status"], "awaiting_review")
+        self.assertFalse(context["task"]["result"]["analysis"]["required"][0]["met"])
 
     def test_self_review_missing_coverage_and_conflicting_verdict_are_rejected(self):
         """Recorded reviewer separation and full coverage are mandatory even in experimental mode."""

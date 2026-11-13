@@ -16,14 +16,14 @@ async function testUnclipped(page, origin) {
   }
 }
 
-// The observed native “… more” button expands only its verified job description.
+// CSS clipping retains complete DOM text; an explicit more control still requires expansion.
 async function testClipped(page, origin) {
   const clamped = '<span id="full" style="display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;width:150px">' + description + '</span>';
   const button = '<button type="button" onclick="document.querySelector(\'#full\').style.webkitLineClamp=\'unset\';this.remove()">… more</button>';
   await page.setContent(linkedin().replace('<p>' + description + '</p>', clamped));
   const clipped = await readJob(page, 'linkedin', '9005', origin);
-  assert.equal(clipped.complete, false);
-  assert.deepEqual(clipped.issues, ['The job description is still collapsed.']);
+  assert.equal(clipped.complete, true, JSON.stringify(clipped));
+  assert(clipped.text.includes(description));
   await page.setContent(linkedin().replace('<p>' + description + '</p>', clamped + button));
   assert.equal((await readJob(page, 'linkedin', '9005', origin)).complete, false);
   await expandDescription(page, 'linkedin', '9005', origin);
@@ -35,6 +35,14 @@ async function testClipped(page, origin) {
   assert.equal((await readJob(page, 'linkedin', '9005', origin)).complete, false);
 }
 
+// Loading and embedded content remain unreadable even when surrounding text is long enough.
+async function testIncompleteContent(page, origin) {
+  for (const extra of ['<span aria-busy="true">Loading</span>', '<iframe src="about:blank"></iframe>']) {
+    await page.setContent(linkedin().replace('<p>' + description + '</p>', '<p>' + description + '</p>' + extra));
+    assert.equal((await readJob(page, 'linkedin', '9005', origin)).complete, false);
+  }
+}
+
 async function main() {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'applydesk-clamp-'));
   const fixture = await fixtureServer();
@@ -43,7 +51,8 @@ async function main() {
     await session.page.goto(fixture.origin + '/jobs/view/9005/');
     await testUnclipped(session.page, fixture.origin);
     await testClipped(session.page, fixture.origin);
-    console.log('Description clamp fixtures passed: inactive/unclipped styles, actual overflow, visible … more, verified expansion.');
+    await testIncompleteContent(session.page, fixture.origin);
+    console.log('Description clamp fixtures passed: retained full DOM text, visible … more, verified expansion, loading and embedded-content checks.');
   } finally {
     await session.context.close();fixture.server.closeAllConnections();
     await new Promise(resolve => fixture.server.close(resolve));

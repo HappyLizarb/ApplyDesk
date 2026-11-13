@@ -200,7 +200,7 @@ class RecommendationChecksTests(unittest.TestCase):
         captured = source()
         profile = {"confirmed": True, "revision": 1, "preferences": {},
                    "facts": [{"id": "skills.0", "text": "Python", "kind": "skill", "confirmed": True}]}
-        workspace = SimpleNamespace(store=Mock(), client=Mock(), resumes=Mock(categories=lambda: ["General"]))
+        workspace = SimpleNamespace(store=Mock(), client=Mock(), resumes=Mock(categories=lambda: ["General"], list=lambda: []))
         workspace.store.all.return_value = []
         app = Applications(workspace)
         result = {**analysis(), "process_complete": False, "details": captured["description"]}
@@ -209,7 +209,8 @@ class RecommendationChecksTests(unittest.TestCase):
         auditor.assert_not_called()
         self.assertEqual(workspace.store.job.call_args.kwargs["status"], "needs_review")
 
-    def test_stricter_employer_qualification_stops_before_documents_and_filling(self):
+    def test_stricter_employer_qualification_uses_the_user_assumption(self):
+        """Fresh employer requirements remain recorded without demanding unsupported personal evidence."""
         captured = source()
         job = {"id": "job-1", "status": "new", "recommendation_source": captured}
         profile = {"confirmed": True, "revision": 1, "preferences": {},
@@ -220,7 +221,7 @@ class RecommendationChecksTests(unittest.TestCase):
         worker, auditor = SimpleNamespace(ask=Mock(side_effect=[initial, stricter])), SimpleNamespace(ask=Mock(return_value=initial))
         workspace = SimpleNamespace(store=Mock(), recommendations=SimpleNamespace(read_job=Mock(return_value=captured)),
                                     profile=lambda: profile, client=lambda role: auditor if role == "auditor" else worker,
-                                    resumes=Mock(categories=lambda: ["General", "Tech"]))
+                                    resumes=Mock(categories=lambda: ["General", "Tech"], list=lambda: []))
         workspace.store.get.return_value, workspace.store.all.return_value = job, []
         browser = Mock()
         browser.call.return_value = {"url": captured["employer_url"], "title": "Example Co — Analyst Intern",
@@ -231,10 +232,10 @@ class RecommendationChecksTests(unittest.TestCase):
         with patch("applydesk.applications.public_job_url", side_effect=lambda value: value):
             app.prepare(job["id"])
         self.assertIn("SQL required", worker.ask.call_args.args[1]["page"]["text"])
-        self.assertEqual(workspace.store.job.call_args.kwargs["status"], "needs_review")
+        self.assertEqual(workspace.store.job.call_args.kwargs["analysis"]["required"], stricter["required"])
         self.assertEqual([call.args[0] for call in browser.call.call_args_list], ["open"])
-        app._resume.assert_not_called()
-        app._walk.assert_not_called()
+        app._resume.assert_called_once()
+        app._walk.assert_called_once()
 
 
 if __name__ == "__main__":

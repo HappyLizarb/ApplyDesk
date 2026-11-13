@@ -56,7 +56,7 @@ def profile_draft(result):
 
 
 def application_draft(result, inputs):
-    """Every mandatory match needs source text and confirmed profile evidence."""
+    """Qualifications are assumed; observed requirements and specific personal claims stay grounded."""
     object_fields(result, ["analysis", "answers", "form_text", "cover_requirement", "cover_edits"])
     analysis = object_fields(result["analysis"], ["category", "required", "requirements_complete"], ["no_required_quote"])
     if analysis["category"] not in inputs["resume_categories"]:

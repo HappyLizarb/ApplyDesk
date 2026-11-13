@@ -4,12 +4,12 @@ import functools
 import uuid
 
 from .application_client import ApplicationClient
-from .application_policy import SCOPE_PROMPT, authorized_request, search_scope, validate_scope
+from .application_intent import resolve_intent
+from .application_policy import SCOPE_PROMPT, search_scope, validate_scope
 from .application_session import ApplicationSession
 from .application_submission import attempt_key, submit_ready
 from .applications import Applications
 from .chatgpt_transport import AccountError
-from .recommendation_wait import find_jobs
 from .storage import now
 
 
@@ -28,28 +28,64 @@ class ApplicationAutomation:
                 from .application_submission import finish_attempt
                 finish_attempt(self.w, job, attempt, "submission_unknown", {})
 
-    def start(self, limit, locations):
-        """Derive permission from the current human turn, never a listing or automatic draft task."""
+    def start(self):
+        """Continue the user's agreed plan across follow-ups without resetting its budget."""
         self.engine.check_active()
         message = (self.engine.active or {}).get("message")
         if not message or message.get("role") != "user":
-            raise ValueError("An unattended run needs a new chat request with its limit and target locations.")
-        targets = authorized_request(message["text"], limit, locations)
-        prior = next((run for run in self.w.store.all("application_run") if run["message_id"] == message["id"]), None)
+            raise ValueError("Application runs need a user conversation; automatic draft tasks cannot submit.")
+        platforms = [key for key, value in self.w.recommendations.preferences().items() if value["enabled"]]
+        prior = next((run for run in self.w.store.all("application_run")
+                      if message["id"] in [run.get("message_id"), *run.get("message_ids", [])]), None)
         if prior:
-            return prior
+            return self._resume_current(prior, platforms)
+        intent = resolve_intent(self.engine)
         profile = self.w.profile()
-        scope = search_scope(profile, targets)
+        scope = search_scope(profile, intent["locations"])
         if not self.w.resumes.list():
             raise ValueError("Upload a finished resume in Documents before starting unattended applications.")
-        platforms = [key for key, value in self.w.recommendations.preferences().items() if value["enabled"]]
-        if not platforms:
-            raise ValueError("Connect a job platform in Profile first.")
-        self.run = {"id": uuid.uuid4().hex, "message_id": message["id"], "instruction": message["text"], "limit": limit, "scope": scope,
-                    "profile_revision": profile["revision"], "account_id": self.engine.accounts.state()["active"],
-                    "status": "running", "started_at": now(), "results": [], "searches": [], "current_job": None}
+        used = sum(item.get("run_id") == intent["run_id"] for item in self.w.store.all("submission_attempt")) if intent["action"] == "continue" else 0
+        if used < intent["limit"] and not self._candidates(platforms):
+            return {"status": "needs_jobs", "message": "Search and save matching job listings, then continue this run.",
+                    "run_id": intent["run_id"], "remaining_count": intent["limit"] - used}
+        self.engine.check_active()
+        self.run = self._begin(intent, message, profile, scope)
         self._save()
-        return self._execute(platforms)
+        if self.run["attempted_count"] >= self.run["limit"]:
+            self.run.update(status="complete", finished_at=now())
+            self._save()
+            return self.run
+        return self._execute(self._candidates(platforms))
+
+    def _resume_current(self, run, platforms):
+        """Newly saved jobs share this turn's original grant; prior results are never retried."""
+        used = sum(item.get("run_id") == run["id"] for item in self.w.store.all("submission_attempt"))
+        processed = {item["job_id"] for item in run["results"]}
+        jobs = [job for job in self._candidates(platforms) if job["id"] not in processed]
+        if run["status"] != "complete" or used >= run["limit"] or not jobs:
+            return run
+        self.run = run
+        self.check_active()
+        self.run.update(status="running", current_job=None)
+        self.run.pop("finished_at", None)
+        self._save()
+        return self._execute(jobs)
+
+    def _begin(self, intent, message, profile, scope):
+        """Reuse the original ledger, refreshing only the plan explicitly resolved from chat."""
+        run = self.w.store.get("application_run", intent["run_id"]) if intent["action"] == "continue" else None
+        if intent["action"] == "continue" and not run:
+            raise ValueError("The previous application run is unavailable. Review its status before continuing.")
+        previous_hash = run.get("resume_sha256") if run and run.get("resume_id") == intent["resume_id"] else None
+        record = self.w.resumes.selected(intent["resume_id"], previous_hash) if intent["resume_id"] else None
+        run = run or {"id": uuid.uuid4().hex, "message_id": message["id"], "started_at": now(), "results": [], "searches": []}
+        run.update(instruction=intent["instruction"], limit=intent["limit"], scope=scope, status="running",
+                   authorization_message_id=intent["authorization_message_id"], conversation_id=self.engine.history.since,
+                   profile_revision=profile["revision"], account_id=self.engine.accounts.state()["active"], current_job=None,
+                   resume_id=record["id"] if record else "", resume_sha256=record["source_sha256"] if record else "")
+        run["message_ids"] = list(dict.fromkeys([*run.get("message_ids", []), message["id"]]))
+        run.pop("finished_at", None)
+        return run
 
     def _save(self):
         """Persist concise progress independently of the master's streamed explanation."""
@@ -63,28 +99,16 @@ class ApplicationAutomation:
         """Changed profile facts, account identity, or Pause revoke the current run's authority."""
         self.engine.check_active()
         if self.w.profile()["revision"] != self.run["profile_revision"]:
-            raise InterruptedError("Profile changed. Start a new application run after reviewing your facts.")
+            raise InterruptedError("Profile changed. Confirm the updated profile, then continue this run.")
         if self.engine.accounts.state()["active"] != self.run["account_id"]:
             raise InterruptedError("Account changed. Start a new application run to continue.")
+        if self.run.get("resume_id"):
+            self.w.resumes.selected(self.run["resume_id"], self.run["resume_sha256"])
 
-    def _execute(self, platforms):
-        """Scan each connected source once, then process eligible saved jobs up to the requested cap."""
-        available = []
+    def _execute(self, jobs):
+        """Process saved jobs in tracker order; the master chooses where and when to search."""
         try:
-            for platform in platforms:
-                self.check_active()
-                try:
-                    report = find_jobs(self.engine, platform)
-                    security = any(word in str(report.get("issues", [])).lower() for word in ("captcha", "security check", "challenge"))
-                    if report.get("status") in {"complete", "no_results", "blocked"} and not security:
-                        available.append(platform)
-                    self.run["searches"].append({key: report.get(key) for key in ("platform", "status", "message", "issues", "added_count")})
-                except InterruptedError:
-                    raise
-                except Exception as exc:
-                    self.run["searches"].append({"platform": platform, "status": "error", "message": str(exc)[:1000]})
-                self._save()
-            for job in self._candidates(available):
+            for job in jobs:
                 self.check_active()
                 used = sum(attempt.get("run_id") == self.run["id"] for attempt in self.w.store.all("submission_attempt"))
                 if used >= self.run["limit"]:
@@ -103,8 +127,11 @@ class ApplicationAutomation:
         candidates, identities = [], set()
         for job in self.w.store.all("job"):
             source = job.get("recommendation_source") or {}
+            public = job.get("public_source") or {}
+            eligible_source = (source.get("platform") in platforms and source.get("complete") is True
+                               if source else public.get("complete") is True)
             identity = attempt_key(job)
-            if (source.get("platform") not in platforms or source.get("complete") is not True or job.get("removed_at")
+            if (not eligible_source or job.get("removed_at")
                     or job["status"] in {"submitted", "submitting", "submission_unknown"} or identity in identities
                     or self.w.store.get("submission_attempt", identity)):
                 continue
@@ -118,7 +145,8 @@ class ApplicationAutomation:
         self._save()
         client = functools.partial(ApplicationClient, self.engine, job_id=job["id"])
         scope = functools.partial(self._scope, client)
-        application = Applications(self.w, client, self.check_active, scope, functools.partial(ApplicationSession, self.engine))
+        choice = {"id": self.run["resume_id"], "sha256": self.run["resume_sha256"]} if self.run.get("resume_id") else None
+        application = Applications(self.w, client, self.check_active, scope, functools.partial(ApplicationSession, self.engine), resume_choice=choice)
         try:
             ready = application.prepare(job["id"])
             if ready["status"] != "ready":
@@ -143,12 +171,8 @@ class ApplicationAutomation:
     def _scope(self, client, analysis, page):
         """Independent scope reviews run on fresh source text before any personal fields are entered."""
         self.check_active()
-        payload = {"allowed": self.run["scope"], "request": self.run["instruction"], "source_text": page["text"], "company": analysis["company"], "title": analysis["title"]}
+        payload = {"preferences": self.run["scope"], "request": self.run["instruction"], "source_text": page["text"], "company": analysis["company"], "title": analysis["title"]}
         if any(requirement["text"] not in page["text"] for requirement in analysis["required"]):
             raise ValueError("Each mandatory qualification must quote the captured job description exactly.")
-        decisions = []
         for role in ("application", "auditor"):
-            decisions.append(validate_scope(client(role).ask(SCOPE_PROMPT, payload), self.run["scope"], page["text"]))
-        if any(decisions[0][key] != decisions[1][key] for key in ("industry", "level", "location")):
-            raise ValueError("The independent agents disagree about this job's search-preference match.")
-        analysis["category"] = decisions[0]["industry"]
+            validate_scope(client(role).ask(SCOPE_PROMPT, payload), self.run["scope"], page["text"])

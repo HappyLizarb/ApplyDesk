@@ -38,32 +38,44 @@ class StubClient:
 
 
 class EligibilityTests(unittest.TestCase):
-    """Eligibility remains conservative even when a model confidently says yes."""
+    """Assumed qualifications do not create personal facts or waive source validation."""
 
     def test_confirmed_work_evidence_passes(self):
         """Required professional experience can cite confirmed employment."""
         self.assertTrue(ai.validate_eligibility(ANALYSIS, PROFILE)["eligible"])
 
-    def test_missing_unconfirmed_and_coursework_evidence_fail(self):
-        """No unsupported source can be substituted for professional experience."""
-        for ids in ([], ["unknown"], ["draft"], ["class"], ["work", "class"]):
+    def test_assumed_qualifications_need_no_personal_evidence(self):
+        """An unrecorded qualification passes without adding facts or asserting a supported match."""
+        profile = copy.deepcopy(PROFILE)
+        analysis = copy.deepcopy(ANALYSIS)
+        analysis["required"][0].update(met=False, evidence_ids=[])
+        self.assertTrue(ai.validate_eligibility(analysis, profile)["eligible"])
+        self.assertFalse(analysis["required"][0]["met"])
+        self.assertEqual(profile, PROFILE)
+
+    def test_invented_and_unconfirmed_evidence_fail(self):
+        """Assumed qualification uses empty IDs, never fabricated supporting facts."""
+        for ids in (["unknown"], ["draft"], "work"):
             with self.subTest(ids=ids):
                 analysis = copy.deepcopy(ANALYSIS)
                 analysis["required"][0]["evidence_ids"] = ids
                 self.assertFalse(ai.validate_eligibility(analysis, PROFILE)["eligible"])
 
     def test_missing_requirements_and_incomplete_extraction_fail(self):
-        """Empty, absent and incomplete requirement sets cannot silently pass."""
+        """Absent and incomplete requirement sets cannot silently pass."""
         for analysis in ({}, {"required": []}, {"required": ANALYSIS["required"]}):
             self.assertFalse(ai.validate_eligibility(analysis, PROFILE)["eligible"])
 
-    def test_explicit_no_qualification_statement_requires_source_quote(self):
-        """A bare model assertion of no requirements is insufficient."""
+    def test_complete_listing_can_have_no_explicit_requirements(self):
+        """Job descriptions need no artificial no-qualifications sentence."""
         analysis = {"required": [], "requirements_complete": True,
-                    "no_required_quote": "No minimum qualifications are required."}
-        self.assertFalse(ai.validate_eligibility(analysis, PROFILE)["eligible"])
-        analysis["source_text"] = analysis["no_required_quote"]
+                    "source_text": "Edit reference works with a collaborative team."}
         self.assertTrue(ai.validate_eligibility(analysis, PROFILE)["eligible"])
+
+    def test_requirement_must_be_observed_when_source_is_supplied(self):
+        """The qualification assumption never permits invented listing requirements."""
+        analysis = {**ANALYSIS, "source_text": "An unrelated description."}
+        self.assertFalse(ai.validate_eligibility(analysis, PROFILE)["eligible"])
 
     def test_false_string_and_duplicate_fact_ids_fail(self):
         """Neither truthy strings nor conflicting evidence identities count."""
@@ -81,13 +93,14 @@ class EligibilityTests(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertFalse(client.calls)
 
-    def test_independent_auditor_finds_an_omitted_requirement(self):
-        """An additional unsatisfied requirement blocks the original match."""
+    def test_independent_auditor_honors_assumed_new_requirements(self):
+        """An observed additional qualification does not demand new personal evidence."""
         result = copy.deepcopy(ANALYSIS)
         result.update(passed=True, issues=[])
         result["required"].append({"text": "Security clearance", "met": False,
                                    "evidence_ids": []})
-        self.assertFalse(ai.audit_eligibility(StubClient(result), PROFILE, "job", ANALYSIS)["passed"])
+        page = ANALYSIS["required"][0]["text"] + ". Security clearance"
+        self.assertTrue(ai.audit_eligibility(StubClient(result), PROFILE, page, ANALYSIS)["passed"])
 
 
 class IntelligenceTests(unittest.TestCase):

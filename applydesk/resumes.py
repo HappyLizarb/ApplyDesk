@@ -58,3 +58,14 @@ class ResumeLibrary:
             raise ValueError("Upload and tag a resume for this industry or General in Documents.")
         self.w.docs.verify(record["id"])
         return record
+
+    def selected(self, document_id, expected_sha256=None):
+        """An explicitly named upload must remain active and match the run's original bytes."""
+        with self.w.lock:
+            record = next((row for row in self.list() if row["id"] == document_id), None)
+            if not record or record["kind"] != "resume":
+                raise ValueError("The selected resume is no longer available in Documents. Choose a current upload.")
+            self.w.docs.verify(record["id"])
+            if expected_sha256 is not None and record["source_sha256"] != expected_sha256:
+                raise ValueError("The selected resume changed since this run was agreed. Choose the file again.")
+            return record

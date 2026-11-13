@@ -77,6 +77,8 @@ async function routeRequest(route, state) {
   if (mutation && !finalPath && telemetry(url)) {
     recordBlocked(state, request, 'Unverified page telemetry.');return route.abort('blockedbyclient');
   }
+  // Research has no account cookies, file uploads, form actions, or application commands.
+  if (state.research && !finalPath) return route.continue();
   const permit = state.submission;
   if (permit && Date.now() < permit.expires && mutation && !permit.used && url.origin === permit.origin && (!permit.url || request.url() === permit.url)) {
     permit.used = true;return route.continue();
@@ -117,7 +119,7 @@ async function installGuards(context, state) {
   await context.routeWebSocket('**/*', async socket => {
     try { await assertPublicUrl(socket.url().replace(/^ws/, 'http'), state.allowLocal); }
     catch { return socket.close(); }
-    if (state.manual || (state.source && !FINAL_PATH.test(new URL(socket.url()).pathname))) socket.connectToServer();
+    if (state.manual || ((state.source || state.research) && !FINAL_PATH.test(new URL(socket.url()).pathname))) socket.connectToServer();
     else {
       const url = new URL(socket.url());
       state.blocked.push({method: 'WEBSOCKET', url: `${url.origin}${url.pathname}`, reason: state.source ? 'Possible final submission endpoint.' : 'Unverified WebSocket requires manual control.'});

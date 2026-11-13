@@ -14,6 +14,20 @@ class RecommendationRecoveryTests(unittest.TestCase):
     tearDown = fixtures.RecommendationTests.tearDown
     finished = fixtures.RecommendationTests.finished
 
+    def test_historic_false_zero_is_displayed_as_capture_error_without_rewriting_records(self):
+        """Only contradictory blocked zero messages change in memory; saved reports remain untouched."""
+        for issues, expected in ((["", "The description could not be read."], "The description could not be read."),
+                                 ([], "The listings could not be read. Try the search again.")):
+            saved = {"status": "blocked", "message": "Found 0 matching job(s).", "issues": issues}
+            self.w.store.put("recommendation", "linkedin", saved)
+            self.assertEqual(self.w.recommendations.state()["linkedin"]["message"], expected)
+            self.assertEqual(self.w.store.get("recommendation", "linkedin"), saved)
+        for status, message in (("blocked", "Source needs sign-in."), ("no_results", "Found 0 matching job(s).")):
+            saved = {"status": status, "message": message, "issues": ["Earlier issue"]}
+            self.w.store.put("recommendation", "linkedin", saved)
+            self.assertEqual(self.w.recommendations.state()["linkedin"], saved)
+        self.browser.assert_not_called()
+
     def test_refresh_repairs_untouched_incomplete_rows_without_profile_or_models(self):
         # Both legacy new placeholders and current needs-review rows can recover in place.
         for index, previous_status in enumerate(("new", "needs_review")):

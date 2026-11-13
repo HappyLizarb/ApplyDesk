@@ -46,6 +46,7 @@ class BrowserFixture:
             return self.fill(params)
         if method == "next":
             self.page = self.second
+            self.page["snapshot_id"] = "next-" + str(len(self.methods))
         return copy.deepcopy(self.page)
 
     def fill(self, params):
@@ -84,7 +85,7 @@ class WorkflowTests(unittest.TestCase):
                                asset=lambda name: self.root / name, verify=lambda _: True)
         client = SimpleNamespace(ask=lambda *_args, **_kwargs: {"passed": True, "issues": []})
         self.w = SimpleNamespace(root=self.root, store=self.store, docs=docs, profile=lambda: self.profile, client=lambda _: client, sessions={})
-        self.w.resumes = SimpleNamespace(categories=lambda: ["General"])
+        self.w.resumes = SimpleNamespace(categories=lambda: ["General"], list=lambda: [])
         self.app = Applications(self.w)
         self.app.documents.require_review = Mock(return_value={"passed": True})
         self.job = self.store.add_job("https://example.test/job")
@@ -94,6 +95,33 @@ class WorkflowTests(unittest.TestCase):
         """Remove only the temporary synthetic workspace."""
         self.store.close()
         self.temp.cleanup()
+
+    def test_application_can_advance_through_more_than_eight_pages(self):
+        """Real progress can continue through a long form without an arbitrary page cap."""
+        pages = [{"snapshot_id": str(index), "url": "https://example.test/apply", "fields": [],
+                  "buttons": [{"action": "advance", "disabled": False, "field_id": "next"}]} for index in range(11)]
+        pages[-1]["buttons"] = [{"action": "final_or_ambiguous"}]
+        browser = Mock()
+        browser.call.side_effect = pages[1:]
+        self.app._fill_step = Mock(side_effect=lambda _session, _job, _profile, _analysis, page, _ledger: page)
+        self.app._finish = Mock(return_value={"status": "ready_for_review"})
+        result = self.app._walk(browser, self.job, self.profile, {}, pages[0])
+        self.assertEqual(result["status"], "ready_for_review")
+        self.assertEqual(browser.call.call_count, 10)
+        self.assertTrue(all(call.args[0] == "next" for call in browser.call.call_args_list))
+
+    def test_unchanged_application_page_reports_the_actual_blocker(self):
+        """An unresponsive Next button does not repeat indefinitely or imply submission."""
+        page = {"snapshot_id": "same", "url": "https://example.test/apply", "fields": [],
+                "buttons": [{"action": "advance", "disabled": False, "field_id": "next"}]}
+        browser = Mock()
+        browser.call.return_value = page
+        self.app._fill_step = Mock(return_value=page)
+        self.app._finish = Mock()
+        with self.assertRaisesRegex(ValueError, "did not advance"):
+            self.app._walk(browser, self.job, self.profile, {}, page)
+        browser.call.assert_called_once()
+        self.app._finish.assert_not_called()
 
     def run_walk(self, browser):
         """Exercise the real coordinator through its page preparation loop."""

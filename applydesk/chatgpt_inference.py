@@ -36,6 +36,7 @@ class ChatGPTRunner:
         identity = "local:" + uuid.uuid4().hex
         record = {"id": identity, "role": role, "model": selection["model"], "thinking": selection["thinking"],
                   "source": self.accounts.state().get("source", "chatgpt"),
+                  "turn_id": (task or {}).get("turn_id"),
                   "task_id": (task or {}).get("id"), "version": (task or {}).get("version"), "status": "running", "started_at": now()}
         self.w.store.put("agent_run", identity, record)
         self.current = record

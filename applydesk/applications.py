@@ -1,13 +1,15 @@
-"""Prepare applications conservatively; only the human can submit a job application."""
+"""Prepare applications for review and separately authorized submission runs."""
 
 from urllib.parse import urlparse
 
 from .application_steps import attachment_plan, audit_snapshot, authenticate, cover_text_plan
+from .agent_context import resume_sources, source_record
 from .browser_bridge import BrowserSession
 from .document_tasks import DocumentTasks
 from .mapping import document_kind, normalize, plan_fields
 from .profile import model_profile, public_job_url
 from .readiness import verify_readiness
+from .public_source import validate_public_analysis, validate_public_page, validate_public_source
 from .application_submission import DECLARATION
 from .recommendation_checks import employer_evidence, employer_target, process_issues, scoped_page, validate_employer_page, validate_source, validate_native_page
 
@@ -15,13 +17,14 @@ from .recommendation_checks import employer_evidence, employer_target, process_i
 class Applications:
     """Own per-job browser sessions and the readiness state machine."""
 
-    def __init__(self, workspace, client=None, checkpoint=None, scope_check=None, session_factory=None):
+    def __init__(self, workspace, client=None, checkpoint=None, scope_check=None, session_factory=None, resume_choice=None):
         self.w = workspace
         self.client = client or (lambda role: self.w.client(role))
         self.checkpoint = checkpoint or (lambda: None)
         self.scope_check = scope_check
         self.session_factory = session_factory or BrowserSession
         self.documents = DocumentTasks(workspace, client)
+        self.resume_choice = dict(resume_choice) if resume_choice is not None else None
 
     def _session(self, job):
         """Separate persistent job sessions retain the exact live handoff tab."""
@@ -49,7 +52,7 @@ class Applications:
             raise
 
     def _prepare(self, job):
-        """Screen against all mandatory qualifications before interacting with a form."""
+        """Review listing details and process prerequisites before interacting with a form."""
         profile = self.w.profile()
         if not profile["confirmed"]:
             raise ValueError("Review and confirm your profile first.")
@@ -79,6 +82,8 @@ class Applications:
         if source and source.get("employer_url"):
             validate_employer_page(source, page)
         job = self.w.store.get("job", job["id"])
+        if job.get("public_source"):
+            validate_public_page(job["public_source"], page, listing=False)
         self._resume(job, analysis)
         return self._walk(session, job, profile, analysis, page)
 
@@ -108,20 +113,32 @@ class Applications:
                              details_origin="captured", qualification_status="unverified")
             return None, page
         host = (urlparse(job["url"]).hostname or "").lower()
-        if any(host == domain or host.endswith("." + domain) for domain in ("linkedin.com", "joinhandshake.com")):
+        if not job.get("public_source") and any(host == domain or host.endswith("." + domain) for domain in ("linkedin.com", "joinhandshake.com")):
             raise ValueError("Import this LinkedIn or Handshake listing through Find jobs before preparing it. A scoped source capture is required.")
+        public = job.get("public_source")
+        if public:
+            validate_public_source(public)
         session = self._session(job)
-        return session, session.call("open", {"url": job["url"]})
+        page = session.call("open", {"url": job["url"]})
+        return session, validate_public_page(public, page) if public else page
 
     def _screen(self, job, profile, page):
-        """Require both evidence checks and an independent review of omitted requirements."""
+        """Review listing completeness and prerequisites while accepting assumed qualifications."""
         from .intelligence import analyze_job, audit_eligibility, validate_eligibility
         context = model_profile(profile)
         context["available_resume_categories"] = self.w.resumes.categories()
+        if self.resume_choice is not None:
+            selected = self.w.resumes.selected(self.resume_choice["id"], self.resume_choice["sha256"])
+            context["resumes"] = [source_record(self.w, selected["id"])]
+        else:
+            context["resumes"] = resume_sources(self.w)
         analysis = analyze_job(self.client("application"), context, page)
+        if page.get("public_source"):
+            validate_public_analysis(page["public_source"], analysis)
         eligibility = validate_eligibility(analysis, profile)
-        if page.get("recommendation_source"):
-            eligibility["reasons"].extend(process_issues(analysis, page["recommendation_source"], page["text"]))
+        source = page.get("recommendation_source") or page.get("public_source")
+        if source:
+            eligibility["reasons"].extend(process_issues(analysis, source, page["text"]))
             eligibility["eligible"] = eligibility["eligible"] and not eligibility["reasons"]
         if eligibility["eligible"]:
             audit = audit_eligibility(self.client("auditor"), context, session_page(page), analysis)
@@ -134,13 +151,14 @@ class Applications:
         if not eligibility["eligible"]:
             status = "needs_review" if page.get("recommendation_source") else "skipped"
             self.w.store.job(job["id"], status=status)
-            self.w.store.event(job["id"], f"{status}: mandatory qualifications or prerequisites are not fully supported")
+            self.w.store.event(job["id"], f"{status}: application details or process prerequisites need review")
             return None
         return analysis
 
     def _resume(self, job, analysis):
-        """Select the current uploaded industry resume, falling back only to General."""
-        record = self.w.resumes.select(analysis["category"])
+        """Honor a run's exact uploaded resume; only unspecified choices use category fallback."""
+        record = (self.w.resumes.selected(self.resume_choice["id"], self.resume_choice["sha256"])
+                  if self.resume_choice is not None else self.w.resumes.select(analysis["category"]))
         self.checkpoint()
         job["resume_id"] = record["id"]
         self.w.store.job(job["id"], resume_id=record["id"])
@@ -161,9 +179,13 @@ class Applications:
 
     def _walk(self, session, job, profile, analysis, page):
         """Advance only through verified fields and explicitly safe page transitions."""
-        ledger = {}
-        for step in range(8):
-            self.w.store.event(job["id"], f"Inspecting application step {step + 1}")
+        ledger, seen, step = {}, set(), 0
+        while True:
+            if page["snapshot_id"] in seen:
+                raise ValueError("The application page did not advance. Review the current page before continuing.")
+            seen.add(page["snapshot_id"])
+            step += 1
+            self.w.store.event(job["id"], f"Inspecting application step {step}")
             self.w.store.job(job["id"], live_url=page["url"])
             page = self._fill_step(session, job, profile, analysis, page, ledger)
             if page.get("intervention"):
@@ -177,7 +199,6 @@ class Applications:
                 page = session.call("next", {"snapshot_id": page["snapshot_id"], "field_id": next_buttons[0]["field_id"]})
                 continue
             return self._finish(job, profile, page, list(ledger.values()))
-        raise ValueError("The form kept changing or exceeded eight steps. Continue with manual control.")
 
     def _fill_step(self, session, job, profile, analysis, page, ledger):
         """Plan, fill, and audit a single page, retaining actual upload provenance."""
@@ -225,5 +246,5 @@ class Applications:
 
 def session_page(page):
     """Pass actual inspected page data without worker interpretation to the auditor."""
-    keys = ("url", "title", "text", "fields", "buttons", "recommendation_source")
+    keys = ("url", "title", "text", "fields", "buttons", "recommendation_source", "public_source")
     return {key: page[key] for key in keys if key in page}

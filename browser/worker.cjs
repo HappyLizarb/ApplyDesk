@@ -12,6 +12,7 @@ const {sourceCommand} = require('./recommendations.cjs');
 const {applicationEntry, submitApplication} = require('./submission.cjs');
 const {jobLink} = require('./recommendations-url.cjs');
 const {waitForJob} = require('./recommendations-dom.cjs');
+const {show} = require('./window.cjs');
 
 // A personal browser must keep native credential protection and security warnings enabled.
 const SECURITY_TEST_FLAGS = ['--password-store=basic', '--use-mock-keychain',
@@ -22,6 +23,7 @@ const SECURITY_TEST_FLAGS = ['--password-store=basic', '--use-mock-keychain',
 // A dedicated Chrome profile keeps each application's live handoff session intact.
 async function start(options) {
   if (options.source && !['linkedin', 'handshake'].includes(options.source)) throw new Error('Unknown recommendation source.');
+  if (options.research && (options.source || options.applicationSource)) throw new Error('Research uses a separate browser profile.');
   fs.mkdirSync(options.dataRoot, {recursive: true});
   const headless = !!options.headless;
   const context = await chromium.launchPersistentContext(options.dataRoot, {
@@ -30,7 +32,7 @@ async function start(options) {
     viewport: {width: 1280, height: 900}, serviceWorkers: 'block', acceptDownloads: false,
     args: ['--enable-automation', '--disable-background-networking', '--disable-sync', '--no-first-run'],
   });
-  const state = {manual: !!(options.source && options.sourceManual), source: options.source || null,
+  const state = {manual: !!(options.source && options.sourceManual), source: options.source || null, research: !!options.research,
     allowLocal: !!options.allowLocal, blocked: [], auth: null, applicationSource: options.applicationSource || null, phase: 'reading',
     uploadRoots: options.uploadRoots || [options.dataRoot]};
   await installGuards(context, state);
@@ -63,13 +65,16 @@ async function focus(session, params) {
 // The exposed command set contains no arbitrary script, keypress, or generic click tool.
 async function dispatch(session, method, params) {
   const {page, state} = session;
+  if (state.research && !['open', 'snapshot', 'close'].includes(method)) throw new Error('Web research supports page reads. Use the application workflow for forms.');
   if (state.source && method !== 'close') return sourceCommand(session, method, params, restartSource);
   if (method.startsWith('source_')) throw new Error('A dedicated recommendation session is required.');
   if (method === 'open') {
     if (state.manual) throw new Error('Close and reopen this browser session before resuming automation.');
     await assertPublicUrl(params.url, state.allowLocal);
+    if (!session.options.headless && !state.research) await show(session);
     state.blocked = [];
     await page.goto(params.url, {waitUntil: 'domcontentloaded', timeout: 30000});
+    if (state.research) await settleResearchPage(page);
     if (state.applicationSource && !state.allowLocal) {
       const job = jobLink(params.url, state.applicationSource);
       if (!job) throw new Error('The platform application needs an observed job listing URL.');
@@ -78,6 +83,7 @@ async function dispatch(session, method, params) {
     return inspect(page, state);
   }
   if (method === 'snapshot') return inspect(page, state);
+  if (method === 'show') return show(session);
   if (method === 'fill') {
     if (state.applicationSource) state.phase = 'editing';
     return fill(page, state, params);
@@ -89,6 +95,19 @@ async function dispatch(session, method, params) {
   if (method === 'focus') return focus(session, params);
   if (method === 'close') { await session.context.close(); return {closed: true}; }
   throw new Error('Unknown browser command.');
+}
+
+// Read after client rendering settles, while bounding pages with continuous background traffic.
+async function settleResearchPage(page) {
+  await page.waitForLoadState('networkidle', {timeout: 10000}).catch(() => {});
+  let previous = '', stable = 0;
+  for (let index = 0; index < 12; index++) {
+    await page.waitForTimeout(250);
+    const text = await page.locator('body').innerText({timeout: 3000});
+    stable = text.length >= 150 && text === previous ? stable + 1 : 0;
+    if (stable >= 2) return;
+    previous = text;
+  }
 }
 
 // Remove submitted values from driver exceptions before returning them to application logs.

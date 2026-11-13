@@ -18,14 +18,16 @@ class BrowserError(RuntimeError):
 class BrowserSession:
     """Own one persistent browser profile without exposing arbitrary browser tools."""
 
-    def __init__(self, data_root, *, headless=False, allow_local=False, upload_roots=None, source=None, application_source=None):
+    def __init__(self, data_root, *, headless=False, allow_local=False, upload_roots=None, source=None, application_source=None, research=False):
         if source not in {None, "linkedin", "handshake"}:
             raise BrowserError("Unknown recommendation source.")
         if application_source not in {None, "linkedin", "handshake"} or (source and application_source):
             raise BrowserError("Choose a separate recommendation or application session.")
+        if research and (source or application_source):
+            raise BrowserError("Web research uses its own browser session.")
         self.data_root = Path(data_root).resolve()
         self.options = {"dataRoot": str(self.data_root), "headless": headless,
-                        "allowLocal": allow_local, "source": source, "applicationSource": application_source,
+                        "allowLocal": allow_local, "source": source, "applicationSource": application_source, "research": research,
                         "uploadRoots": [str(Path(p).resolve()) for p in (upload_roots or [data_root])]}
         self.process = None
         self.messages = queue.Queue()
@@ -66,7 +68,9 @@ class BrowserSession:
 
     # Every browser request is serialized and paired with its own response identifier.
     def call(self, method, params=None):
-        methods = {"source_login", "source_status", "source_scan", "source_job", "close"} if self.options["source"] else {"open", "snapshot", "fill", "next", "authenticate", "application_entry", "submit", "focus", "close"}
+        methods = {"source_login", "source_status", "source_scan", "source_job", "close"} if self.options["source"] else {"open", "snapshot", "fill", "next", "authenticate", "application_entry", "submit", "focus", "show", "close"}
+        if self.options["research"]:
+            methods = {"open", "snapshot", "close"}
         if method not in methods:
             raise BrowserError("Unsupported browser method.")
         with self.lock:

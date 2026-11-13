@@ -18,7 +18,8 @@ function collectPage() {
     .map(element => describeField(element, identity, label, clean));
   const buttons = [...root.querySelectorAll('button,input[type="submit"],input[type="button"],[role="button"]')]
     .filter(visible).map(element => describeButton(element, identity, clean));
-  return {url: location.href, title: document.title, text: document.body?.innerText.slice(0, 60000) || '', fields, buttons,
+  const text = document.body?.innerText || '';
+  return {url: location.href, title: document.title, text: text.slice(0, 60000), text_truncated: text.length > 60000, fields, buttons,
     links: [...document.querySelectorAll('a[href]')].filter(visible).slice(0, 300)
       .map(element => ({id: identity(element), text: clean(element.innerText), href: element.href, url: element.href})),
     warnings: [...([...document.querySelectorAll('iframe')].filter(visible).length ? ['Embedded frames require manual inspection.'] : []),
@@ -49,10 +50,11 @@ function describeField(element, identity, label, clean) {
 function describeButton(element, identity, clean) {
   const form = element.form || element.closest('form');
   const context = element.closest('form,section,main,[role="form"],[role="dialog"],dialog,[data-hook="right-content"]');
-  const authInputs = form ? [...form.querySelectorAll('input,select,textarea')].filter(input => !['hidden', 'submit', 'button'].includes(input.type)) : [];
+  // Hidden inputs may select another employer; their meaning cannot be inferred safely.
+  const authInputs = form ? [...form.elements].filter(input => ['INPUT', 'SELECT', 'TEXTAREA'].includes(input.tagName) && !['submit', 'button'].includes(input.type)) : [];
   const authNames = /^(user(name)?|email(address)?|password|confirm(password)?|first(name)?|last(name)?|full(name)?|name|remember(me)?|terms|privacy|agree|csrf)$/i;
-  const authOnly = authInputs.every(input => ['email', 'password'].includes(input.type) ||
-    (['text', 'checkbox'].includes(input.type) && authNames.test((input.name || '').replace(/[-_\s]/g, ''))));
+  const authOnly = authInputs.every(input => input.getClientRects().length && getComputedStyle(input).visibility === 'visible' &&
+    (['email', 'password'].includes(input.type) || (['text', 'checkbox'].includes(input.type) && authNames.test((input.name || '').replace(/[-_\s]/g, '')))));
   return {field_id: identity(element), text: clean(element.innerText || element.value || element.getAttribute('aria-label')),
     type: element.type || '', disabled: !!element.disabled || element.getAttribute('aria-disabled') === 'true',
     form_id: form ? identity(form) : null, context_id: context ? identity(context) : null, context_text: clean(context?.innerText).slice(0, 12000),
@@ -68,7 +70,7 @@ async function inspect(page, state) {
   const snapshot = await page.evaluate(inspectionScript);
   await hashAttachments(page, snapshot);
   if (page.context().pages().filter(candidate => !candidate.isClosed()).length > 1) snapshot.warnings.push('An additional browser tab opened; manual inspection is required.');
-  const fingerprint = JSON.stringify({url: snapshot.url, text: snapshot.text, fields: snapshot.fields, buttons: snapshot.buttons, warnings: snapshot.warnings});
+  const fingerprint = JSON.stringify({url: snapshot.url, text: snapshot.text, text_truncated: snapshot.text_truncated, fields: snapshot.fields, buttons: snapshot.buttons, warnings: snapshot.warnings});
   snapshot.snapshot_id = crypto.createHash('sha256').update(fingerprint).digest('hex');
   snapshot.guard = {manual: state.manual, mutations_blocked: !state.manual && !state.applicationSource, submission_guarded: !state.manual,
     blocked_requests: state.blocked.filter(item => item.reason !== 'Unverified page telemetry.'),

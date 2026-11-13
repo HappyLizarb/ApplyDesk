@@ -1,4 +1,4 @@
-import {state,h,api,refresh,toast} from './ui.js';
+import {state,h,icon,api,refresh,toast} from './ui.js';
 import {roles} from './agent-settings.js';
 
 let saving=false,renderedSettings='';
@@ -11,7 +11,7 @@ function effortLevels(model) {
 
 // The compact picker exposes four independently saved agent configurations.
 export function agentMenu() {
-  return `<details id="composer-agents"><summary class="agent-menu-trigger" aria-label="Choose agent models and thinking strengths"><span id="composer-model-label"></span><span id="composer-thinking-label"></span><span aria-hidden="true">⌄</span></summary><div class="agent-menu-popover"><div id="composer-agent-rows"></div><p id="agent-menu-status" class="muted small" role="status"></p></div></details>`;
+  return `<details id="composer-agents"><summary class="agent-menu-trigger" aria-label="Choose agent models and thinking strengths"><span id="composer-model-label"></span><span id="composer-thinking-label"></span>${icon('chevron-down')}</summary><div class="agent-menu-popover"><div id="composer-agent-rows"></div><p id="agent-menu-status" class="muted small" role="status"></p></div></details>`;
 }
 
 // Native disclosure and range controls support keyboard use and outside dismissal.
@@ -31,7 +31,8 @@ function agentSlider(role,label,selection,models) {
   const model=models.find(item=>item.id===selection.model),levels=effortLevels(model);
   const index=Math.max(0,levels.indexOf(selection.thinking)),effort=levels[index];
   const options=models.map(item=>`<option value="${h(item.id)}" ${item.id===selection.model?'selected':''}>${h(item.name)}</option>`).join('');
-  return `<section class="agent-menu-row"><div class="agent-slider-heading"><h3>${h(label)}</h3><output class="agent-effort-label" for="${role}-thinking">${h(effort)}</output></div><label class="sr-only" for="${role}-model">${h(label)} model</label><select id="${role}-model" name="${role}.model"><option value="" disabled ${!model?'selected':''}>${selection.model?h(selection.model)+' (unavailable)':'Choose a model'}</option>${options}</select><label class="sr-only" for="${role}-thinking">${h(label)} thinking strength</label><input id="${role}-thinking" class="agent-thinking-slider" type="range" name="${role}.thinking" data-role="${role}" min="0" max="${levels.length-1}" step="1" value="${index}" aria-valuetext="${h(effort)}"></section>`;
+  const placeholder=model?'':`<option value="" disabled selected>${selection.model?h(selection.model)+' (unavailable)':'Choose a model'}</option>`;
+  return `<section class="agent-menu-row"><div class="agent-slider-heading"><h3>${h(label)}</h3><output class="agent-effort-label" for="${role}-thinking">${h(effort)}</output></div><label class="sr-only" for="${role}-model">${h(label)} model</label><select id="${role}-model" name="${role}.model">${placeholder}${options}</select><label class="sr-only" for="${role}-thinking">${h(label)} thinking strength</label><input id="${role}-thinking" class="agent-thinking-slider" type="range" name="${role}.thinking" data-role="${role}" min="0" max="${levels.length-1}" step="1" value="${index}" aria-valuetext="${h(effort)}"></section>`;
 }
 
 // Dragging previews the effort locally; release or a keyboard change saves it once.

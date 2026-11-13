@@ -49,7 +49,7 @@ class ChatHistory:
             messages = [self.live.copy() if item["id"] == self.live["id"] else item for item in messages]
         return messages
 
-    def context(self, current_id):
+    def context(self, current_id, include_ids=False):
         """Bound conversation history and exclude queued user messages from the current turn."""
         messages = sorted(self.w.store.all("chat_message"), key=lambda item: item["created_at"])
         prior = messages[:next((index for index, item in enumerate(messages) if item["id"] == current_id), len(messages))]
@@ -58,6 +58,9 @@ class ChatHistory:
         for item in reversed(prior[-30:]):
             if size + len(item["text"]) > 50000:
                 break
-            result.insert(0, {"role": item["role"], "content": item["text"]})
+            turn = {"role": item["role"], "content": item["text"]}
+            if include_ids:
+                turn["id"] = item["id"]
+            result.insert(0, turn)
             size += len(item["text"])
         return result

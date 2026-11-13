@@ -18,8 +18,8 @@ function workspace() {
     jobs: [{id: 'job', company: 'Example', title: 'Publishing Editor', status: 'submitted', resume_id: 'resume', cover_state: 'not_required', history: []}],
     recommendation_preferences: {handshake: {enabled: true}, linkedin: {enabled: false}},
     recommendations: {handshake: {status: 'complete', connected: true}},
-    orchestrator: {account: {connected: true, accounts: [], models: [], source: 'chatgpt'}, signin: {status: 'idle'}, settings: {
-      roles: Object.fromEntries(['master', 'application', 'document_reviewer', 'application_auditor'].map(role => [role, {model: '', thinking: 'default'}])), automatic: true},
+    orchestrator: {account: {connected: true, accounts: [], models: [{id: 'test-model', name: 'GPT-6.1-Sol', thinking: ['medium']}], source: 'chatgpt'}, signin: {status: 'idle'}, settings: {
+      roles: Object.fromEntries(['master', 'application', 'document_reviewer', 'application_auditor'].map(role => [role, {model: 'test-model', thinking: 'default'}])), automatic: true},
       paused: false, active: null, current_run: null, error: '', messages: [], runs: [], application_runs: []},
   };
 }
@@ -40,6 +40,10 @@ async function routeRequest(route, fixture) {
       return route.fulfill({json: {removed: true, application_copies_kept: data.document_id === 'resume', cleanup_pending: data.document_id === 'template'}});
     }
     if (url.pathname === '/api/orchestrator/send') return route.fulfill({json: {status: 'queued', message_id: 'message'}});
+    if (url.pathname === '/api/orchestrator/show-application') {
+      fixture.data.tasks = [{id: 'show-application', status: 'done', result: {visible: true}}];
+      return route.fulfill({json: {task: 'show-application'}});
+    }
     if (url.pathname === '/api/recommendations/begin') return route.fulfill({json: {platform: data.platform, run_id: 'connect'}});
     throw new Error('Unexpected mutation: ' + url.pathname);
   }
@@ -107,8 +111,48 @@ async function layoutChecks(page, fixture) {
     if (process.env.APPLYDESK_TEST_SCREENSHOTS) {
       fs.mkdirSync(process.env.APPLYDESK_TEST_SCREENSHOTS, {recursive: true});
       await page.screenshot({path: path.join(process.env.APPLYDESK_TEST_SCREENSHOTS, `documents-${width}-${theme}.png`)});
+      await page.click('#toggle-assistant');
+      await page.locator('#assistant-form').screenshot({path: path.join(process.env.APPLYDESK_TEST_SCREENSHOTS, `composer-${width}-${theme}.png`)});
     }
   }
+}
+
+// Only genuinely absent saved models receive an unavailable placeholder.
+async function modelCatalogChecks(page, fixture) {
+  fixture.data = workspace();
+  for (const available of [true, false]) {
+    fixture.data.orchestrator.account.models = available ? workspace().orchestrator.account.models : [];
+    await page.goto(origin + '/#documents');
+    await page.reload();
+    await page.click('#toggle-assistant');
+    await page.click('#composer-agents summary');
+    for (const role of Object.keys(fixture.data.orchestrator.settings.roles)) {
+      const select = page.locator(`[name="${role}.model"]`);
+      assert.equal(await select.inputValue(), available ? 'test-model' : '');
+      assert.deepEqual(await select.locator('option').allTextContents(),
+        available ? ['GPT-6.1-Sol'] : ['test-model (unavailable)']);
+    }
+  }
+}
+
+// Watching the active application restores its window without sending another agent message.
+async function applicationWindowChecks(page, fixture) {
+  fixture.data = workspace();
+  fixture.data.orchestrator.application_browser = {available: false, job_id: null};
+  await page.goto(origin + '/#applications');
+  await page.reload();
+  await page.click('#toggle-assistant');
+  assert.equal(await page.locator('#show-application').isVisible(), false);
+  fixture.data.orchestrator.application_browser = {available: true, job_id: 'job'};
+  await page.evaluate(() => import('/ui.js').then(module => module.refresh()));
+  await page.getByRole('button', {name: 'Show the current application in Chrome'}).waitFor();
+  const before = fixture.writes.length;
+  await page.click('#show-application');
+  await page.waitForFunction(() => document.querySelector('#show-application').disabled === false);
+  assert.deepEqual(fixture.writes.slice(before), [{path: '/api/orchestrator/show-application', data: {}}]);
+  fixture.data.orchestrator.application_browser = {available: false, job_id: null};
+  await page.evaluate(() => import('/ui.js').then(module => module.refresh()));
+  assert.equal(await page.locator('#show-application').isVisible(), false);
 }
 
 // Close the isolated Chrome profile even when a browser assertion fails.
@@ -122,8 +166,10 @@ async function main() {
     await deletionChecks(page, fixture);
     await searchChecks(page, fixture);
     await layoutChecks(page, fixture);
+    await modelCatalogChecks(page, fixture);
+    await applicationWindowChecks(page, fixture);
     assert.deepEqual(errors, []);
-    console.log('Documents deletion, scoped search, connection-only controls and responsive layouts passed.');
+    console.log('Documents deletion, scoped search, connection-only controls, model availability, visible application control and responsive layouts passed.');
   } catch(error) {
     if(errors.length)error.message+='\nBrowser errors: '+errors.join('; ');
     throw error;

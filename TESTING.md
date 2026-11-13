@@ -5,11 +5,7 @@ Set up the checkout using the README, then run:
 ```sh
 python -m unittest discover -s tests
 node --experimental-vm-modules --test tests/*.test.mjs
-node tests/documents-ui.test.cjs
-node tests/browser.test.cjs
-node tests/recommendations.test.cjs
-node tests/recommendations-clamp.test.cjs
-node tests/submission.test.cjs
+for test in tests/*.test.cjs; do node "$test" || exit 1; done
 node tests/job-details.test.js
 ```
 

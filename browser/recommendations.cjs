@@ -1,6 +1,7 @@
 const {assertPublicUrl, armSource} = require('./guard.cjs');
 const {START_URLS, jobLink, sourceOrigin} = require('./recommendations-url.cjs');
-const {readFeed, readJob, waitForJob, waitForFeed, followFeedLink, expandDescription} = require('./recommendations-dom.cjs');
+const {readFeed, readJob, waitForJob, waitForFeed, followFeedLink, followLinkedInCard, expandDescription} = require('./recommendations-dom.cjs');
+const {searchJobs, hasSearchInput} = require('./source-search.cjs');
 
 // Reports contain job-only data and aggregate guard state, never sidebar or account text.
 function report(session, status, issues = [], jobs = [], warnings = []) {
@@ -13,6 +14,7 @@ function report(session, status, issues = [], jobs = [], warnings = []) {
 // Sign-in is user-controlled in a dedicated profile; no credential fields are read or filled.
 async function login(session, restart) {
   await restart(session, true);
+  session.state.sourceSearch = false;
   const url = new URL(START_URLS[session.state.source]);
   const destination = new URL(url.pathname, sourceOrigin(session)).href;
   await assertPublicUrl(destination, session.state.allowLocal);
@@ -26,9 +28,13 @@ async function status(session) {
   for (const page of session.context.pages().filter(page => !page.isClosed()).slice(0, 5)) {
     if (!page.url().startsWith(sourceOrigin(session) + '/')) continue;
     let feed;
-    try { feed = await readFeed(page, session.state.source, sourceOrigin(session)); }
+    try { feed = await readFeed(page, session.state.source, sourceOrigin(session), session.state.sourceSearch); }
     catch { continue; }
     if (feed.challenge) return report(session, session.state.manual ? 'waiting_signin' : 'blocked', ['The source requires a security check. Complete it manually.']);
+    if (!feed.signedOut && await hasSearchInput(page, session.state.source)) {
+      session.page = page;
+      return {...report(session, 'ready'), observed_count: feed.links.length};
+    }
     if (feed.loading) return report(session, 'waiting_signin', ['The recommendation headings are visible, but no job cards have loaded yet. Keep the feed open.']);
     if (feed.ready) {
       session.page = page;
@@ -44,8 +50,14 @@ async function visit(session, candidate, followLink = false) {
   const link = jobLink(candidate.url, source, origin);
   if (!link || link.id !== String(candidate.id)) throw new Error('The source URL does not match its observed job identity.');
   await assertPublicUrl(link.url, session.state.allowLocal);
-  if (followLink) await followFeedLink(session.page, link, source, origin);
+  if (followLink) await followFeedLink(session.page, link, source, origin, session.state.sourceSearch);
   else await session.page.goto(link.url, {waitUntil: 'domcontentloaded', timeout: 10000});
+  return captureJob(session, link);
+}
+
+// Capture only the selected job after validating the live destination and its scoped description.
+async function captureJob(session, link) {
+  const source = session.state.source, origin = sourceOrigin(session);
   await assertPublicUrl(session.page.url(), session.state.allowLocal);
   await waitForJob(session.page, source, link.id, origin);
   await expandDescription(session.page, source, link.id, origin);
@@ -72,7 +84,7 @@ async function returnToFeed(session, navigation, before) {
     await assertPublicUrl(entry.url, session.state.allowLocal);
     await session.page.goto(entry.url, {waitUntil: 'domcontentloaded', timeout: 10000});
   }
-  await waitForFeed(session.page, session.state.source, sourceOrigin(session));
+  await waitForFeed(session.page, session.state.source, sourceOrigin(session), session.state.sourceSearch);
 }
 
 // Both sources retain the signed-in browser and stop this bounded scan at a security challenge.
@@ -84,24 +96,25 @@ async function scanObserved(session, candidates) {
     for (const candidate of candidates) {
       if (Date.now() > deadline) { issues.push('The bounded source scan ended before all listings were inspected.'); break; }
       const before = await navigation.send('Page.getNavigationHistory');
+      let observed = candidate;
       try {
-        // LinkedIn replaces its cards during rendering; its observed URL avoids stale click targets.
-        const result = await visit(session, candidate, session.state.source === 'handshake');
+        if (candidate.card) observed = await followLinkedInCard(session.page, candidate, sourceOrigin(session));
+        const result = candidate.card ? await captureJob(session, observed) : await visit(session, candidate, session.state.source === 'handshake');
         jobs.push(result.job); warnings.push(...result.warnings);
         if (result.challenge) { issues.push('The source requires a manual security check; the scan stopped.'); break; }
       } catch {
         const challenge = (await readFeed(session.page, session.state.source, sourceOrigin(session)).catch(() => ({}))).challenge;
         const issue = challenge ? 'The source requires a manual security check; the scan stopped.' : 'This listing could not be read completely; it was skipped.';
-        if (!jobs.some(job => job.id === candidate.id)) jobs.push(incompleteJob(candidate, issue));
+        if (observed.id && !jobs.some(job => job.id === observed.id)) jobs.push(incompleteJob(observed, issue));
         issues.push(issue); if (challenge) break;
       }
-      if (candidate !== candidates.at(-1)) {
+      if (session.state.source === 'handshake' && candidate !== candidates.at(-1)) {
         try { await returnToFeed(session, navigation, before); }
         catch { issues.push('The recommendations page could not be restored; captured jobs were retained.');break; }
       }
     }
   } finally { await navigation.detach().catch(() => {}); }
-  warnings.push('Only the currently loaded recommendation cards were available.');
+  warnings.push('Only the currently loaded job cards were inspected. Change the query to search another result set.');
   return report(session, jobs.some(job => job.complete) ? 'ready' : 'blocked', issues, jobs, warnings);
 }
 
@@ -109,11 +122,14 @@ async function scanObserved(session, candidates) {
 async function scan(session, params) {
   const limit = params.limit ?? 5;
   if (!Number.isInteger(limit) || limit < 1 || limit > 10) throw new Error('Choose a source import limit from 1 to 10.');
+  const query = params.query ?? '';
+  if (typeof query !== 'string' || query.length > 300) throw new Error('Use a search query of at most 300 characters.');
   const current = await status(session);
   if (current.status !== 'ready') return current;
-  const feed = await readFeed(session.page, session.state.source, sourceOrigin(session));
-  const candidates = feed.links.slice(0, limit);
-  if (!candidates.length) return report(session, 'blocked', ['No job links were loaded in the recommendation sections.']);
+  const feed = query.trim() ? await searchJobs(session, query) : await readFeed(session.page, session.state.source, sourceOrigin(session));
+  const candidates = (session.state.source === 'linkedin' && feed.cards?.length ? feed.cards : feed.links).slice(0, limit);
+  if (query.trim() && feed.empty && !candidates.length) return report(session, 'ready');
+  if (!candidates.length) return report(session, 'blocked', ['No job links were loaded in the selected source results.']);
   return scanObserved(session, candidates);
 }
 

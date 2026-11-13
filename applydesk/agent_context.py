@@ -36,8 +36,9 @@ def inputs_for(workspace, task):
     profile = model_profile(workspace.profile())
     if task["kind"] == "profile":
         record = source_record(workspace, task["target_id"])
-        if record["kind"] != "profile" or not record.get("text", "").strip():
-            raise ValueError("Choose a profile PDF with extractable text.")
+        readable = record.get("text", "").strip() or record.get("blocks") or record.get("image_paths")
+        if record["kind"] not in {"profile", "resume"} or not readable:
+            raise ValueError("Choose an uploaded profile or resume with readable text or page previews.")
         return {"source": record, "profile_revision": profile["revision"]}
     if task["kind"] == "document":
         record = source_record(workspace, task["target_id"])
@@ -53,8 +54,16 @@ def inputs_for(workspace, task):
     if template and (template["kind"] != "cover_template" or not template.get("confirmed")):
         template = None
     return {"profile": profile, "job": {key: job.get(key, "") for key in ("id", "company", "title", "url", "details")},
-            "resume_categories": workspace.resumes.categories(), "resumes": [{"id": row["id"], "category": row["category"],
-            "source_sha256": row["source_sha256"]} for row in workspace.resumes.list() if row["category"]], "template": template}
+            "resume_categories": workspace.resumes.categories(), "resumes": resume_sources(workspace), "template": template}
+
+
+def resume_sources(workspace):
+    """Give drafting and screening agents verified contents of active uploaded resumes."""
+    records = []
+    for row in workspace.resumes.list():
+        if not row.get("removed_from_library_at"):
+            records.append({**source_record(workspace, row["id"]), "category": row["category"]})
+    return records
 
 
 def review_material(workspace, task):

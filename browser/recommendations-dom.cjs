@@ -1,4 +1,5 @@
 const {jobLink} = require('./recommendations-url.cjs');
+const {linkedinHeader, linkedinDescription, linkedinParts, linkedinCards, locateLinkedInCard, activateLinkedInCard} = require('./linkedin-dom.cjs');
 
 // Rendered source elements are inspected locally; the full document never leaves this module.
 function visible(element) {
@@ -10,7 +11,12 @@ function clean(value) {
 }
 
 // Only the observed recommendation headings delimit feed cards; navigation and messages are excluded.
-function feedParts(source, origin) {
+function feedParts(source, origin, search = false) {
+  if (search) {
+    const main = document.querySelector('main,[role="main"]');
+    const anchors = [...(main?.querySelectorAll('a[href]') || [])].filter(anchor => visible(anchor) && jobLink(anchor.href, source, origin));
+    return {headings: [], anchors};
+  }
   const headings = [...document.querySelectorAll('h2')].filter(element => visible(element) &&
     (source === 'handshake' ? /^Job picks for /i.test(clean(element.innerText)) :
       ['Jobs that match your profile', 'Jobs based on your preferences'].includes(clean(element.innerText))));
@@ -33,21 +39,23 @@ function challengePage() {
   return /just a moment|security verification|verify you are human|unusual traffic|access denied|attention required/i.test(document.title);
 }
 
-function collectFeed({source, origin}) {
-  const {headings, anchors} = feedParts(source, origin), links = new Map(), challenge = challengePage();
+function collectFeed({source, origin, search = false}) {
+  const {headings, anchors} = feedParts(source, origin, search), links = new Map(), challenge = challengePage();
+  const cards = source === 'linkedin' ? linkedinCards().slice(0, 50).map(({title, label, jobId}) => ({title, label, jobId, card: true})) : [];
   const signedOut = [...document.querySelectorAll('input[type="password"]')].some(visible);
   for (const anchor of anchors) {
     const link = jobLink(anchor.href, source, origin);
     if (links.size < 50 && !links.has(link.id)) links.set(link.id, link);
   }
-  return {ready: !signedOut && !challenge && links.size > 0, loading: headings.length > 0 && !links.size,
-    challenge, links: [...links.values()], limited: true};
+  const empty = search && /\b(no (?:jobs|results|matches)(?: found)?|0 jobs|zero jobs)\b/i.test(document.querySelector('main,[role="main"]')?.innerText || '');
+  return {ready: !signedOut && !challenge && (links.size > 0 || cards.length > 0 || empty), loading: headings.length > 0 && !links.size && !cards.length,
+    challenge, signedOut, empty, links: [...links.values()], cards, limited: true};
 }
 
 // Only a captured recommendation anchor can start a same-document source navigation.
-function locateFeedLink({source, id, url, origin}) {
+function locateFeedLink({source, id, url, origin, search = false}) {
   if (location.origin !== origin || challengePage()) return null;
-  const anchors = feedParts(source, origin).anchors.filter(anchor => anchor.href === url &&
+  const anchors = feedParts(source, origin, search).anchors.filter(anchor => anchor.href === url &&
     jobLink(anchor.href, source, origin)?.id === id && !anchor.closest('form,button') && (!anchor.target || anchor.target === '_self'));
   return anchors[0] || null;
 }
@@ -67,43 +75,6 @@ function handshakeParts(id) {
   if (!description || description === panel || description.contains(metadata)) return {};
   const jobLocation = (metadata?.innerText || '').split('\n').map(clean).find(line => /\b(based in|remote|hybrid|onsite)\b/i.test(line)) || '';
   return {panel, description, metadata, title: clean(title.innerText), company: clean(company?.getAttribute('aria-label') || company?.innerText), location: jobLocation};
-}
-
-// A title candidate is valid only beside one visible company and its job location.
-function linkedinHeader(element, description, pageTitle) {
-  const title = clean(element.innerText);
-  let header = element.parentElement;
-  for (let depth = 0; header && depth < 5 && header !== document.body; depth++, header = header.parentElement) {
-    if (header.contains(description)) break;
-    const companies = [...header.querySelectorAll('a[href]')].filter(anchor => visible(anchor) && /^\/company\//.test(new URL(anchor.href).pathname));
-    const names = [...new Set(companies.map(anchor => clean(anchor.querySelector('[aria-label^="Company, "]')?.getAttribute('aria-label')?.replace(/^Company, /, '').replace(/\.$/, '') || anchor.innerText)).filter(Boolean))];
-    if (names.length !== 1 || (pageTitle.length === 3 && pageTitle[1] !== names[0])) continue;
-    const lines = header.innerText.split('\n').map(clean).filter(Boolean), titleIndex = lines.indexOf(title);
-    const location = titleIndex >= 0 ? (lines[titleIndex + 1] || '').split('·')[0].trim() : '';
-    if (!location) continue;
-    let panel = header.parentElement;
-    for (let level = 0; panel && level < 6 && !panel.contains(description); level++) panel = panel.parentElement;
-    return {header, panel: panel && panel !== document.body && panel.contains(description) ? panel : header,
-      description, title, company: names[0], location, url: element.href || window.location.href};
-  }
-  return {};
-}
-
-// The ID-bearing description must agree with one distinct title/company header.
-function linkedinParts(id, origin) {
-  const description = document.getElementById('JobDetails_AboutTheJob_' + id);
-  if (!visible(description)) return {};
-  const pageTitle = document.title.split(' | '), namedPage = pageTitle.length === 3 && pageTitle[2] === 'LinkedIn';
-  const titles = [...document.querySelectorAll('a[href]')].filter(anchor => visible(anchor) &&
-    /^\/jobs\/view\//.test(new URL(anchor.href).pathname) && jobLink(anchor.href, 'linkedin', origin)?.id === id &&
-    clean(anchor.innerText) && (!namedPage || clean(anchor.innerText) === pageTitle[0]));
-  if (namedPage) titles.push(...[...document.querySelectorAll('p')].filter(element => visible(element) && clean(element.innerText) === pageTitle[0]));
-  const headers = new Map();
-  for (const title of titles) {
-    const parts = linkedinHeader(title, description, namedPage ? pageTitle : []);
-    if (parts.header) headers.set(parts.header, parts);
-  }
-  return headers.size === 1 ? [...headers.values()][0] : {};
 }
 
 // Expansion is restricted to a native, non-submit Show-more control inside the verified description.
@@ -149,11 +120,8 @@ function captureIssues(parts, job) {
   if (job.text.length < 200 || job.text.length > 50000) issues.push('The scoped job description is missing or exceeds the capture limit.');
   const folded = [...parts.description.querySelectorAll('button')].filter(visible).some(button =>
     /^(show more|see more)/i.test(clean(button.innerText)) || clean(button.innerText) === '… more' || /^Show more\b/.test(button.getAttribute('aria-label') || ''));
-  const clipped = [parts.description, ...parts.description.querySelectorAll('*')].filter(visible).some(element => {
-    const style = getComputedStyle(element);
-    return Number(style.webkitLineClamp) > 0 && ['hidden', 'clip'].includes(style.overflowY) && element.scrollHeight > element.clientHeight + 1;
-  });
-  if (folded || clipped) issues.push('The job description is still collapsed.');
+  // CSS line clamps can hide presentation while innerText still contains the complete scoped text.
+  if (folded) issues.push('The job description is still collapsed.');
   if (parts.description.querySelector('iframe') || [...parts.description.querySelectorAll('*')].some(element => element.shadowRoot)) issues.push('The description contains unsupported embedded content.');
   if ([...parts.description.querySelectorAll('[aria-busy="true"],[role="progressbar"]')].some(visible) || /security verification|verify you are human/i.test(document.title)) issues.push('The job description is still loading or requires a security check.');
   return issues;
@@ -161,7 +129,7 @@ function captureIssues(parts, job) {
 
 // The executable functions are fixed application code; callers supply only source and job identifiers.
 function script(fn) {
-  const helpers = [jobLink, visible, clean, feedParts, challengePage, collectFeed, locateFeedLink, handshakeParts, linkedinHeader, linkedinParts, expansionButton, locateExpansion, collectJob, captureIssues];
+  const helpers = [jobLink, visible, clean, feedParts, challengePage, collectFeed, locateFeedLink, handshakeParts, linkedinHeader, linkedinDescription, linkedinParts, linkedinCards, locateLinkedInCard, activateLinkedInCard, expansionButton, locateExpansion, collectJob, captureIssues];
   return `(args => { ${helpers.map(helper => helper.toString()).join('\n')} return ${fn.name}(args); })`;
 }
 
@@ -170,8 +138,8 @@ function invocation(fn, args) {
   return `${script(fn)}(${JSON.stringify(args)})`;
 }
 
-async function readFeed(page, source, origin) {
-  return page.evaluate(invocation(collectFeed, {source, origin}));
+async function readFeed(page, source, origin, search = false) {
+  return page.evaluate(invocation(collectFeed, {source, origin, search}));
 }
 
 async function readJob(page, source, id, origin) {
@@ -179,10 +147,10 @@ async function readJob(page, source, id, origin) {
 }
 
 // Poll visible reads from the controller; no in-page polling function or CSP exception is installed.
-async function waitForFeed(page, source, origin) {
+async function waitForFeed(page, source, origin, search = false) {
   const deadline = Date.now() + 6000;
   do {
-    const feed = await readFeed(page, source, origin);
+    const feed = await readFeed(page, source, origin, search);
     if (feed.ready || feed.challenge) return;
     await page.waitForTimeout(100);
   } while (Date.now() < deadline);
@@ -190,11 +158,11 @@ async function waitForFeed(page, source, origin) {
 }
 
 // A feed rerender may detach an anchor before clicking; only that case gets a fresh verified handle.
-async function followFeedLink(page, candidate, source, origin) {
+async function followFeedLink(page, candidate, source, origin, search = false) {
   const beforeUrl = page.url();
   for (let attempt = 0; attempt < 3; attempt++) {
     if (jobLink(page.url(), source, origin)?.id === candidate.id) return;
-    const handle = await page.evaluateHandle(invocation(locateFeedLink, {...candidate, source, origin}));
+    const handle = await page.evaluateHandle(invocation(locateFeedLink, {...candidate, source, origin, search}));
     try {
       const anchor = handle.asElement();
       if (!anchor) throw new Error('The observed recommendation link is no longer present in its feed.');
@@ -206,6 +174,23 @@ async function followFeedLink(page, candidate, source, origin) {
     } finally { await handle.dispose(); }
   }
   await page.waitForURL(url => jobLink(url.href, source, origin)?.id === candidate.id, {timeout: 10000});
+}
+
+// A card click must reveal its own observed job URL, matching title and company before capture.
+async function followLinkedInCard(page, candidate, origin) {
+  const activation = await page.evaluate(invocation(activateLinkedInCard, {...candidate, origin}));
+  const deadline = Date.now() + 6000;
+  const beforeId = jobLink(activation.before, 'linkedin', origin)?.id;
+  do {
+    const link = jobLink(page.url(), 'linkedin', origin);
+    if (link && (candidate.jobId ? link.id === candidate.jobId : link.id !== beforeId || activation.selected)) {
+      const job = await readJob(page, 'linkedin', link.id, origin);
+      if (job.title === candidate.title && job.company && candidate.label.includes(job.company) &&
+          job.location && candidate.label.includes(job.location)) return link;
+    }
+    await page.waitForTimeout(150);
+  } while (Date.now() < deadline);
+  throw new Error('The selected job card did not reveal a matching job identity.');
 }
 
 // Before expansion, a verified collapsed description is usable; afterwards only complete text is usable.
@@ -233,5 +218,5 @@ async function expandDescription(page, source, id, origin) {
   } finally { await handle.dispose(); }
 }
 
-module.exports = {readFeed, readJob, waitForJob, waitForFeed, followFeedLink, expandDescription,
+module.exports = {readFeed, readJob, waitForJob, waitForFeed, followFeedLink, followLinkedInCard, expandDescription,
   scripts: {feed: script(collectFeed), job: script(collectJob)}};

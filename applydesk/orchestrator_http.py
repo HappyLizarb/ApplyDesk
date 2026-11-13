@@ -3,11 +3,15 @@
 from .agent_contract import object_fields, string
 from .providers import _validate_key
 from .connection_models import CONNECTION_SOURCES, validate_provider
+from .application_window import show_application
 
 
 def orchestrator_action(workspace, action, data):
     """The UI session is required; external draft tokens cannot reach these controls."""
     engine = workspace.orchestrator
+    if action == "show-application":
+        object_fields(data, [])
+        return show_application(workspace)
     if action in {"api-key", "api-key/remove", "source"}:
         return connection_action(workspace, action, data)
     if action in {"connect", "select", "disconnect", "cancel-signin", "models"}:
