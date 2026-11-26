@@ -5,12 +5,23 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from applydesk.startup import LocalInstance, focus_window, open_window
 
 
 class StartupTests(unittest.TestCase):
+    def test_window_focus_failure_keeps_service_available(self):
+        """A locked or unavailable desktop must not kill the local application service."""
+        import run
+        args = SimpleNamespace(data_dir=Path("/tmp/fixture"), no_open=False, port=0)
+        with patch.object(run.argparse.ArgumentParser, "parse_args", return_value=args), patch.object(run.sys, "platform", "darwin"):
+            with patch.object(run, "LocalInstance"), patch.object(run, "Workspace"), patch.object(run, "AppServer") as server:
+                with patch.object(run, "open_window", side_effect=RuntimeError("Window not visible")), patch.object(run, "close_workspace"), patch("builtins.print"):
+                    run.main()
+        server.return_value.serve_forever.assert_called_once()
+
     def setUp(self):
         # Each test owns its locks and simulated browser state.
         self.temp = tempfile.TemporaryDirectory()

@@ -9,9 +9,12 @@ from chat_helpers import ChatFixture
 from test_orchestrator import response
 from test_workflow import BrowserFixture, snapshot
 from applydesk import ai_prompts
+from applydesk.orchestrator_prompts import SELF_CHECK
+from applydesk.application_client import STEP_BOUNDARY
 from applydesk.application_policy import SCOPE_PROMPT
 from applydesk.application_intent import INTENT_PROMPT
 from applydesk.application_submission import attempt_key
+from agent_browser_helpers import legacy_application
 
 
 class AutomationTests(ChatFixture):
@@ -22,21 +25,21 @@ class AutomationTests(ChatFixture):
         self.w.store.put("chatgpt", "accounts", {"active": "test", "accounts": [{"id": "test", "label": "Test", "client_id": "oaiapp_test", "subject": "subject", "connected": True}]})
         self.w.store.put("chatgpt_models", "test", [{"id": "test-model", "name": "Test", "thinking": []}])
         profile = self.w.profile()
-        profile["industries"] = [{"name": "Publishing", "years": "0"}]
+        profile["industries"] = [{"name": "Hardware", "years": "0"}]
         profile["preferences"]["levels"] = ["Entry"]
         self.w.save_profile(profile)
         self.w.store.put("recommendation_preference", "handshake", {"enabled": True})
         self.jobs = [self.listing("101"), self.listing("102")]
         self.roles, self.browsers, self.requests = [], [], []
-        self.fail_audit, self.fail_receipt = False, False
-        message = self.engine.history.add("user", "Please send one publishing application in Boston.")
+        self.fail_analysis, self.fail_receipt = False, False
+        message = self.engine.history.add("user", "Please send one hardware application in Boston.")
         self.engine.active = {"message": message}
         self.intent = {"action": "start", "run_id": "", "authorization_message_id": message["id"], "limit": 1,
                        "locations": ["Boston"], "instruction": message["text"], "resume_id": "", "issues": []}
 
     def listing(self, identity):
         """Stable listing IDs and source hashes prevent repeated or replaced captures."""
-        description = "Example Co Analyst. Entry publishing role in Boston. Full-time new-grad position. Python required."
+        description = "Example Co Analyst. Entry hardware role in Boston. Full-time new-grad position. Python required."
         source = {"platform": "handshake", "job_id": identity, "source_url": "https://app.joinhandshake.com/job-search/" + identity,
                   "company": "Example Co", "title": "Analyst", "description": description, "complete": True, "issues": [],
                   "captured_at": "2026-10-29T01:00:00+00:00", "description_sha256": hashlib.sha256(description.encode()).hexdigest(), "employer_url": ""}
@@ -62,42 +65,52 @@ class AutomationTests(ChatFixture):
         return browser
 
     def model(self, payload, _cancelled, _emit):
-        """Every check has its own provider request with no access to the other reviewer session."""
-        prompt = payload["instructions"]
+        """Task-specific responses use one configured agent without repeated reviewer calls."""
+        self.assertTrue(payload["instructions"].startswith(SELF_CHECK))
+        prompt = payload["instructions"].removeprefix(SELF_CHECK).removeprefix(STEP_BOUNDARY)
         self.roles.append(self.engine.runner.current["role"])
         self.requests.append(copy.deepcopy(payload))
         if prompt == INTENT_PROMPT:
             result = self.intent
         elif prompt == SCOPE_PROMPT:
-            result = {"matches": True, "industry": "Publishing", "level": "Entry", "location": self.intent["locations"][0], "issues": [],
-                      "quotes": {"industry": "publishing", "level": "Entry", "location": "" if self.intent["locations"] == ["Anywhere"] else "Boston"}}
-        elif prompt in {ai_prompts.ANALYZE, ai_prompts.AUDIT_ELIGIBILITY}:
-            result = {"company": "Example Co", "title": "Analyst", "details": "Summary", "country": "US", "category": "Publishing", "preferred": [],
+            result = {"matches": True, "industry": "Hardware", "level": "Entry", "location": self.intent["locations"][0], "issues": [],
+                      "quotes": {"industry": "hardware", "level": "Entry", "location": "" if self.intent["locations"] == ["Anywhere"] else "Boston"}}
+        elif prompt == ai_prompts.ANALYZE:
+            result = {"company": "Example Co", "title": "Analyst", "details": "Summary", "country": "US", "category": "Hardware", "preferred": [],
                       "cover_letter_required": False, "requirements_complete": True, "required": [{"text": "Python required.", "met": True, "evidence_ids": ["skills.0"]}],
-                      "passed": True, "issues": [], "process_complete": True, "identity_consistent": True, "employment_type_consistent": True,
+                      "passed": True, "issues": [], "process_complete": not self.fail_analysis, "identity_consistent": True, "employment_type_consistent": True,
                       "consistency_issues": [], "process_restrictions": []}
-        elif prompt == ai_prompts.AUDIT_DOCUMENT:
-            result = {"passed": not self.fail_audit, "issues": ["Unverified claim"] if self.fail_audit else [],
-                      "block_checks": [{"id": "line:0", "personal_claims": True, "fact_ids": ["identity.legal_name"]}]}
         else:
-            self.assertIn(prompt, {ai_prompts.LAYOUT, ai_prompts.AUDIT_FIELDS})
-            result = {"passed": True, "issues": []}
+            raise AssertionError("Unexpected extra model request")
         return response(json.dumps(result))
 
     def run_applications(self):
-        """Exercise scope checks, real mapping, independent audits, readiness, and durable submission."""
-        with patch.object(self.w.recommendations, "read_job", side_effect=lambda source: copy.deepcopy(source)):
+        """Exercise the retained deterministic path; generic production coverage has its own fixture."""
+        with patch.object(self.w.recommendations, "read_job", side_effect=lambda source, **_options: copy.deepcopy(source)):
             with patch("applydesk.application_automation.ApplicationSession", side_effect=self.browser):
-                with patch.object(self.engine.runner, "_request", side_effect=self.model):
-                    return self.engine.applications.start()
+                with patch.object(self.engine.runner, "_request", side_effect=self.model), patch("applydesk.application_automation.Applications", side_effect=legacy_application):
+                    return self.engine.applications.start(getattr(self, "selected_ids", None))
 
-    def test_explicit_budget_drives_separate_reviews_and_exactly_one_submission(self):
+    def test_selected_job_is_processed_first_without_expanding_budget(self):
+        """Selecting one saved target opens just that listing and still submits at most once."""
+        self.selected_ids = [self.jobs[1]["id"]]
+        self.jobs.reverse()
+        run = self.run_applications()
+        self.assertEqual([result["job_id"] for result in run["results"]], self.selected_ids)
+        self.assertEqual(run["submitted_count"], 1)
+        self.assertEqual(self.w.store.get("job", self.jobs[1]["id"])["status"], "new")
+
+    def test_one_agent_checks_listing_and_live_form_before_one_submission(self):
         """A real qualified pipeline submits once, uses General fallback, and leaves the second job untouched."""
         run = self.run_applications()
         self.assertEqual(run["status"], "complete")
         self.assertEqual(run["results"][0]["status"], "submitted")
         self.assertEqual(sum(browser.methods.count("submit") for browser in self.browsers), 1)
-        self.assertTrue({"application", "document_reviewer", "application_auditor"} <= set(self.roles))
+        self.assertEqual(set(self.roles), {"master"})
+        self.assertEqual(len(self.requests), 5)
+        analysis_request = next(item for item in self.requests if item["instructions"] == SELF_CHECK + STEP_BOUNDARY + ai_prompts.ANALYZE)
+        content = json.loads(analysis_request["input"][0]["content"][0]["text"])
+        self.assertEqual(content["current_user_request"], self.engine.active["message"]["text"])
         self.assertEqual(self.w.store.get("job", self.jobs[0]["id"])["resume_id"], "resume")
         self.assertEqual(self.w.store.get("job", self.jobs[1]["id"])["status"], "new")
         with patch.object(self.engine.runner, "_request", side_effect=AssertionError("Repeated call must not infer again")):
@@ -145,9 +158,9 @@ class AutomationTests(ChatFixture):
         self.assertEqual(self.w.store.get("application_run", first["id"])["resume_sha256"], first["resume_sha256"])
         self.assertEqual(len(self.browsers), 1)
 
-    def test_failed_independent_review_never_fills_or_submits(self):
-        """A failed factual audit cannot be waived by the master or the document reviewer."""
-        self.fail_audit = True
+    def test_changed_document_bytes_never_fill_or_submit(self):
+        """Removing reviewer calls preserves immutable upload validation."""
+        self.w.docs.asset(self.resume["source_path"]).write_bytes(b"changed upload")
         run = self.run_applications()
         self.assertEqual(len(run["results"]), 2)
         self.assertFalse(self.w.store.all("submission_attempt"))
@@ -168,9 +181,9 @@ class AutomationTests(ChatFixture):
         self.assertEqual((resumed["id"], resumed["attempted_count"], resumed["uncertain_count"]), (run["id"], 1, 1))
         self.assertEqual(len(self.browsers), 1)
 
-    def test_background_draft_and_out_of_range_budget_do_not_start_a_run(self):
-        """The semantic result still needs a human turn and a bounded numeric budget."""
-        self.intent["limit"] = 101
+    def test_background_draft_and_invalid_count_do_not_start_a_run(self):
+        """The semantic result still needs a human turn and a valid optional count."""
+        self.intent["limit"] = -1
         with self.assertRaises(ValueError):
             self.run_applications()
         self.engine.active = {"task_id": self.task["id"]}
@@ -193,14 +206,14 @@ class AutomationTests(ChatFixture):
 
     def input_for(self, prompt):
         """Read actual independent model input rather than relying on the returned plan."""
-        request = next(item for item in self.requests if item["instructions"] == prompt)
+        request = next(item for item in self.requests if item["instructions"].removeprefix(SELF_CHECK).removeprefix(STEP_BOUNDARY) == prompt)
         content = request["input"][0]["content"]
         return json.loads(content if isinstance(content, str) else content[0]["text"])
 
     def test_profile_confirmation_uses_prior_instructions_and_unrestricted_location(self):
-        """A short follow-up carries the original role, cap, and location into both reviews."""
+        """A short follow-up carries the original role, cap, and location into the scope check."""
         original = self.engine.active["message"]
-        original["text"] = "Apply for five full-time publishing new-grad roles, anywhere, with my existing resume."
+        original["text"] = "Apply for five full-time hardware new-grad roles, anywhere, with my existing resume."
         self.w.store.put("chat_message", original["id"], original)
         current = self.engine.history.add("user", "My profile is confirmed now; go ahead.")
         self.engine.active = {"message": current}
@@ -217,7 +230,7 @@ class AutomationTests(ChatFixture):
     def test_followup_continues_same_remaining_budget_after_profile_confirmation(self):
         """An interrupted run keeps its spent allowance when the user corrects their profile."""
         original = self.engine.active["message"]
-        original["text"] = "Please send two publishing applications in Boston."
+        original["text"] = "Please send two hardware applications in Boston."
         self.w.store.put("chat_message", original["id"], original)
         self.intent.update(limit=2, instruction=original["text"])
         with patch.object(self.engine.applications, "_candidates", return_value=self.jobs[:1]):

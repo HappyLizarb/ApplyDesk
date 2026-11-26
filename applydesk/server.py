@@ -7,16 +7,15 @@ import secrets
 import threading
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from . import PROGRAM_ROOT
 from .agent_http import AgentRoutes, publish_connection
-from .document_tasks import DocumentTasks
 from .document_deletion import DocumentDeletion
 from .employer_accounts import EmployerAccounts
 from .orchestrator_http import orchestrator_action
 
-WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
+WEB_ROOT = PROGRAM_ROOT / "web"
 MAX_BODY = 29 * 1024 * 1024
 
 
@@ -26,7 +25,6 @@ class AppServer(ThreadingHTTPServer):
     def __init__(self, workspace, port=0):
         self.workspace = workspace
         self.token = secrets.token_urlsafe(32)
-        self.docs = DocumentTasks(workspace)
         super().__init__(("127.0.0.1", port), Handler)
         self.origin = f"http://127.0.0.1:{self.server_port}"
         self.launch_url = self.origin + "/start?token=" + self.token
@@ -133,7 +131,13 @@ class Handler(AgentRoutes, BaseHTTPRequestHandler):
             if not isinstance(data, dict):
                 raise ValueError("Expected a JSON object.")
             path = urlparse(self.path).path
-            control = path == "/api/shutdown" or path.startswith("/api/orchestrator/") or path == "/api/recommendations/cancel" or (path == "/api/recommendations/preference" and data.get("enabled") is False)
+            if path == "/api/document/delete":
+                return self._json(DocumentDeletion(self.server.workspace).delete(data))
+            if path == "/api/jobs/remove":
+                return self._json(self.server.workspace.remove_jobs(data))
+            if path == "/api/job/status":
+                return self._json(self.server.workspace.store.set_board_status(data))
+            control = path == "/api/shutdown" or path.startswith("/api/orchestrator/") or path == "/api/recommendations/cancel"
             if not control and any(task["status"] == "running" for task in self.server.workspace.tasks.values()):
                 raise ValueError("A task is running. Wait before changing the workspace.")
             with self.server.workspace.lock:
@@ -145,20 +149,16 @@ class Handler(AgentRoutes, BaseHTTPRequestHandler):
 
     def _post(self, path, data):
         """Dispatch a small fixed API; long provider and browser work runs in a task."""
-        w, docs = self.server.workspace, self.server.docs
+        w = self.server.workspace
         if path.startswith("/api/orchestrator/"):
             return orchestrator_action(w, path.removeprefix("/api/orchestrator/"), data)
-        routes = {"/api/profile": lambda: w.save_profile(data), "/api/cover-template": lambda: w.save_settings(data),
+        routes = {"/api/profile": lambda: w.save_profile(data),
                   "/api/chat/enqueue": lambda: w.chat.enqueue(data),
-                  "/api/recommendations/begin": lambda: w.recommendations.begin(data),
                   "/api/recommendations/cancel": lambda: w.recommendations.cancel(data),
-                  "/api/recommendations/preference": lambda: w.recommendations.preference(data),
                   "/api/job/add": lambda: w.add_job(data), "/api/jobs/remove": lambda: w.remove_jobs(data),
                   "/api/import": lambda: w.start("import", w.import_file, data),
-                  "/api/template/confirm": lambda: w.docs.confirm_template(data["id"]),
                   "/api/resume/tag": lambda: w.resumes.tag(data),
                   "/api/document/delete": lambda: DocumentDeletion(w).delete(data),
-                  "/api/document/save": lambda: w.start("save-document", docs.save, data),
                   "/api/job/account": lambda: EmployerAccounts(w).save(data),
                   "/api/shutdown": self._shutdown}
         if path not in routes:

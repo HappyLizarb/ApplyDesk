@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from applydesk.applications import Applications
-from applydesk.intelligence import audit_eligibility
 from applydesk.recommendation_checks import employer_evidence, employer_target, process_issues, scoped_page, validate_employer_page, validate_source
 
 
@@ -67,6 +66,14 @@ class RecommendationChecksTests(unittest.TestCase):
                   "consistency_issues": ["The description is a permanent role but the card says internship."]}
         self.assertTrue(process_issues(result, source()))
 
+    def test_verified_listing_can_reach_form_before_account_setup(self):
+        """A pending sign-in does not disqualify a role; explicit posting restrictions still apply."""
+        review = {**analysis(), "process_complete": False}
+        self.assertEqual(process_issues(review, source(), check_on_form=True), [])
+        self.assertTrue(process_issues({**review, "identity_consistent": False}, source(), check_on_form=True))
+        broken = {**review, "process_restrictions": [{"kind": "unknown"}]}
+        self.assertTrue(process_issues(broken, source(), check_on_form=True))
+
     def test_application_cap_and_availability_always_require_manual_evidence(self):
         rules = [("application_limit", "Apply to at most two roles across our affiliates."),
                  ("availability_statement", "State your availability dates on your resume."),
@@ -78,15 +85,13 @@ class RecommendationChecksTests(unittest.TestCase):
             with self.subTest(kind=kind):
                 self.assertTrue(any("Manual verification" in issue for issue in process_issues(result, captured)))
 
-    def test_independent_auditor_cannot_approve_a_previously_omitted_rule(self):
+    def test_observed_application_limit_blocks_without_a_second_agent(self):
+        """Process restrictions remain enforced locally after the single extraction."""
         quote = "Apply to at most two roles across all affiliates."
         captured = source(source()["description"] + "\n" + quote)
-        audited = analysis()
-        audited["process_restrictions"] = [{"kind": "application_limit", "text": quote, "quote": quote}]
-        profile = {"confirmed": True, "facts": [{"id": "skills.0", "text": "Python", "kind": "skill", "confirmed": True}]}
-        result = audit_eligibility(SimpleNamespace(ask=Mock(return_value=audited)), profile, scoped_page(captured, captured), analysis())
-        self.assertFalse(result["passed"])
-        self.assertTrue(any("Manual verification" in issue for issue in result["issues"]))
+        result = analysis()
+        result["process_restrictions"] = [{"kind": "application_limit", "text": quote, "quote": quote}]
+        self.assertTrue(any("Manual verification" in issue for issue in process_issues(result, captured)))
 
     def test_missing_or_platform_employer_link_pauses(self):
         for target in (None, "", "https://www.linkedin.com/jobs/view/12345", "http://employer.example.test/jobs/12345"):
@@ -112,6 +117,20 @@ class RecommendationChecksTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_employer_page({**captured, "employer_job_id": "12345"}, page)
 
+    def test_observed_frame_must_preserve_parent_and_exact_requisition(self):
+        captured = {**source(), "employer_url": "https://employer.test/careers?gh_jid=456"}
+        frame = "https://job-boards.greenhouse.io/embed/job_app?for=example&token=456"
+        proof = {"parent_url": "https://www.employer.test/careers?gh_jid=456", "frame_url": frame, "job_id": "456"}
+        page = {"url": frame, "title": "Example Co — Analyst Intern", "text": "Python required.", "application_frame": proof}
+        self.assertEqual(validate_employer_page(captured, page), page)
+        for changes in ({"job_id": "457"}, {"parent_url": "https://other.test/careers?gh_jid=456"},
+                        {"frame_url": frame + "7"}, {"parent_url": "https://employer.test/other?gh_jid=456"}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                validate_employer_page(captured, {**page, "application_frame": {**proof, **changes}})
+        for destination in (frame.replace("greenhouse.io", "evil.test"), frame.replace("token=456", "token=457")):
+            with self.subTest(destination=destination), self.assertRaises(ValueError):
+                validate_employer_page(captured, {**page, "url": destination, "application_frame": {**proof, "frame_url": destination}})
+
     def test_imported_prepare_uses_fresh_scoped_reader_and_stores_new_description(self):
         stored = source()
         fresh = source(stored["description"] + "\nSQL required.")
@@ -121,7 +140,7 @@ class RecommendationChecksTests(unittest.TestCase):
         session, page = app._description({"id": "job-1", "url": "https://www.linkedin.com/jobs/", "recommendation_source": stored})
         self.assertIsNone(session)
         self.assertEqual(page["text"], fresh["description"])
-        workspace.recommendations.read_job.assert_called_once_with(stored)
+        workspace.recommendations.read_job.assert_called_once_with(stored, application=True)
         workspace.store.job.assert_called_once_with("job-1", recommendation_source=fresh, details=fresh["description"],
                                                    details_origin="captured", qualification_status="unverified")
         app._session.assert_not_called()
@@ -160,6 +179,7 @@ class RecommendationChecksTests(unittest.TestCase):
                 app._description({"id": "manual", "url": url})
         app._session.assert_not_called()
         job = {"id": "employer", "url": "https://careers.example.test/jobs/12345"}
+        app._session.return_value.call.return_value = {"url": job["url"]}
         app._description(job)
         app._session.assert_called_once_with(job)
         app._session.return_value.call.assert_called_once_with("open", {"url": job["url"]})
@@ -186,6 +206,7 @@ class RecommendationChecksTests(unittest.TestCase):
         workspace = SimpleNamespace(recommendations=SimpleNamespace(read_job=Mock(return_value=captured)),
                                     store=Mock(), profile=lambda: {"confirmed": True}, client=Mock())
         workspace.store.get.return_value = job
+        workspace.store.begin_preparation.return_value = job
         app = Applications(workspace)
         app._screen, app._session, app._resume, app._walk = Mock(return_value=analysis()), Mock(), Mock(), Mock()
         with self.assertRaisesRegex(ValueError, "No verified employer"):
@@ -204,38 +225,42 @@ class RecommendationChecksTests(unittest.TestCase):
         workspace.store.all.return_value = []
         app = Applications(workspace)
         result = {**analysis(), "process_complete": False, "details": captured["description"]}
-        with patch("applydesk.intelligence.analyze_job", return_value=result), patch("applydesk.intelligence.audit_eligibility") as auditor:
+        with patch("applydesk.intelligence.analyze_job", return_value=result):
+            self.assertEqual(app._screen({"id": "job-1"}, profile, scoped_page(captured, captured), listing_only=True), result)
             self.assertIsNone(app._screen({"id": "job-1"}, profile, scoped_page(captured, captured)))
-        auditor.assert_not_called()
         self.assertEqual(workspace.store.job.call_args.kwargs["status"], "needs_review")
 
-    def test_stricter_employer_qualification_uses_the_user_assumption(self):
-        """Fresh employer requirements remain recorded without demanding unsupported personal evidence."""
+    def test_unmet_employer_work_years_pause_before_documents_or_forms(self):
+        """A newly observed mandatory work-history mismatch cannot pass the skill assumption."""
         captured = source()
         job = {"id": "job-1", "status": "new", "recommendation_source": captured}
         profile = {"confirmed": True, "revision": 1, "preferences": {},
                    "facts": [{"id": "skills.0", "text": "Python", "kind": "skill", "confirmed": True}]}
         initial = {**analysis(), "details": captured["description"], "country": "US", "category": "Tech",
                    "preferred": [], "cover_letter_required": False}
-        stricter = {**initial, "required": [*initial["required"], {"text": "SQL required", "evidence_ids": [], "met": False}]}
+        requirement = "3 years of professional SQL work required"
+        stricter = {**initial, "required": [*initial["required"], {"text": requirement, "evidence_ids": [], "met": False}]}
         worker, auditor = SimpleNamespace(ask=Mock(side_effect=[initial, stricter])), SimpleNamespace(ask=Mock(return_value=initial))
         workspace = SimpleNamespace(store=Mock(), recommendations=SimpleNamespace(read_job=Mock(return_value=captured)),
                                     profile=lambda: profile, client=lambda role: auditor if role == "auditor" else worker,
                                     resumes=Mock(categories=lambda: ["General", "Tech"], list=lambda: []))
         workspace.store.get.return_value, workspace.store.all.return_value = job, []
+        workspace.store.begin_preparation.return_value = job
         browser = Mock()
         browser.call.return_value = {"url": captured["employer_url"], "title": "Example Co — Analyst Intern",
-                                     "text": "Python required. SQL required. " + "An internship working with data and building reports. " * 3,
+                                     "text": "Python required. " + requirement + ". " + "An internship working with data and building reports. " * 3,
                                      "fields": [], "buttons": [], "links": []}
         app = Applications(workspace)
         app._session, app._resume, app._walk = Mock(return_value=browser), Mock(), Mock()
         with patch("applydesk.applications.public_job_url", side_effect=lambda value: value):
             app.prepare(job["id"])
-        self.assertIn("SQL required", worker.ask.call_args.args[1]["page"]["text"])
-        self.assertEqual(workspace.store.job.call_args.kwargs["analysis"]["required"], stricter["required"])
+        self.assertIn(requirement, worker.ask.call_args.args[1]["page"]["text"])
+        recorded = [call.kwargs["analysis"] for call in workspace.store.job.call_args_list if "analysis" in call.kwargs]
+        self.assertEqual(recorded[-1]["required"], stricter["required"])
+        self.assertEqual(workspace.store.job.call_args.kwargs["status"], "needs_review")
         self.assertEqual([call.args[0] for call in browser.call.call_args_list], ["open"])
-        app._resume.assert_called_once()
-        app._walk.assert_called_once()
+        app._resume.assert_not_called()
+        app._walk.assert_not_called()
 
 
 if __name__ == "__main__":

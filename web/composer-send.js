@@ -13,7 +13,7 @@ export function updateComposeAction() {
   const engine=state.data.orchestrator,button=document.querySelector('#send-assistant');
   const stopping=engine.paused&&!!engine.active,working=composerIsWorking(engine);
   if(!engine.paused)resumePending=false;
-  const label=stopping?'Stopping agents':working?'Stop agents':resumePending?'Resume queued message':'Send message';
+  const label=stopping?'Stopping agent':working?'Stop agent':resumePending?'Resume queued message':'Send message';
   button.innerHTML=icon(working||stopping?'stop':'send');
   button.setAttribute('aria-label',label);button.title=engine.paused&&!stopping?'Send message and resume queued work':label;
   button.setAttribute('aria-busy',String(pending||stopping));

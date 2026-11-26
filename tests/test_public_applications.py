@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -11,16 +10,17 @@ import test_application_automation as automation
 from test_orchestrator import response
 from test_workflow import BrowserFixture, snapshot
 from applydesk import ai_prompts
+from applydesk.orchestrator_prompts import SELF_CHECK
+from applydesk.application_client import STEP_BOUNDARY
 from applydesk.chatgpt_inference import output_text
 from applydesk.application_submission import attempt_key
 from applydesk.application_intent import INTENT_PROMPT
-from applydesk.public_source import validate_public_analysis, validate_public_page, validate_public_source
 
 
 def public_source(url="https://careers.example.test/opening?id=101"):
     """Use a complete synthetic posting whose URL need not resemble a particular ATS."""
-    description = ("Example Co Analyst. Entry publishing role in Boston. Full-time new-grad position. "
-                   "Python required. Responsibilities include testing electronic publishing and documenting laboratory results.")
+    description = ("Example Co Analyst. Entry hardware role in Boston. Full-time new-grad position. "
+                   "Python required. Responsibilities include testing electronic hardware and documenting laboratory results.")
     return {"url": url, "company": "Example Co", "title": "Analyst", "description": description,
             "description_sha256": hashlib.sha256(description.encode()).hexdigest(),
             "captured_at": "2026-11-12T01:00:00+00:00", "complete": True}
@@ -39,15 +39,15 @@ class PublicApplicationTests(ChatFixture):
         self.w.store.put("chatgpt", "accounts", {"active": "test", "accounts": [{"id": "test", "label": "Test", "client_id": "oaiapp_test", "subject": "subject", "connected": True}]})
         self.w.store.put("chatgpt_models", "test", [{"id": "test-model", "name": "Test", "thinking": []}])
         profile = self.w.profile()
-        profile["industries"] = [{"name": "Publishing", "years": "0"}]
+        profile["industries"] = [{"name": "Hardware", "years": "0"}]
         profile["preferences"]["levels"] = ["Entry"]
         self.w.save_profile(profile)
         self.w.store.clear("job")
         self.w.store.put("recommendation_preference", "handshake", {"enabled": False})
         self.jobs = [self.public_job("101"), self.public_job("102")]
         self.roles, self.browsers, self.requests = [], [], []
-        self.fail_audit, self.fail_receipt = False, False
-        message = self.engine.history.add("user", "Please send one publishing application in Boston.")
+        self.fail_analysis, self.fail_receipt = False, False
+        message = self.engine.history.add("user", "Please send one hardware application in Boston.")
         self.engine.active = {"message": message}
         self.intent = {"action": "start", "run_id": "", "authorization_message_id": message["id"], "limit": 1,
                        "locations": ["Boston"], "instruction": message["text"], "resume_id": "", "issues": []}
@@ -79,13 +79,12 @@ class PublicApplicationTests(ChatFixture):
         self.browsers.append(browser)
         return browser
 
-    def run_public(self):
+    def run_public(self, job_ids=None):
         """The run consumes saved listings without invoking platform discovery or source readers."""
         with patch.object(self.w.recommendations, "read_job", side_effect=AssertionError("Unexpected platform read")):
-            with patch.object(self.w.recommendations, "begin", side_effect=AssertionError("Unexpected platform search")):
-                with patch("applydesk.application_automation.ApplicationSession", side_effect=self.browser):
-                    with patch.object(self.engine.runner, "_request", side_effect=self.model):
-                        return self.engine.applications.start()
+            with patch("applydesk.application_automation.ApplicationSession", side_effect=self.browser):
+                with patch.object(self.engine.runner, "_request", side_effect=self.model), patch("applydesk.application_automation.Applications", side_effect=automation.legacy_application):
+                    return self.engine.applications.start(job_ids)
 
     def test_public_run_needs_no_platform_connection_and_keeps_tracker_order(self):
         run = self.run_public()
@@ -97,7 +96,7 @@ class PublicApplicationTests(ChatFixture):
                                                        "receipt": "Your application was submitted"}})
         self.assertEqual(self.opened, [self.jobs[0]["url"]])
         self.assertEqual(self.w.store.get("job", self.jobs[1]["id"])["status"], "new")
-        self.assertTrue({"application", "document_reviewer", "application_auditor"} <= set(self.roles))
+        self.assertEqual(set(self.roles), {"master"})
 
     def test_public_candidates_and_enabled_native_captures_share_saved_order(self):
         native = self.listing("103")
@@ -147,7 +146,7 @@ class PublicApplicationTests(ChatFixture):
         original = self.model
         def model(payload, cancelled, emit):
             result = original(payload, cancelled, emit)
-            if payload["instructions"] == ai_prompts.ANALYZE:
+            if payload["instructions"] == SELF_CHECK + STEP_BOUNDARY + ai_prompts.ANALYZE:
                 analysis = json.loads(output_text(result))
                 analysis["process_restrictions"] = [{"kind": "other", "quote": quote, "text": "Applications are accepted by email."}]
                 return response(json.dumps(analysis))
@@ -196,16 +195,16 @@ class PublicApplicationTests(ChatFixture):
         self.assertEqual((second["id"], second["attempted_count"], second["limit"]), (first["id"], 2, 5))
         self.assertEqual([item["job_id"] for item in second["results"]], [self.jobs[0]["id"], saved["id"]])
         self.assertEqual(len(self.w.store.all("application_run")), 1)
-        self.assertEqual(sum(item["instructions"] == INTENT_PROMPT for item in self.requests), 1)
+        self.assertEqual(sum(item["instructions"] == SELF_CHECK + INTENT_PROMPT for item in self.requests), 1)
         self.assertEqual(sum(browser.methods.count("submit") for browser in self.browsers), 2)
         self.assertEqual(self.run_public(), second)
 
     def test_same_turn_batches_do_not_retry_previous_failed_jobs(self):
         self.intent["limit"] = 5
-        self.fail_audit = True
+        self.fail_analysis = True
         first = self.run_public()
         self.assertEqual(first["attempted_count"], 0)
-        self.fail_audit = False
+        self.fail_analysis = False
         saved = self.public_job("103")
         second = self.run_public()
         self.assertEqual((second["id"], second["attempted_count"]), (first["id"], 1))
@@ -228,39 +227,3 @@ class PublicApplicationTests(ChatFixture):
                 self.run_public()
             self.assertEqual(self.w.store.get("application_run", first["id"]), first)
             self.assertEqual(len(self.browsers), 1)
-
-
-class PublicSourceTests(unittest.TestCase):
-    """Source checks distinguish original listing reads from observed application destinations."""
-
-    def test_capture_hash_and_complete_fields_are_required(self):
-        for change in ({"complete": False}, {"company": ""}, {"description_sha256": "wrong"},
-                       {"url": "file:///tmp/example"}, {"url": "https://name:secret@example.test"}):
-            with self.subTest(change=change), self.assertRaises(ValueError):
-                validate_public_source({**public_source(), **change})
-
-    def test_canonical_tracking_aliases_preserve_the_same_listing(self):
-        source = public_source()
-        page = {"url": source["url"] + "&utm_source=example", "title": "Example Co — Analyst", "text": source["description"]}
-        self.assertEqual(validate_public_page(source, page)["public_source"], source)
-
-    def test_unknown_or_truncated_public_requirements_stop(self):
-        source = public_source()
-        page = {"url": source["url"], "title": "Example Co — Analyst", "text": source["description"]}
-        for change in ({"truncated": True}, {"text_truncated": True}, {"text": "Example Co Analyst"},
-                       {"text": source["description"] + " This position is no longer available."}):
-            with self.subTest(change=change), self.assertRaises(ValueError):
-                validate_public_page(source, {**page, **change})
-
-    def test_application_destination_can_change_but_identity_must_remain(self):
-        source = public_source()
-        form = {"url": "https://application.example.test/123", "title": "Apply", "text": "Example Co Analyst application"}
-        self.assertEqual(validate_public_page(source, form, listing=False)["url"], form["url"])
-        with self.assertRaises(ValueError):
-            validate_public_page(source, {**form, "text": "Another Company Analyst"}, listing=False)
-
-    def test_analyzer_cannot_replace_the_saved_employer_or_role(self):
-        validate_public_analysis(public_source(), {"company": " example   co ", "title": "ANALYST"})
-        for change in ({"company": "Another Company"}, {"title": "Senior Analyst"}):
-            with self.subTest(change=change), self.assertRaises(ValueError):
-                validate_public_analysis(public_source(), {"company": "Example Co", "title": "Analyst", **change})

@@ -1,4 +1,4 @@
-// One master conversation can include many sequential model requests and tool steps.
+// One agent conversation can include many sequential model requests and tool steps.
 export function groupAgentRuns(runs) {
   const groups=[],masters=new Map();
   for(const run of runs) {

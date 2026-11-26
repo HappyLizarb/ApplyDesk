@@ -107,6 +107,92 @@ class ProfileFieldTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Invalid languages rows"):
                 validate_profile(source, empty_profile())
 
+    def test_gpa_round_trip_preserves_the_supplied_value_and_scale(self):
+        """GPA remains text rather than acquiring an assumed grading system or numeric range."""
+        for gpa in ["3.85 / 4.00", "8.7 / 10", "92%", "4.50 weighted", "Not reported", ""]:
+            source = self.source()
+            source["education"] = [{"institution": "Example University", "gpa": gpa}]
+            saved = validate_profile(source, empty_profile())
+            self.assertEqual(saved["education"][0]["gpa"], gpa)
+            self.assertEqual(model_profile(saved)["education"][0]["gpa"], gpa)
+            fact = next(row for row in saved["facts"] if row["id"] == "education.0")
+            self.assertEqual("gpa:" in fact["text"], bool(gpa))
+            if gpa:
+                self.assertIn("gpa: " + gpa, fact["text"])
+
+    def test_legacy_education_gets_empty_gpa_without_mutating_saved_data(self):
+        """Adding the optional field cannot fabricate a grade or reconfirm an older profile."""
+        source = self.source()
+        source["revision"] = 7
+        source["education"] = [{"institution": "Example University", "degree": "BS"}]
+        before = copy.deepcopy(source)
+        restored = profile_with_defaults(source)
+        self.assertEqual(source, before)
+        self.assertEqual(restored["education"][0]["gpa"], "")
+        self.assertEqual(restored["revision"], 7)
+        self.assertTrue(restored["confirmed"])
+        self.assertEqual(validate_profile(source, source)["education"][0]["gpa"], "")
+
+    def test_imported_gpa_remains_unconfirmed_and_never_gains_a_scale(self):
+        """Both extraction entry points retain the explicit source text pending user review."""
+        source = self.source()
+        source["education"] = [{"institution": "Example University", "gpa": "3.85"}]
+        client = Mock(ask=Mock(return_value=copy.deepcopy(source)))
+        extracted = extract_profile(client, "Example University; GPA: 3.85")
+        draft = profile_draft({"profile": extracted, "notes": []})["profile"]
+        self.assertEqual(extracted["education"][0]["gpa"], "3.85")
+        self.assertEqual(draft["education"][0]["gpa"], "3.85")
+        self.assertFalse(draft["confirmed"])
+        self.assertEqual(draft["facts"], [])
+        source["education"][0].pop("gpa")
+        self.assertEqual(profile_draft({"profile": source, "notes": []})["profile"]["education"][0]["gpa"], "")
+
+    def test_gpa_rejects_structured_or_boolean_values(self):
+        """The optional text field cannot accept model objects or boolean claims."""
+        for value in [{"value": 3.8}, ["3.8"], True, None]:
+            source = self.source()
+            source["education"] = [{"gpa": value}]
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "plain text"):
+                validate_profile(source, empty_profile())
+
+    def test_separate_gpa_scale_survives_save_and_source_import(self):
+        """Explicit values remain distinct text without a default scale or range restriction."""
+        source = self.source()
+        source["education"] = [{"institution": "Example University", "gpa": "8.70", "gpa_scale": "10.00"}]
+        saved = validate_profile(source, empty_profile())
+        imported = profile_draft({"profile": source, "notes": []})["profile"]
+        for profile in (saved, imported, model_profile(saved)):
+            self.assertEqual(profile["education"][0]["gpa"], "8.70")
+            self.assertEqual(profile["education"][0]["gpa_scale"], "10.00")
+        self.assertFalse(imported["confirmed"])
+        self.assertEqual(imported["facts"], [])
+
+    def test_legacy_numeric_gpa_ratio_splits_on_read_only_when_scale_is_absent(self):
+        """A slash is source evidence for both numbers, while explicit empty scales stay empty."""
+        source = self.source()
+        source["revision"] = 9
+        source["education"] = [{"gpa": "3.85 / 4.00"}, {"gpa": "3.85"},
+                               {"gpa": "3.85 / 4.00", "gpa_scale": ""},
+                               {"gpa": "3.85 / 4.00", "gpa_scale": "Explicit scale"},
+                               {"gpa": "3.85 / 4.00 weighted"}]
+        before = copy.deepcopy(source)
+        restored = profile_with_defaults(source)
+        actual = [(row["gpa"], row["gpa_scale"]) for row in restored["education"]]
+        self.assertEqual(actual, [("3.85", "4.00"), ("3.85", ""), ("3.85 / 4.00", ""),
+                                  ("3.85 / 4.00", "Explicit scale"), ("3.85 / 4.00 weighted", "")])
+        self.assertEqual(source, before)
+        self.assertEqual(restored["revision"], 9)
+        self.assertTrue(restored["confirmed"])
+        self.assertEqual(restored["facts"], source["facts"])
+
+    def test_gpa_scale_uses_the_same_bounded_text_validation(self):
+        """Separate grading scales cannot smuggle structured data into model context."""
+        for value in [{"scale": 4}, ["4"], True, None, "x" * 10001]:
+            source = self.source()
+            source["education"] = [{"gpa": "3.85", "gpa_scale": value}]
+            with self.subTest(value=type(value).__name__), self.assertRaises(ValueError):
+                validate_profile(source, empty_profile())
+
 
 if __name__ == "__main__":
     unittest.main()

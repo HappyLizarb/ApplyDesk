@@ -60,16 +60,28 @@ test('experience row exposes all editable fields in the requested order',()=>{
   assert.match(html,/aria-label="Duration">· 3 mos<\/output>/);
 });
 
-// Project links are editable text values, so hostile imported URLs cannot create active links.
-test('project row keeps date precision and safely renders description and URL',()=>{
-  const html=timelineRow('projects',{name:'Thesis',start:'2024',end:'Present',
-    details:'</textarea><script>alert(1)</script>',url:'" onfocus="alert(1)'},0);
-  for(const key of ['name','start','end','details','url'])assert.ok(html.includes(`name="projects.0.${key}"`));
-  assert.match(html,/value="2024"/);
-  assert.match(html,/value="Present"/);
-  assert.match(html,/&lt;\/textarea&gt;&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
-  assert.match(html,/value="&quot; onfocus=&quot;alert\(1\)"/);
-  assert.doesNotMatch(html,/<a\b|<script>|entry-duration|\.company"/);
+// School details retain the requested row order, optional GPA, and explicit month/year choices.
+test('education uses school, degree/field/GPA, month-year dates and two-row coursework',()=>{
+  const html=timelineRow('education',{institution:'Example University',degree:'BSc',field:'Engineering',
+    gpa:'91',gpa_scale:'100',start:'2023-08',end:'2027',coursework:'Circuit Design\nDigital Systems'},0);
+  const fields=['institution','degree','field','gpa','gpa_scale','start.month','start.year','end.month','end.year','coursework'];
+  const positions=fields.map(key=>html.indexOf(`name="education.0.${key}"`));
+  assert.ok(positions.every((position,index)=>position>=0&&(!index||position>positions[index-1])));
+  assert.match(html,/entry-title.*name="education\.0\.institution"/);
+  assert.match(html,/name="education\.0\.gpa"[^>]*value="91"/);
+  assert.match(html,/name="education\.0\.gpa_scale"[^>]*value="100"/);
+  assert.match(html,/name="education\.0\.start\.month"[^>]*>.*value="08" selected>Aug/);
+  assert.match(html,/name="education\.0\.end\.year"[^>]*value="2027"/);
+  assert.match(html,/name="education\.0\.coursework" rows="2"/);
+  assert.doesNotMatch(html,/entry-duration|education\.0\.company/);
+});
+
+// Imported employers and descriptions stay inert when the editable timeline renders them.
+test('employment safely renders imported input and textarea values',()=>{
+  const html=timelineRow('experiences',{company:'" onfocus="alert(1)',details:'</textarea><script>alert(1)</script>'},0);
+  assert.ok(html.includes('value="&quot; onfocus=&quot;alert(1)"'));
+  assert.ok(html.includes('&lt;/textarea&gt;&lt;script&gt;alert(1)&lt;/script&gt;'));
+  assert.doesNotMatch(html,/<script>| onfocus="alert/);
 });
 
 // Duration refresh changes only the output, leaving typed values and caret-bearing inputs alone.

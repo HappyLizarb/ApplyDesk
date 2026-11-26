@@ -10,6 +10,7 @@ from chat_helpers import ChatFixture
 from applydesk.chatgpt_transport import AccountError, connect, stream_events
 from applydesk.orchestrator_http import orchestrator_action
 from applydesk.chatgpt_inference import output_text
+from applydesk.auto_start import usage_limited
 
 
 class StreamTests(ChatFixture):
@@ -92,3 +93,19 @@ class StreamTests(ChatFixture):
         """Invalid stream indexes cannot masquerade as complete tool output."""
         with self.assertRaises(AccountError):
             self.run_stream([{"type": "response.output_item.done", "output_index": True, "item": {}}])
+
+    def test_http_and_stream_errors_expose_only_a_known_reason(self):
+        """An oversized request, exhausted quota and an incomplete reply need different recovery."""
+        raw = {"error": {"code": "context_length_exceeded", "message": "private applicant data"}}
+        with patch("applydesk.chatgpt_transport.HTTPSConnection") as https:
+            response = https.return_value.getresponse.return_value
+            response.status, response.read.return_value = 400, json.dumps(raw).encode()
+            with self.assertRaisesRegex(AccountError, "HTTP 400.*context window") as failure:
+                connect("https://api.openai.com/v1/responses", "POST", {})
+        self.assertFalse(failure.exception.retryable)
+        self.assertNotIn("private applicant", str(failure.exception))
+        with self.assertRaisesRegex(AccountError, "output limit"):
+            self.run_stream([{"type": "response.incomplete", "response": {"incomplete_details": {"reason": "max_output_tokens"}}}])
+        with self.assertRaisesRegex(AccountError, "insufficient API quota") as quota:
+            self.run_stream([{"type": "error", "status": 429, "code": "insufficient_quota"}])
+        self.assertFalse(usage_limited(quota.exception))

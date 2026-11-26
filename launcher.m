@@ -1,4 +1,7 @@
 #import <Cocoa/Cocoa.h>
+#import "chrome-approval.h"
+#import "native-browser.h"
+#import <ApplicationServices/ApplicationServices.h>
 #include <unistd.h>
 
 // Chrome's private profile lock identifies this workspace, not the user's browser.
@@ -33,15 +36,14 @@ static int focusInterface(NSString *profile) {
 
 @implementation ApplyDeskLauncher
 
-// Packaged launches use their own resources; source checkouts remain runnable.
+// Finder launches only the packaged entry point. Source checkouts have their own start command.
 - (NSTask *)configuredTask {
     NSBundle *bundle = NSBundle.mainBundle;
     NSString *root = [bundle.resourcePath stringByAppendingPathComponent:@"Program"];
-    if (![NSFileManager.defaultManager fileExistsAtPath:[root stringByAppendingPathComponent:@"run.py"]])
-        root = bundle.bundlePath.stringByDeletingLastPathComponent;
     NSTask *task = [NSTask new];
     task.executableURL = [NSURL fileURLWithPath:@"/bin/zsh"];
-    task.arguments = @[[root stringByAppendingPathComponent:@"Start ApplyDesk.command"]];
+    task.arguments = @[@"-f",[root stringByAppendingPathComponent:@"Start ApplyDesk.command"]];
+    task.currentDirectoryURL = [NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES];
     NSMutableDictionary *environment = [NSProcessInfo.processInfo.environment mutableCopy];
     environment[@"APPLYDESK_LAUNCHER"] = bundle.executablePath;
     task.environment = environment;
@@ -110,8 +112,15 @@ static int focusInterface(NSString *profile) {
 // AppKit supplies Finder lifecycle events and visible error dialogs.
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
+        if (argc == 2 && strcmp(argv[1], "--native-browser") == 0) return ADNativeBrowserMain();
+        if (argc == 2 && strcmp(argv[1], "--chrome-approval-status") == 0) {
+            puts(AXIsProcessTrusted() ? "ready" : "accessibility_required");
+            return 0;
+        }
         if (argc == 3 && strcmp(argv[1], "--focus-interface") == 0)
             return focusInterface([NSString stringWithUTF8String:argv[2]]);
+        if (argc == 3 && strcmp(argv[1], "--approve-chrome-debugging") == 0)
+            return ADApproveChromeConnection([NSString stringWithUTF8String:argv[2]]);
         NSApplication *application = NSApplication.sharedApplication;
         ApplyDeskLauncher *delegate = [ApplyDeskLauncher new];
         application.delegate = delegate;

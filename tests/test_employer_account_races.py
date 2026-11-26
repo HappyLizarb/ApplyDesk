@@ -46,7 +46,7 @@ class EmployerAccountRaceTests(unittest.TestCase):
             self.filling.set()
             self.assertTrue(self.release.wait(timeout=5))
         elif method == "authenticate":
-            self.assertFalse(self.edit_finished.is_set())
+            self.assertTrue(self.edit_finished.is_set())
             current = self.store.get("job", self.job["id"])
             self.assertEqual(current["account_origin"], self.saved["account_origin"])
             self.assertEqual(current["company"], "Circuit Example")
@@ -61,18 +61,20 @@ class EmployerAccountRaceTests(unittest.TestCase):
             self.edit_finished.set()
 
     def exercise_race(self, operation):
-        """Both browser writes must finish before the waiting mutation can persist."""
+        """Concurrent edits are rejected; retrying after authentication succeeds."""
         with ThreadPoolExecutor(max_workers=2) as pool:
             login = pool.submit(authenticate, self.workspace, self.session, self.job, authentication_page())
             try:
                 self.assertTrue(self.filling.wait(timeout=5))
                 changed = pool.submit(self.edit, operation)
                 self.assertTrue(self.edit_started.wait(timeout=5))
-                self.assertFalse(self.edit_finished.wait(timeout=0.1))
+                self.assertTrue(self.edit_finished.wait(timeout=1))
             finally:
                 self.release.set()
-            self.assertEqual(login.result(timeout=5), {"snapshot_id": "authenticate"})
-            changed.result(timeout=5)
+            self.assertEqual(login.result(timeout=5), {"snapshot_id": "authenticate", "intervention": "authentication_completed"})
+            with self.assertRaisesRegex(ValueError, "authentication is in progress"):
+                changed.result(timeout=5)
+        operation()
         self.assertTrue(self.edit_finished.is_set())
         self.assertEqual([call.args[0] for call in self.session.call.call_args_list], ["fill", "authenticate"])
 

@@ -1,8 +1,8 @@
-"""Require fresh, independent evidence before labeling a live application ready."""
+"""Require fresh, verified evidence before labeling a live application ready."""
 
 import re
 
-from .mapping import document_kind, normalize
+from .mapping import COVER_LETTER_REQUIRED, document_kind, normalize
 
 FINAL_LABELS = {"submit application", "send application", "submit job application"}
 
@@ -15,7 +15,8 @@ def verify_readiness(job, current_job, profile, snapshot, ledger):
     issues.extend(_audit_issues(snapshot, button))
     issues.extend(_attachment_issues(current_job, profile, snapshot, ledger, button))
     guard = snapshot.get("guard", {})
-    if guard.get("manual") or not (guard.get("mutations_blocked") is True or guard.get("submission_guarded") is True):
+    audited_browser = guard.get("page_networking") == "normal" and guard.get("action_audited") is True
+    if guard.get("manual") or not (audited_browser or guard.get("mutations_blocked") is True or guard.get("submission_guarded") is True):
         issues.append("The browser is not in guarded automation mode.")
     if guard.get("blocked_requests"):
         issues.append("The site attempted an unverified network action; review it manually.")
@@ -73,10 +74,10 @@ def _associated(field, button):
 
 
 def _audit_issues(snapshot, button):
-    """The independent audit must name this exact snapshot and the relevant live fields."""
+    """The readback check must name this exact snapshot and the relevant live fields."""
     audit = snapshot.get("audit", {})
     if not snapshot.get("snapshot_id") or audit.get("passed") is not True or audit.get("snapshot_id") != snapshot.get("snapshot_id"):
-        return ["The final browser snapshot lacks a matching independent field audit."]
+        return ["The final browser snapshot lacks a matching field readback check."]
     audited = set(audit.get("field_ids", []))
     issues, relevant = [], []
     for field in snapshot.get("fields", []):
@@ -93,11 +94,11 @@ def _audit_issues(snapshot, button):
         if field.get("type") == "password" or not field.get("supported", False):
             issues.append("The final view contains a credential or unsupported required/populated control.")
         if field.get("field_id") not in audited:
-            issues.append("A required or populated live field is missing from the independent audit.")
+            issues.append("A required or populated live field is missing from the readback check.")
         if not _associated(field, button):
             issues.append("An audited field is outside the final application form or section.")
     if not relevant:
-        issues.append("No independently audited application fields are visible at the final control.")
+        issues.append("No verified application fields are visible at the final control.")
     return issues
 
 
@@ -111,7 +112,7 @@ def _radio_issues(field, fields, audited):
     if len(selected) > 1 or (any(item.get("required") for item in peers) and len(selected) != 1):
         return ["A radio group has missing or conflicting selections."]
     if selected and selected[0].get("field_id") not in audited:
-        return ["The selected radio answer is missing from the independent audit."]
+        return ["The selected radio answer is missing from the readback check."]
     return []
 
 
@@ -127,11 +128,11 @@ def _attachment_issues(job, profile, snapshot, ledger, button):
         recorded[field_id] = item
         issues.extend(_verify_attachment(item, fields.get(field_id), expected_ids, button))
     if not any(item.get("kind") == "resume" for item in ledger):
-        issues.append("The selected resume has no independently verified upload.")
+        issues.append("The selected resume has no verified upload.")
     cover_fields = [field for field in snapshot.get("fields", []) if document_kind(field) == "cover"]
     required_cover_file = any(field.get("type") == "file" and field.get("required") for field in cover_fields)
     if required_cover_file and not any(item.get("kind") == "cover" for item in ledger):
-        issues.append("The selected cover letter has no independently verified upload.")
+        issues.append("The selected cover letter has no verified upload.")
     if job.get("cover_id") and not cover_fields:
         issues.append("The selected cover letter is not visible in the final application view.")
     for field_id, field in fields.items():
@@ -165,7 +166,7 @@ def _cover_state(job, snapshot, ledger, verified_final):
     """A slash is justified only after a proven final view excludes a cover requirement."""
     fields = [field for field in snapshot.get("fields", []) if document_kind(field) == "cover"]
     if job.get("cover_id") or job.get("cover_state") == "required" or any(field.get("required") for field in fields) or any(item.get("kind") == "cover" for item in ledger):
-        return "required", []
+        return "required", [COVER_LETTER_REQUIRED]
     if any(field.get("files") or field.get("value") not in (None, "", False, []) for field in fields):
         return "not_checked", ["An optional cover letter is populated without a current required document; review it manually."]
     if not verified_final:

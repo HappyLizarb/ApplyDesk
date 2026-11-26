@@ -1,4 +1,4 @@
-"""Document-library deletion removes unused files and preserves application-owned copies."""
+"""Explicit deletion removes selected bytes and invalidates dependent unfinished work."""
 
 import json
 from http.client import HTTPConnection
@@ -49,17 +49,17 @@ class DocumentDeletionTests(ChatFixture):
         session = Mock()
         self.w.sessions[jobs[0]] = session
         result = self.deletion.delete({"document_id": "resume"})
-        self.assertTrue(result["application_copies_kept"])
-        self.assertTrue(self.w.docs.verify("resume"))
+        self.assertFalse(result["application_copies_kept"])
+        self.assertFalse((self.w.docs.root / "resume").exists())
         self.assertEqual(self.w.resumes.list(), [])
         pending = self.w.store.get("job", jobs[0])
-        self.assertEqual((pending["status"], pending["resume_id"]), ("documents_changed", "resume"))
+        self.assertEqual((pending["status"], pending["resume_id"]), ("needs_review", None))
         self.assertIsNone(pending["last_snapshot"])
         session.cancel.assert_called_once()
         session.close.assert_called_once()
         for identity, status in zip(jobs[1:], ("submitted", "submission_unknown")):
             self.assertEqual(self.w.store.get("job", identity)["status"], status)
-            self.assertEqual(self.w.store.get("job", identity)["resume_id"], "resume")
+            self.assertIsNone(self.w.store.get("job", identity)["resume_id"])
         with self.assertRaisesRegex(ValueError, "Upload and tag"):
             self.w.resumes.select("General")
 
@@ -75,29 +75,18 @@ class DocumentDeletionTests(ChatFixture):
                     task = self.w.store.get("chat_task", self.task["id"])
                     self.w.store.put("chat_task", task["id"], {**task, "document_ids": [record["id"]]})
                 result = self.deletion.delete({"document_id": record["id"]})
-                self.assertTrue(result["application_copies_kept"])
-                self.assertTrue(self.w.docs.asset(record["source_path"]).is_file())
+                self.assertFalse(result["application_copies_kept"])
+                self.assertFalse((self.w.docs.root / record["id"]).exists())
 
-    def test_template_removal_preserves_existing_cover_edit_and_review_but_blocks_new_letters(self):
-        """A removed library template remains available only as existing-letter provenance."""
+    def test_template_deletion_keeps_independently_saved_letters_readable(self):
+        """A selected template is physically removed without deleting a different letter version."""
         template = self.w.docs.import_file("Cover.docx", sample_docx(), "cover_template")
         self.w.save_settings({"cover_template_id": template["id"]})
         letter = self.w.docs.create(template["id"], {}, "Existing letter", job_id=self.job["id"])
-        self.w.store.job(self.job["id"], cover_id=letter["id"])
-        result = self.deletion.delete({"document_id": template["id"]})
-        self.assertTrue(result["application_copies_kept"])
-        self.assertEqual(self.w.docs.list_templates(), [])
+        self.deletion.delete({"document_id": template["id"]})
         self.assertEqual(self.w.settings()["cover_template_id"], "")
+        self.assertFalse((self.w.docs.root / template["id"]).exists())
         self.assertTrue(self.w.docs.verify(letter["id"]))
-        edited = self.w.docs.edit(letter["id"], {})
-        self.assertTrue(self.w.docs.verify(edited["id"]))
-        tasks = DocumentTasks(self.w, client=Mock())
-        with patch("applydesk.intelligence.review_format", return_value={"passed": True}), patch("applydesk.intelligence.audit_document", return_value={"passed": True}):
-            self.assertTrue(tasks.review(edited["id"])["passed"])
-        with self.assertRaisesRegex(ValueError, "deleted from Documents"):
-            self.w.docs.create(template["id"], {}, "New letter")
-        with self.assertRaisesRegex(ValueError, "deleted from Documents"):
-            self.w.save_settings({"cover_template_id": template["id"]})
 
     def test_unused_template_is_removed_without_touching_other_files_or_preferences(self):
         """Deleting a default clears that selection, while transcript and profile remain untouched."""
@@ -109,25 +98,29 @@ class DocumentDeletionTests(ChatFixture):
         self.assertFalse((self.w.docs.root / template["id"]).exists())
         self.assertTrue(self.w.docs.verify("resume"))
 
-    def test_agent_and_import_work_block_deletion_before_any_changes(self):
-        """The same workspace lock gates active work and deletion to prevent late file use."""
-        for running in ("agent", "import"):
-            with self.subTest(running=running):
-                self.w.orchestrator.active = {"message": {}} if running == "agent" else None
-                self.w.tasks = {"import": {"status": "running"}} if running == "import" else {}
-                with self.assertRaisesRegex(ValueError, "Pause the agent"):
-                    self.deletion.delete({"document_id": "resume"})
-                self.assertTrue(self.w.docs.verify("resume"))
-                self.assertEqual(len(self.w.resumes.list()), 1)
-        self.w.tasks, self.w.orchestrator.active = {}, None
+    def test_deletion_stops_the_agent_and_can_run_during_an_unrelated_import(self):
+        """Cancellation completes before deletion; an unrelated upload does not block removal."""
+        self.w.orchestrator.active = {"message": {}}
+        self.w.tasks = {"import": {"status": "running"}}
+        def stop_work(data):
+            self.assertTrue(data["paused"])
+            self.assertTrue((self.w.docs.root / "resume").exists())
+            self.w.orchestrator.active = None
+        with patch.object(self.w.orchestrator, "control", side_effect=stop_work) as stop:
+            self.deletion.delete({"document_id": "resume"})
+        stop.assert_called_once()
+        self.assertFalse((self.w.docs.root / "resume").exists())
 
-    def test_profile_transcript_generated_documents_and_invalid_ids_are_rejected(self):
-        """The Documents action cannot delete unrelated imports or arbitrary local paths."""
-        for kind in ("profile", "transcript", "document"):
+    def test_all_document_types_can_be_deleted_but_paths_are_rejected(self):
+        """Profile PDFs, transcripts and saved versions have the same deletion boundary."""
+        for kind in ("profile", "transcript", "document", "resume_template"):
             record = self.document(kind, kind)
-            with self.assertRaisesRegex(ValueError, "Only uploaded resumes"):
-                self.deletion.delete({"document_id": record["id"]})
-            self.assertTrue(self.w.docs.asset(record["source_path"]).is_file())
+            if kind == "transcript":
+                profile = self.w.profile()
+                self.w.store.put("profile", "main", {**profile, "transcript_id": kind})
+            self.deletion.delete({"document_id": record["id"]})
+            self.assertFalse((self.w.docs.root / record["id"]).exists())
+        self.assertIsNone(self.w.profile()["transcript_id"])
         for identity in ("../resume", "missing", "", 7):
             with self.subTest(identity=identity), self.assertRaises(ValueError):
                 self.deletion.delete({"document_id": identity})
@@ -227,4 +220,34 @@ class DocumentDeletionTests(ChatFixture):
             connection.close()
             server.shutdown()
             thread.join(timeout=2)
+            server.server_close()
+
+    def test_http_delete_releases_workspace_lock_while_waiting_for_cancellation(self):
+        """The worker can finish under the lock before the HTTP deletion removes its file."""
+        server = AppServer(self.w)
+        serving = threading.Thread(target=server.serve_forever, daemon=True)
+        serving.start()
+        self.w.orchestrator.active = {"task_id": self.task["id"]}
+        def finish_work():
+            if self.w.orchestrator.cancelled.wait(3):
+                with self.w.lock:
+                    self.assertTrue((self.w.docs.root / "resume").exists())
+                    self.w.orchestrator.active = None
+        worker = threading.Thread(target=finish_work, daemon=True)
+        worker.start()
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        headers = {"Cookie": "applydesk=" + server.token, "Origin": server.origin,
+                   "X-ApplyDesk": "1", "Content-Type": "application/json"}
+        try:
+            connection.request("POST", "/api/document/delete", json.dumps({"document_id": "resume"}), headers)
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200, response.read())
+            self.assertFalse((self.w.docs.root / "resume").exists())
+            self.assertTrue(self.w.orchestrator.paused)
+        finally:
+            self.w.orchestrator.active = None
+            connection.close()
+            worker.join(timeout=3)
+            server.shutdown()
+            serving.join(timeout=2)
             server.server_close()

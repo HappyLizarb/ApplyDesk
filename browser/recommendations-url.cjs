@@ -18,4 +18,4 @@ function sourceOrigin(session) {
   return session.options.allowLocal && session.options.sourceTestOrigin || new URL(START_URLS[session.state.source]).origin;
 }
 
-module.exports = {START_URLS, jobLink, sourceOrigin};
+module.exports = {jobLink, sourceOrigin};

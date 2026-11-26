@@ -1,4 +1,4 @@
-"""Local master chat, automatic queue routing, and mandatory independent draft reviews."""
+"""One chat agent with automatic queue routing and local draft validation."""
 
 import json
 import threading
@@ -6,12 +6,14 @@ import threading
 from .agent_contract import object_fields, string
 from .agent_settings import AgentSettings
 from .application_automation import ApplicationAutomation
+from .auto_start import AutoStart
 from .chat_history import ChatHistory
 from .agent_connections import AgentConnections
 from .chatgpt_auth import ChatGPTSignIn
 from .chatgpt_inference import ChatGPTRunner, output_text
+from .chatgpt_transport import AccountError
 from .orchestrator_prompts import MASTER
-from .orchestrator_tools import MasterTools, master_tools
+from .orchestrator_tools import MasterTools, master_tools, run_report
 from .orchestrator_workflow import DraftWorkflow
 from .tool_progress import ToolProgress
 from .application_window import status as application_browser_status
@@ -35,6 +37,7 @@ class Orchestrator:
         self.generation, self.attempted = 0, {}
         self.error = ""
         self.applications = ApplicationAutomation(self)
+        self.auto_start = AutoStart(self)
 
     def start(self):
         """Start a local scheduler; disconnected accounts cause no network or model requests."""
@@ -47,10 +50,10 @@ class Orchestrator:
         current = self.runner.current
         runs = [run for run in self.w.store.all("agent_run") if run.get("started_at", "") >= self.history.since]
         return {"account": self.accounts.state(), "signin": {"status": self.signin.status, "error": self.signin.error},
-                "application_browser": application_browser_status(self.w),
+                "application_browser": application_browser_status(self.w), "auto_start": self.auto_start.state(),
                 "settings": self.settings.read(), "paused": self.paused, "active": self.active,
                 "current_run": current if current and current.get("started_at", "") >= self.history.since else None, "error": self.error, "messages": self.history.read(),
-                "runs": runs[-40:], "application_runs": self.w.store.all("application_run")[-10:]}
+                "runs": runs[-40:], "application_runs": self.history.application_runs()}
 
     def send(self, data):
         """User text enters the chat queue; new input interrupts work before the next local write."""
@@ -59,14 +62,16 @@ class Orchestrator:
         if not self.accounts.state()["connected"]:
             raise ValueError("Connect ChatGPT or add an OpenAI API key in Account setup first.")
         self.settings.validate(self.settings.read()["roles"]["master"])
+        self.auto_start.forget()
         message = self.history.add("user", text, "queued")
         if self.active:
             self.cancelled.set()
             self.runner.cancel()
+            self.w.application_browser.interrupt()
         self.wake.set()
         return {"message_id": message["id"], "status": "queued"}
 
-    def control(self, data):
+    def control(self, data, *, automatic=False):
         """Pause is persistent; resuming is explicit and never bypasses task blockers."""
         object_fields(data, ["paused"])
         if type(data["paused"]) is not bool:
@@ -74,8 +79,11 @@ class Orchestrator:
         self.paused = data["paused"]
         self.w.store.put("agent_control", "main", {"paused": self.paused})
         if self.paused:
+            if not automatic:
+                self.auto_start.disable()
             self.cancelled.set()
             self.runner.cancel()
+            self.w.application_browser.interrupt()
             self.w.recommendations.cancel_all("Paused by the user.")
         else:
             self.error = ""
@@ -99,7 +107,8 @@ class Orchestrator:
         task = context["task"]
         if task["status"] not in {"needs_input", "stale"}:
             raise ValueError("Only a blocked or changed task needs a retry.")
-        task.update(status="queued", result=None, reviews={}, issues=[], document_ids=[], input_version=None)
+        task.pop("blocked_version", None)
+        task.update(status="queued", issues=[])
         self.w.store.put("chat_task", task["id"], task)
         self.attempted.pop(task["id"], None)
         self.wake.set()
@@ -111,11 +120,25 @@ class Orchestrator:
             raise InterruptedError("Paused or account changed. No further draft changes were saved.")
 
     def run_agent(self, role, prompt, inputs, context=None, tools=None):
-        """Each delegated role receives a fresh request and its own app-owned execution record."""
+        """Record sequential steps of the same agent; only chat prose is streamed."""
         self.check_active()
         task = {"id": context["task"]["id"], "version": context["version"]} if context else {}
         task["turn_id"] = (self.history.live or {}).get("id") or ((self.active or {}).get("message") or {}).get("id")
-        result = self.runner.run(role, prompt, inputs, self.cancelled, self._stream if role == "master" else lambda _: None, tools, task)
+        for attempt in range(2):
+            live = self.history.live
+            prefix = live.get("text", "") if tools and live else ""
+            try:
+                result = self.runner.run(role, prompt, inputs, self.cancelled, self._stream if tools else lambda _: None, tools, task)
+                break
+            except AccountError as error:
+                if attempt or not error.retryable:
+                    raise
+                self.cancelled.wait(1)
+                self.check_active()
+                # Remove partial text from this inference only. Completed tools never run a second time.
+                with self.w.lock:
+                    if tools and live and self.history.live is live:
+                        live["text"] = prefix
         self.check_active()
         return result
 
@@ -135,10 +158,13 @@ class Orchestrator:
         message = next((item for item in self.w.store.all("chat_message") if item["role"] == "user" and item["status"] == "queued"), None)
         if message:
             return {"message": message, "history_version": self.history.version}
+        timer = self.auto_start.state()
+        if timer["enabled"] and timer["pending"]:
+            return None  # The interrupted user request waits for its stored retry deadline.
         if not self.settings.read()["automatic"]:
             return None
         for row in self.w.chat.list():
-            if row["status"] not in {"queued", "stale", "awaiting_review"}:
+            if row["status"] not in {"queued", "stale"}:
                 continue
             context = self.w.chat.get(row["id"])
             if self.attempted.get(row["id"]) != context["version"]:
@@ -147,7 +173,7 @@ class Orchestrator:
         return None
 
     def _loop(self):
-        """One worker owns routing and reviews; no second process can race draft writes."""
+        """One worker owns routing and writes so task updates cannot race."""
         while not self.stop.is_set():
             self.wake.wait(1)
             self.wake.clear()
@@ -155,7 +181,7 @@ class Orchestrator:
                 break
             try:
                 with self.w.lock:
-                    work = self._next()
+                    work = self.auto_start.take() or self._next()
                     if work:
                         self.active = work
                         self.cancelled.clear()
@@ -165,7 +191,7 @@ class Orchestrator:
             except Exception as exc:
                 if not self.stop.is_set():
                     self.error = str(exc)[:1000]
-                    self.control({"paused": True})
+                    self.control({"paused": True}, automatic=True)
             finally:
                 self.active = None
 
@@ -175,30 +201,52 @@ class Orchestrator:
             if work.get("history_version", self.history.version) != self.history.version:
                 return
             message = work.get("message")
+            work.setdefault("retry_binding", self.auto_start.binding(work))
             if message:
                 message["status"] = "running"
                 self.w.store.put("chat_message", message["id"], message)
-            assistant = self.history.add("assistant", "", "running")
+            assistant = self.history.add("assistant", "", "running", request_id=message["id"] if message else None)
             self.history.live = assistant.copy()
-        text = message["text"] if message else f"Automatically prepare the already-authorized queued draft task {work['task_id']}. Delegate with prepare_task and report actual results."
+        text = message["text"] if message else f"Automatically prepare the already-authorized queued draft task {work['task_id']}. Use prepare_task and report actual results."
+        if work.get("auto_restart"):
+            text = "Continue this unfinished request after a usage-limit interruption. Reuse saved results; do not repeat completed work.\n\n" + text
         try:
             history = self.history.context(message["id"]) if message else []
             answer = self._master([*history, {"role": "user", "content": text}])
             self.history.finish(assistant, answer)
+            self.auto_start.forget(work)
             if message:
                 self.history.finish(message, message["text"])
             elif self.w.chat.get(work["task_id"])["task"]["status"] == "queued":
                 context = self.w.chat.get(work["task_id"])
-                self.w.chat.block({"task_id": work["task_id"], "version": context["version"], "issues": ["The master did not delegate this task. Retry from the application details."]})
+                self.w.chat.block({"task_id": work["task_id"], "version": context["version"], "issues": ["The agent did not prepare this task. Retry from the application details."]})
         except Exception as exc:
             if work.get("history_version", self.history.version) != self.history.version:
                 return
             status = "interrupted" if isinstance(exc, InterruptedError) or self.cancelled.is_set() else "error"
-            self.history.finish(assistant, str(exc)[:1000], status)
+            detail = self._run_error(exc, message) if status == "error" else str(exc)[:1000]
+            self.history.finish(assistant, detail, status)
+            self.auto_start.failed(work, exc, assistant)
             if message:
                 self.history.finish(message, message["text"], "complete")
             if status == "error":
                 raise
+
+    def _run_error(self, error, message):
+        """Show the last saved application outcome even if the model fails to write its summary."""
+        detail = str(error)[:1000]
+        if not isinstance(error, AccountError) or not message or not self.applications.run:
+            return detail
+        report = run_report(self.applications.run, message["id"])
+        outcomes = report.get("results", [])
+        if not outcomes:
+            return detail
+        last = outcomes[-1]
+        job = self.w.store.get("job", last["job_id"]) or {}
+        company = job.get("company") or "Last application"
+        issue = next(iter(last.get("issues") or []), "")
+        status = {"needs_review": "Needs input"}.get(last["status"], last["status"].replace("_", " "))
+        return f"{company} · {status}. {issue}\nConfirmed submissions in this run: {report.get('submitted_count', 0)}.\n\n{detail}"
 
     def _master(self, history):
         """Keep working through tool results until the agent finishes or the user stops it."""
@@ -226,6 +274,7 @@ class Orchestrator:
         self.wake.set()
         self.runner.cancel()
         self.signin.cancel()
+        self.w.application_browser.interrupt()
         self.w.recommendations.cancel_all("Stopped when ApplyDesk closed.")
         with self.accounts.lock:
             pass  # Wait for any token renewal or model-list write before SQLite closes.

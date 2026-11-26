@@ -10,6 +10,36 @@ from applydesk.storage import Store
 
 
 class JobDetailsStorageTests(unittest.TestCase):
+    def test_manual_board_status_preserves_receipts_and_controls_future_preparation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            try:
+                job = store.add_job("https://example.test/job")
+                change = {"id": job["id"], "previous": "new", "status": "submitted"}
+                store.set_board_status(change)
+                saved = store.get("job", job["id"])
+                self.assertFalse(saved.get("submission_receipt"))
+                self.assertEqual(saved["status"], "new")
+                with self.assertRaisesRegex(ValueError, "manually marked"):
+                    store.begin_preparation(job["id"])
+                with self.assertRaisesRegex(ValueError, "status changed"):
+                    store.set_board_status(dict(change, status="draft"))
+                store.set_board_status(dict(change, previous="submitted", status="skipped"))
+                with self.assertRaisesRegex(ValueError, "manually marked"):
+                    store.begin_preparation(job["id"])
+                store.set_board_status(dict(change, previous="skipped", status="draft"))
+                store.begin_preparation(job["id"])
+                with self.assertRaisesRegex(ValueError, "in progress"):
+                    store.set_board_status(dict(change, previous="preparing"))
+                receipt = {"confirmed": True, "receipt": "Your application was received."}
+                store.job(job["id"], status="submitted", submission_receipt=receipt)
+                store.set_board_status(dict(change, previous="submitted", status="needs_review"))
+                self.assertEqual(store.get("job", job["id"])["submission_receipt"], receipt)
+                with self.assertRaisesRegex(ValueError, "submitted"):
+                    store.begin_preparation(job["id"])
+            finally:
+                store.close()
+
     def test_combined_capture_keeps_employer_only_requirements_and_pay(self):
         """Verified raw evidence from both pages is richer than the platform capture alone."""
         with tempfile.TemporaryDirectory() as directory:

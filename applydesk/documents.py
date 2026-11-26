@@ -240,16 +240,10 @@ class DocumentService:
                 raise ValueError("Document not found.")
             return deepcopy(self.manifest[identity])
 
-    def remove_upload(self, identity, retain=False):
-        """Keep application provenance when used; otherwise remove original bytes and every preview."""
+    def remove_upload(self, identity):
+        """Delete any selected document's original, previews and manifest entry."""
         with self.lock:
-            record = self.get(identity)
-            if record["kind"] not in {"resume", "cover_template"}:
-                raise ValueError("Only uploaded resumes and cover letter templates can be deleted here.")
-            if retain:
-                record["removed_from_library_at"] = datetime.now(timezone.utc).isoformat()
-                self._save(record)
-                return False
+            self.get(identity)
             return remove_unused(self, identity)
 
     def list_documents(self):

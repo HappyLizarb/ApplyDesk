@@ -12,10 +12,10 @@ class ApplicationPolicyTests(unittest.TestCase):
     """Model decisions are fixtures; these checks exercise the actual policy boundaries."""
 
     def setUp(self):
-        """Use a physical-product role whose duties need no literal publishing category name."""
-        self.scope = {"industries": ["Publishing"], "levels": ["Entry"], "locations": ["Boston"]}
+        """Use a physical-product role whose duties need no literal hardware category name."""
+        self.scope = {"industries": ["Hardware"], "levels": ["Entry"], "locations": ["Boston"]}
         self.source = "Own the mixed-signal sensor product roadmap in Boston. Python required."
-        self.decision = {"matches": True, "industry": "Publishing", "level": "", "location": "Boston",
+        self.decision = {"matches": True, "industry": "Hardware", "level": "", "location": "Boston",
                          "quotes": {"industry": "mixed-signal sensor product roadmap", "level": "", "location": "Boston"},
                          "issues": []}
 
@@ -23,7 +23,7 @@ class ApplicationPolicyTests(unittest.TestCase):
         """The active conversation can supply a role even without saved category or level tags."""
         profile = {"confirmed": True, "industries": [], "preferences": {"levels": []}}
         self.assertEqual(search_scope(profile, ["Anywhere"]),
-                         {"industries": [], "levels": [], "locations": ["Anywhere"]})
+                         {"industries": [], "levels": [], "locations": ["Anywhere"], "role_preferences": []})
         with self.assertRaisesRegex(ValueError, "Confirm your profile"):
             search_scope({**profile, "confirmed": False}, ["Anywhere"])
 
@@ -57,12 +57,13 @@ class ApplicationPolicyTests(unittest.TestCase):
         primary = Mock(ask=Mock(return_value={**copy.deepcopy(self.decision), "industry": "Product Management"}))
         auditor = Mock(ask=Mock(return_value=copy.deepcopy(self.decision)))
         clients = {"application": primary, "auditor": auditor}
-        analysis = {"company": "Example", "title": "Product Manager", "category": "Publishing",
-                    "required": [{"text": "Python required."}]}
+        analysis = {"company": "Example", "title": "Product Manager", "category": "Hardware",
+                    "required": [{"text": "Python required.", "met": True}]}
         automation._scope(clients.__getitem__, analysis, {"text": self.source})
-        self.assertEqual(analysis["category"], "Publishing")
+        self.assertEqual(analysis["category"], "Hardware")
         self.assertEqual(primary.ask.call_args.args[1]["request"], instruction)
-        self.assertEqual(auditor.ask.call_args.args[1]["preferences"], self.scope)
+        self.assertEqual(primary.ask.call_args.args[1]["verified_requirements"], ["Python required."])
+        auditor.ask.assert_not_called()
 
 
 if __name__ == "__main__":

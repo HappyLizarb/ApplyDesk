@@ -5,9 +5,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from applydesk.applications import Applications
-from applydesk.discovery import Discovery
 from applydesk.workspace import Workspace
-from applydesk.recommendation_import import duplicate, import_selected
 
 
 class RemovalTests(unittest.TestCase):
@@ -75,41 +73,3 @@ class RemovalTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 Applications(self.w).prepare(job["id"])
         browser.assert_not_called()
-
-    def test_discovery_skips_removed_tracking_alias(self):
-        # Public-search aliases remain excluded by the existing canonical URL dedup.
-        job = self.jobs[0]
-        self.w.remove_jobs({"ids": [job["id"]]})
-        report = {"candidates": [{"url": job["url"] + "?utm_source=test"}], "job_ids": []}
-        Discovery(self.w)._add(report)
-        self.assertEqual(report["job_ids"], [])
-        self.assertEqual(len(self.w.store.all("job")), 3)
-
-    def test_recommendations_cannot_repair_or_reimport_removed_jobs(self):
-        # Check incomplete placeholders, stable IDs, platform aliases and employer links.
-        source = {"platform": "linkedin", "job_id": "123", "source_url": "https://www.linkedin.com/jobs/view/123/",
-                  "employer_url": "https://careers.example.test/jobs/123", "company": "Example", "title": "Engineer", "complete": True}
-        variants = [
-            {"url": source["source_url"], "recommendation_source": {**source, "complete": False}},
-            {"url": "https://www.linkedin.com/jobs/search-results/?currentJobId=123"},
-            {"url": source["employer_url"]},
-        ]
-        for index, changes in enumerate(variants):
-            with self.subTest(changes=changes):
-                source = {**source, "job_id": str(123 + index),
-                          "source_url": f"https://www.linkedin.com/jobs/view/{123 + index}/",
-                          "employer_url": f"https://careers.example.test/jobs/{123 + index}"}
-                changes = {**changes, "url": changes["url"].replace("123", source["job_id"])}
-                job = self.w.store.add_job(changes["url"])
-                self.w.store.job(job["id"], **changes)
-                self.w.remove_jobs({"ids": [job["id"]]})
-                prior, reusable = duplicate(self.w, source)
-                self.assertEqual(prior["id"], job["id"])
-                self.assertFalse(reusable)
-                before = self.w.store.all("job")
-                with self.w.lock, self.w.store.lock:
-                    report = import_selected(self.w, [source], {"status": "complete", "job_ids": [], "excluded_count": 0})
-                    self.w.store.put("recommendation", "linkedin", report)
-                self.assertEqual(self.w.store.all("job"), before)
-                self.assertEqual(self.w.recommendations.state()["linkedin"]["excluded_count"], 1)
-                self.assertEqual(self.w.recommendations.state()["linkedin"]["job_ids"], [])

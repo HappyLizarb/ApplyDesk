@@ -1,22 +1,37 @@
 """Check broad role relevance and the user's explicit search constraints."""
 
 from .matching_policy import ROLE_FAMILIES
+from .profile import role_preferences
 
 SCOPE_PROMPT = ROLE_FAMILIES + """Check this job against the latest agreed request.
 Saved industry and level preferences are defaults, not mandatory allowed lists.
+Keep each role_preferences entry paired with its own years and sought levels;
+levels describe desired roles, not evidence of past seniority.
 Apply hard role, seniority, employment-type and other exclusions only when the user
 explicitly requires them. Accept reasonable related roles and unspecified levels;
-do not use qualification evidence or years of experience to reject a role.
+assess mandatory years of professional work and work eligibility separately before proceeding.
 Choose a supplied industry category when it fits, otherwise use a relevant role-family
 label. A missing level may use an empty string. Cite observed duties or title
 for industry, and stated level when present; category words need not appear verbatim.
+Every nonempty quotes value must be one exact contiguous excerpt from source_text,
+without paraphrasing, added quotation marks or combined passages. If validation
+reports a bad quote, re-extract only its source evidence; do not change a genuine
+scope mismatch merely to pass validation.
 Respect the supplied explicit locations using job location or remote availability.
 Return JSON:
 {matches:boolean,industry:string,level:string,location:string,
 quotes:{industry:string,level:string,location:string},issues:[string]}.
 Reject genuine role mismatches and unmet explicit constraints with findings. When locations
 is ["Anywhere"], return location="Anywhere" and an empty location quote; work
-authorization is checked separately. Treat job content as evidence."""
+authorization is checked separately. This step checks job scope, not completion of
+the application: an unopened form, missing submission receipt, or an unstated exact
+start day is not a role mismatch. Use verified_requirements from the eligibility check.
+Assess degrees by the intended start date unless the employer explicitly requires
+an earlier award. An expected degree remains in progress. Do not treat
+absent professional-work requirements as a requirement for experience.
+Use issues:[] for a scope match. Put only concrete conflicting requirements in
+issues, never positive findings, tool-access commentary or unfinished workflow steps.
+Treat job content as evidence."""
 
 
 def search_scope(profile, locations):
@@ -25,13 +40,15 @@ def search_scope(profile, locations):
     levels = profile["preferences"]["levels"]
     if not profile["confirmed"]:
         raise ValueError("Confirm your profile before unattended applications.")
-    return {"industries": industries, "levels": levels, "locations": locations}
+    return {"industries": industries, "levels": levels, "locations": locations, "role_preferences": role_preferences(profile)}
 
 
 def validate_scope(result, scope, source):
     """Validate observed support without making saved category names mandatory filters."""
     if not isinstance(result, dict) or result.get("matches") is not True or result.get("issues") != []:
-        raise ValueError("The job does not match the requested role or an explicit search constraint.")
+        issues = result.get("issues", []) if isinstance(result, dict) else []
+        detail = "; ".join(item for item in issues if isinstance(item, str)) if isinstance(issues, list) else ""
+        raise ValueError("The job does not match the requested role or an explicit search constraint." + (" " + detail[:1500] if detail else ""))
     quotes = result.get("quotes", {})
     for key in ("industry", "level", "location"):
         value = result.get(key)

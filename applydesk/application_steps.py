@@ -4,15 +4,56 @@ import hashlib
 import re
 from urllib.parse import urlsplit
 
-from .account_scope import https_origin as _https_origin, sign_in_scope
+from .account_scope import https_origin as _https_origin, sign_in_scope, employer_key
 from .employer_accounts import EmployerAccounts
-from .mapping import answer_field, document_kind, normalize, plan_fields
+from .mapping import COVER_LETTER_REQUIRED, answer_field, document_kind, normalize, plan_fields
+from .browser_bridge import BrowserError
+from .successfactors_auth import prepare_successfactors_account, successfactors_auth_context
+
+
+def fill_current_form(session, params):
+    """A stale pre-write snapshot causes replanning, never replay of answers against changed fields."""
+    try:
+        return session.call("fill", params)
+    except BrowserError as error:
+        if str(error) != "The form changed. Inspect it again before filling.":
+            raise
+        page = session.call("snapshot")
+        return {**page, "intervention": "stale_before_fill"}
+
+
+def enter_current_form(session, page, job):
+    """Refresh a dynamic listing before opening its explicitly identified application control."""
+    for attempt in range(3):
+        try:
+            return session.call("application_entry", {"snapshot_id": page["snapshot_id"], "company": job.get("company"), "title": job.get("title")})
+        except BrowserError as error:
+            if str(error) != "The form changed. Inspect it again before filling." or attempt == 2:
+                raise
+            page = session.call("snapshot")
 
 
 def authenticate(workspace, session, job, snapshot):
     """Use saved credentials only on a distinct authentication screen."""
+    unread = [field for field in snapshot["fields"] if field.get("choices_unread")]
+    if unread:
+        return session.call("read_choices", {"snapshot_id": snapshot["snapshot_id"], "field_id": unread[0]["field_id"]})
+    prepared = prepare_successfactors_account(session, snapshot, workspace.profile()) if snapshot.get("successfactors_auth") else None
+    if prepared is not None:
+        return prepared
     if not any(field["type"] == "password" and not field.get("disabled") for field in snapshot["fields"]):
         return snapshot
+    entries = [button for button in snapshot["buttons"] if button.get("navigation_kind") == "account_entry"]
+    accounts = EmployerAccounts(workspace)
+    if len(entries) == 1 and (not accounts.display(job).get("account") or accounts.registration_pending(job)):
+        opened = session.call("next", {"snapshot_id": snapshot["snapshot_id"], "field_id": entries[0]["field_id"]})
+        return {**opened, "intervention": "authentication_entry"}
+    with workspace.store.lease(("job", job["id"]), ("employer_account", employer_key(job))):
+        return _authenticate_account(workspace, session, job, snapshot)
+
+
+def _authenticate_account(workspace, session, job, snapshot):
+    """Keep account bindings fixed while the browser can still read current workspace state."""
     button, fields, origin = _auth_context(snapshot)
     with workspace.store.lock:
         accounts = EmployerAccounts(workspace)
@@ -22,29 +63,35 @@ def authenticate(workspace, session, job, snapshot):
         realm = sign_in_scope(current, snapshot, button)
         account = accounts.display(current).get("account") or workspace.profile()["identity"]["email"]
         answers, passwords = _auth_inputs(fields, button["action"], account, workspace.profile())
-        saved_account, password = accounts.credentials(current, origin, realm, button["action"])
+        saved_account, password = accounts.credentials(current, origin, realm, button["action"], reserve_only=True)
         if saved_account != account:
             answers, passwords = _auth_inputs(fields, button["action"], saved_account, workspace.profile())
         answers.extend({"field_id": field["field_id"], "value": password} for field in passwords)
         job.update(workspace.store.job(job["id"], live_url=snapshot["url"]))
-        updated = session.call("fill", {"snapshot_id": snapshot["snapshot_id"], "answers": answers})
-        if updated.get("intervention"):
-            raise ValueError(updated["intervention"])
-        intent = "sign_in" if button["action"] == "login" else "create_account"
-        return session.call("authenticate", {"snapshot_id": updated["snapshot_id"], "field_id": button["field_id"], "intent": intent})
+    updated = session.call("fill", {"snapshot_id": snapshot["snapshot_id"], "answers": answers})
+    if updated.get("intervention"):
+        raise ValueError(updated["intervention"])
+    if button.get("auth_widget") == "successfactors":
+        _auth_context(updated)
+    accounts.mark_authentication(job, button["action"])
+    intent = "sign_in" if button["action"] == "login" else "create_account"
+    page = session.call("authenticate", {"snapshot_id": updated["snapshot_id"], "field_id": button["field_id"], "intent": intent})
+    return {**page, "intervention": "authentication_completed"}
 
 
 def _auth_context(snapshot):
     """Validate the native authentication form before retrieving or generating a secret."""
     if snapshot.get("warnings") or snapshot.get("intervention") or snapshot.get("guard", {}).get("blocked_requests"):
         raise ValueError("The authentication page requires manual inspection before credentials can be filled.")
-    buttons = [button for button in snapshot["buttons"] if button["action"] in {"login", "create_account"} and not button.get("disabled")]
+    password_forms = {field.get("form_id") for field in snapshot["fields"] if field["type"] == "password"}
+    buttons = [button for button in snapshot["buttons"] if button["action"] in {"login", "create_account"}
+               and button.get("type") == "submit" and button.get("form_id") in password_forms
+               and button.get("form_id") and not button.get("disabled")]
     if len(buttons) != 1:
         raise ValueError("Authentication is ambiguous. Sign in or create the account manually.")
     button = buttons[0]
-    consent = r"\bby\b[^.!?]{0,180}\b(clicking|continuing|creating|registering|signing)\b[^.!?]{0,180}\b(agree|accept|consent)\b"
-    if re.search(consent, button.get("context_text", ""), re.I):
-        raise ValueError("Account creation includes an agreement. Review and accept it yourself in the browser.")
+    if button.get("auth_widget") == "successfactors":
+        return successfactors_auth_context(snapshot, button)
     action = button.get("form_action", "")
     origin = _https_origin(snapshot["url"])
     path = urlsplit(action).path
@@ -66,11 +113,10 @@ def _auth_context(snapshot):
 def _auth_inputs(fields, action, account, profile):
     """Only explicit account identifiers, passwords, and grounded signup names are filled."""
     answers, identifiers, passwords = [], [], []
-    names = {"first name", "last name", "full name", "name", "given name", "family name"}
     primary = {"password", "your password", "account password"}
     if action == "create_account":
         primary |= {"create password", "new password"}
-    confirmation = {"confirm password", "confirm your password", "repeat password", "re enter password"}
+    confirmation = {"confirm password", "confirm your password", "repeat password", "re enter password", "verify new password"}
     for field in fields:
         label, kind = normalize(field.get("label", "")), field["type"]
         if kind == "password" and label in primary | confirmation and not field.get("readonly"):
@@ -78,15 +124,10 @@ def _auth_inputs(fields, action, account, profile):
         elif kind in {"text", "email"} and label in {"email", "email address", "username", "user name"}:
             identifiers.append(field)
             answers.append({"field_id": field["field_id"], "value": account})
-        elif action == "create_account" and kind == "text" and label in names:
-            answer = answer_field(field, profile, "")
-            if not answer:
-                raise ValueError("The account's name fields need confirmed profile values.")
-            answers.append(answer)
-        elif kind == "checkbox" and not field.get("required") and not field.get("checked"):
-            continue
         else:
-            raise ValueError("The authentication form has an unknown field or requires consent. Use manual control.")
+            answer = _signup_answer(field, action, account, profile)
+            if answer:
+                answers.append(answer)
     required_passwords = 1 if action == "login" else len(passwords)
     if (not account or len(identifiers) != 1 or required_passwords not in {1, 2} or len(passwords) != required_passwords
             or sum(normalize(field["label"]) in primary for field in passwords) != 1):
@@ -96,6 +137,28 @@ def _auth_inputs(fields, action, account, profile):
         if field.get("readonly") and field.get("value") != answer["value"]:
             raise ValueError("The readonly account identifier does not match the saved account.")
     return answers, passwords
+
+
+def _signup_answer(field, action, account, profile):
+    """Separate grounded signup details and explicit defaults from credential identity checks."""
+    label, kind = normalize(field.get("label", "")), field["type"]
+    names = {"first name", "last name", "full name", "name", "given name", "family name"}
+    if action == "create_account":
+        if kind in {"text", "email"} and label == "confirm email":
+            return {"field_id": field["field_id"], "value": account}
+        if kind == "checkbox" and field.get("account_notification"):
+            return {"field_id": field["field_id"], "value": False}
+        if (kind == "text" and label in names) or (kind == "select" and label == "country"):
+            answer = answer_field(field, profile, "")
+            if not answer:
+                raise ValueError("The account details need confirmed profile values.")
+            # Re-selecting an unchanged residence clears SuccessFactors privacy acceptance.
+            return None if kind == "select" and field.get("value") == answer["value"] else answer
+        if kind == "checkbox" and field.get("workday_consent") and label == "i agree":
+            return {"field_id": field["field_id"], "value": True}
+    if kind == "checkbox" and not field.get("required") and not field.get("checked"):
+        return None
+    raise ValueError("The authentication form has an unknown field or requires consent. Use manual control.")
 
 
 def attachment_plan(workspace, documents, job, snapshot):
@@ -112,8 +175,9 @@ def attachment_plan(workspace, documents, job, snapshot):
             if field["required"] or field.get("files"):
                 unresolved.append("Review unknown attachment: " + (field["label"] or "unlabelled file input"))
             continue
-        if kind == "cover" and not job.get("cover_id"):
-            job["cover_id"] = documents.cover(job)["id"]
+        if kind == "cover":
+            unresolved.append(COVER_LETTER_REQUIRED)
+            continue
         identity = workspace.profile().get("transcript_id") if kind == "transcript" else job.get(kind + "_id")
         if not identity:
             unresolved.append("Missing required " + kind + ".")
@@ -163,58 +227,27 @@ def verify_attachments(snapshot, expected):
             raise ValueError("The live attachment does not match the selected document version.")
 
 
-def cover_text_plan(workspace, documents, job, snapshot):
-    """Fill an explicitly required cover-letter text field from the exact reviewed document."""
-    fields = [field for field in snapshot["fields"] if _cover_text_field(field)]
-    if not fields:
-        return [], set()
-    if len(fields) != 1:
-        raise ValueError("Multiple cover-letter text fields need manual review.")
-    if not job.get("cover_id"):
-        job["cover_id"] = documents.cover(job)["id"]
-    documents.require_review(job["cover_id"])
-    document = workspace.docs.get(job["cover_id"])
-    value = "\n\n".join(block["text"] for block in document["blocks"] if block.get("text", "").strip())
-    field = fields[0]
-    if not value or (field.get("readonly") and field.get("value") != value):
-        raise ValueError("The cover-letter text is empty or does not match the readonly field.")
-    facts = [fact["id"] for fact in workspace.profile()["facts"] if fact.get("confirmed") is True and fact.get("kind") != "disclosure"]
-    if not facts:
-        raise ValueError("Cover-letter text requires confirmed profile evidence.")
-    return [{"field_id": field["field_id"], "value": value, "fact_ids": facts,
-             "document_id": document["id"]}], {field["field_id"]}
-
-
-def _cover_text_field(field):
-    """Use only an exact cover-letter label, required native text control, and visible metadata."""
-    return (field.get("type") in {"text", "textarea"} and normalize(field.get("label", "")) == "cover letter"
-            and field.get("required") is True and not field.get("disabled") and field.get("supported", True))
-
-
-def audit_snapshot(workspace, session, profile, country, country_name, attachments, extra_answers=None, client=None):
-    """Capture the live state independently and pass exact expectations to the auditor."""
+def audit_snapshot(workspace, session, profile, country, country_name, attachments):
+    """Compare a fresh live snapshot with expected answers and uploaded file hashes."""
     from .intelligence import audit_fields
     snapshot = session.call("snapshot")
     snapshot.pop("audit", None)
-    extra_answers = extra_answers or []
-    handled = {answer["field_id"] for answer in extra_answers}
-    current = {field["field_id"] for field in snapshot["fields"] if _cover_text_field(field)}
-    if len(handled) != len(extra_answers) or not handled <= current:
-        raise ValueError("The cover-letter field changed before the audit.")
-    expected, unresolved = plan_fields(snapshot, profile, country, country_name, ignored_ids=handled)
-    expected.extend(extra_answers)
+    expected, unresolved = plan_fields(snapshot, profile, country, country_name)
     if unresolved:
         raise ValueError("; ".join(unresolved))
     verify_attachments(snapshot, attachments)
     fields = [{**field, "id": field["field_id"], "value": field.get("checked") if field["type"] in {"radio", "checkbox"} else field.get("value")} for field in snapshot["fields"] if field["type"] != "password"]
     expected = [{"id": answer["field_id"], "value": answer["value"], "fact_ids": answer["fact_ids"]} for answer in expected]
     if expected:
-        audit = audit_fields((client or workspace.client)("auditor"), profile, {**snapshot, "fields": fields}, expected)
+        audit = audit_fields(profile, {**snapshot, "fields": fields}, expected)
         if not audit["passed"]:
             raise ValueError("Field audit: " + "; ".join(audit["issues"]))
         snapshot["audit"] = {"passed": True, "snapshot_id": snapshot["snapshot_id"], "field_ids": [answer["id"] for answer in expected]}
     if snapshot.get("warnings"):
         raise ValueError("; ".join(snapshot["warnings"]))
     if snapshot["guard"].get("blocked_requests"):
-        raise ValueError("The site tried an unverified network action. Continue in the browser with manual control.")
+        blocked = snapshot["guard"]["blocked_requests"]
+        destinations = "; ".join(f"{item.get('method', '')} {item.get('url', '')} "
+                                 f"{item.get('operation', '')}: {item.get('reason', '')}" for item in blocked)
+        raise ValueError("The site tried an unverified network action: " + destinations + ". Continue in the browser with manual control.")
     return snapshot

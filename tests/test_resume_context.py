@@ -42,14 +42,14 @@ class ResumeContextTests(ChatFixture):
         self.assertEqual(supplied["category"], "")
         self.assertEqual(self.w.resumes.select("General")["id"], "resume")
 
-    def test_removed_library_file_is_excluded_but_application_copy_survives(self):
+    def test_deleted_upload_is_excluded_and_no_longer_downloadable(self):
         """Deletion cannot offer a historical attachment as a new resume choice."""
         self.w.store.job(self.job["id"], resume_id="resume")
         DocumentDeletion(self.w).delete({"document_id": "resume"})
         context = self.w.chat.get(self.task["id"])
         self.assertEqual(context["inputs"]["resumes"], [])
-        self.assertTrue(self.w.docs.asset(self.resume["source_path"]).is_file())
-        self.assertEqual(self.w.store.get("job", self.job["id"])["resume_id"], "resume")
+        self.assertFalse((self.w.docs.root / "resume").exists())
+        self.assertIsNone(self.w.store.get("job", self.job["id"])["resume_id"])
         with self.assertRaises(ValueError):
             self.read_document("resume")
 
@@ -123,7 +123,7 @@ class ResumeContextTests(ChatFixture):
         app = Applications(self.w, client=clients.__getitem__)
         result = app._screen(self.job, self.w.profile(), page)
         self.assertEqual(result["required"], analysis["required"])
-        for client in clients.values():
+        for client in [clients["application"]]:
             supplied = client.ask.call_args.args[1]["profile"]
             self.assertTrue(supplied["confirmed"])
             self.assertEqual(supplied["resumes"][0]["text"], self.resume["text"])
@@ -134,14 +134,14 @@ class ResumeContextTests(ChatFixture):
     def test_selected_resume_is_the_only_source_sent_to_qualification_agents(self):
         """An explicitly chosen untagged upload wins over General before analysis and audit."""
         selected = self.document("chosen", "resume")
-        selected["text"] = "Alex Test\nChosen publishing resume."
+        selected["text"] = "Alex Test\nChosen hardware resume."
         self.w.docs._save(selected)
         self.w.resumes.add("chosen")
         _, clients, page = self.screening_inputs()
         choice = {"id": "chosen", "sha256": selected["source_sha256"]}
         app = Applications(self.w, client=clients.__getitem__, resume_choice=choice)
         self.assertIsNotNone(app._screen(self.job, self.w.profile(), page))
-        for client in clients.values():
+        for client in [clients["application"]]:
             sources = client.ask.call_args.args[1]["profile"]["resumes"]
             self.assertEqual([source["id"] for source in sources], ["chosen"])
             self.assertEqual(sources[0]["text"], selected["text"])
@@ -154,7 +154,7 @@ class ResumeContextTests(ChatFixture):
                            resume_choice={"id": "resume", "sha256": "0" * 64})
         with self.assertRaisesRegex(ValueError, "changed since this run"):
             app._screen(self.job, self.w.profile(), page)
-        for client in clients.values():
+        for client in [clients["application"]]:
             client.ask.assert_not_called()
         self.assertIsNone(self.w.store.get("job", self.job["id"])["resume_id"])
 

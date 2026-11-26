@@ -4,43 +4,64 @@ import json
 
 from .agent_contract import object_fields, string
 from .agent_context import source_record
+from .auto_start import usage_limited
 from .chat_evidence import record_chat_evidence
+from .chatgpt_transport import AccountError
 from .profile import model_profile
-from .recommendation_wait import find_jobs, wait_for_jobs
+from .public_discovery import google_xray_query
 from .web_research import WebResearch
+from .application_verification import refill_application, verify_application
+from .workday_reset import request_reset_email
+
+CAPTURE_FIELDS = {"capture_id": {"type": "string"}, "company": {"type": "string"}, "title": {"type": "string"},
+                  "first_line": {"type": "integer"}, "last_line": {"type": "integer"}}
 
 DEFINITIONS = {
-    "workspace_overview": ("List tasks, jobs, documents, connected sources and application runs.", {}),
-    "web_search": ("Search the public web in a browser and read result links. Use role and location keywords.", {
-        "query": {"type": "string"}, "engine": {"type": "string", "enum": ["google", "bing", "duckduckgo"]}}),
+    "workspace_overview": ("List tasks, jobs, documents and application runs.", {}),
+    "web_search": ("Search Google for public employer and recruiting-system listings. Use role/location keywords and an employer site: filter when useful.", {
+        "query": {"type": "string"}, "engine": {"type": "string", "enum": ["google"]}}),
     "read_page": ("Read any public webpage, including company careers, job boards, search pages and linked listings. Returns numbered text lines and links.", {
         "url": {"type": "string"}}),
     "refresh_page": ("Read a public page again when you expect its contents to have changed since the current turn's capture.", {
         "url": {"type": "string"}}),
-    "save_job": ("Add an individual matching job to the tracker from a read_page capture. Copy the observed company/title and choose the first and last lines covering the FULL description, responsibilities, requirements and compensation. Pages are saved in the order you choose them.", {
-        "capture_id": {"type": "string"}, "company": {"type": "string"}, "title": {"type": "string"},
-        "first_line": {"type": "integer"}, "last_line": {"type": "integer"}}),
+    "save_job": ("Add an individual matching job to the tracker from a read_page capture. Copy the observed company/title and choose the first and last lines covering the FULL description, responsibilities, requirements and compensation. Pages are saved in the order you choose them.", CAPTURE_FIELDS),
+    "link_saved_listing": ("Attach the same employer’s Workday listing to a pending imported job if its old link is missing or unreadable. Read the listing first, copy the company and title, and select the full description.", {**CAPTURE_FIELDS, "job_id": {"type": "string"}}),
     "read_profile": ("Read confirmed profile evidence; sensitive voluntary disclosures are excluded.", {}),
-    "record_chat_evidence": ("Attach evidence references to specific facts the user confirmed in this conversation, or process corrections. Reuse existing confirmations for application answers; assumed qualifications do not need new evidence.", {
+    "record_chat_evidence": ("Attach evidence references to specific facts the user confirmed in this conversation, or process corrections. Reuse existing confirmations for application answers; unlisted skills or experience types do not need invented facts.", {
         "facts": {"type": "array", "items": {"type": "object", "properties": {
-            "text": {"type": "string"}, "kind": {"type": "string", "enum": ["skill", "education", "projects", "professional_experience", "language"]}},
+            "text": {"type": "string"}, "kind": {"type": "string", "enum": ["skill", "education", "projects", "professional_experience", "language", "preference", "application_answer", "application_agreement", "veteran_service"]}},
             "required": ["text", "kind"], "additionalProperties": False}}}),
     "read_document": ("Read the verified text, blocks and page metadata of an uploaded file by its workspace ID. Use the existing upload instead of asking the user to paste it. Image-only sources can be read by queueing a profile draft.", {
         "document_id": {"type": "string"}}),
     "task_context": ("Read an existing task's versioned input and draft result.", {"task_id": {"type": "string"}}),
-    "queue_task": ("Queue an unfinished profile, application, or generated cover edit draft.", {
-        "kind": {"type": "string", "enum": ["profile", "application", "document"]},
+    "queue_task": ("Queue an unfinished profile or application draft.", {
+        "kind": {"type": "string", "enum": ["profile", "application"]},
         "target_id": {"type": "string"}, "instruction": {"type": "string"}}),
-    "prepare_task": ("Prepare a queued draft with the Application Agent and separate reviewers.", {
+    "prepare_task": ("Prepare a queued draft using your current model and self-check instructions.", {
         "task_id": {"type": "string"}, "instruction": {"type": "string"}}),
     "retry_task": ("Retry a blocked draft after the user asks to continue and its missing input has been resolved.", {
         "task_id": {"type": "string"}}),
-    "find_jobs": ("Search a connected LinkedIn or Handshake session and save relevant jobs. Use a short query for one related specialty at a time; broad role families need varied searches. Use an empty query only for recommendations.", {
-        "platform": {"type": "string", "enum": ["linkedin", "handshake"]}, "query": {"type": "string"}}),
-    "job_search_status": ("Read progress and results of an existing connected-source search.", {
-        "platform": {"type": "string", "enum": ["linkedin", "handshake"]}, "run_id": {"type": "string"}}),
-    "run_applications": ("Apply to saved matching jobs using the permission, remaining total allowance, locations, role preferences and resume agreed in conversation.", {}),
+    "find_jobs": ("Search Google X-ray for public employer and recruiting-system listings without job-platform accounts. Use short queries across adjacent specialties and site:employer.com when useful. Open promising results, read their complete descriptions, then save matching jobs with save_job.", {
+        "query": {"type": "string"}}),
+    "run_applications": ("Open live employer forms, fill and submit saved jobs using the conversation's permission and resume. Supply job_ids in priority order, or [] for all saved candidates. Honor the user's total submission count. Draft tools are not prerequisites. Report an interruption using the returned submission counts and interrupted_job.submission_status.", {"job_ids": {"type": "array", "items": {"type": "string"}}}),
+    "refill_application": ("Refill the same application only when the user explicitly says refill after an employer rejected its email code. Reuses the original attempt and resume, rechecks eligibility and answers, and requests fresh verification if needed.", {"job_id": {"type": "string"}}),
+    "verify_application": ("Continue a retained application using the exact email verification code provided in the current user message. Never invent a code. Require an employer receipt before reporting success.", {"job_id": {"type": "string"}, "code": {"type": "string"}}),
+    "request_reset_email": ("Request a single password-reset email for a saved Workday account when explicitly requested. Returns the employer response. No password is changed.", {"job_id": {"type": "string"}}),
 }
+
+
+def run_report(run, message_id=None):
+    """Share cumulative counts and this request's outcomes without replaying earlier applications."""
+    if "results" not in run:
+        return run
+    fields = ("id", "limit", "status", "submitted_count", "attempted_count", "uncertain_count", "remaining_count", "interrupted_job")
+    report = {key: run[key] for key in fields if key in run}
+    start = run.get("message_result_starts", {}).get(message_id)
+    if start is None and message_id and run.get("message_id") == message_id:
+        start = 0
+    if start is not None:
+        report["results"] = run["results"][start:]
+    return report
 
 
 def master_tools():
@@ -65,19 +86,17 @@ class MasterTools:
         if item.get("namespace", "applydesk") != "applydesk" or name not in DEFINITIONS:
             raise ValueError("This tool is unavailable. Use only the supplied workspace operations.")
         data = json.loads(item.get("arguments", "{}"))
-        object_fields(data, DEFINITIONS[name][1])
-        if name in {"web_search", "read_page", "refresh_page", "save_job"}:
-            return self._research(name, data)
+        object_fields(data, {} if name == "run_applications" else DEFINITIONS[name][1], ["job_ids"] if name == "run_applications" else [])
+        if name == "request_reset_email":
+            return request_reset_email(self.engine, string(data["job_id"], 100))
+        if name in {"find_jobs", "web_search", "read_page", "refresh_page", "save_job", "link_saved_listing", "refill_application", "verify_application"}:
+            return self._browser_tool(name, data)
         if name in {"prepare_task", "retry_task"}:
             return self.prepare(name, data)
         if name == "record_chat_evidence":
             return record_chat_evidence(self.engine, data)
-        if name == "find_jobs":
-            return find_jobs(self.engine, data["platform"], string(data["query"], 300, empty=True))
-        if name == "job_search_status":
-            return wait_for_jobs(self.engine, data["platform"], string(data["run_id"], 100))
         if name == "run_applications":
-            return self.engine.applications.start()
+            return self._run_applications(data.get("job_ids"))
         with self.w.lock:
             self.engine.check_active()
             if name == "workspace_overview":
@@ -92,10 +111,30 @@ class MasterTools:
                 return self.w.chat.enqueue(data)
         raise ValueError("Unknown draft tool.")
 
-    def _research(self, name, data):
-        """Route browser research independently of the selected model provider."""
-        if name == "web_search":
-            return self.web.search(data["query"], data["engine"])
+    def _run_applications(self, job_ids):
+        """Include saved submission evidence when an interrupted model call returns control to chat."""
+        message_id = ((self.engine.active or {}).get("message") or {}).get("id")
+        try:
+            run = self.engine.applications.start(job_ids)
+        except AccountError as error:
+            run = self.engine.applications.run or {}
+            if usage_limited(error) or run.get("status") != "interrupted" or not message_id:
+                raise
+            if message_id != run.get("message_id") and message_id not in run.get("message_ids", []):
+                raise
+            return {**run_report(run, message_id), "error": str(error)[:1000]}
+        return run_report(run, message_id)
+
+    def _browser_tool(self, name, data):
+        """Route bounded browser research and user-authorized verification recovery."""
+        if name == "refill_application":
+            return refill_application(self.engine, string(data["job_id"], 100))
+        if name == "verify_application":
+            return verify_application(self.engine, string(data["job_id"], 100), data["code"])
+        if name in {"find_jobs", "web_search"}:
+            if data.get("engine", "google") != "google":
+                raise ValueError("Use Google X-ray for public employer job discovery.")
+            return self.web.search(google_xray_query(data["query"]), "google")
         if name in {"read_page", "refresh_page"}:
             return self.web.read_page(data["url"])
         return self.web.save_job(data)
@@ -111,15 +150,24 @@ class MasterTools:
         """Explicit chat retries reuse the existing draft reset without restarting application runs."""
         task_id = string(data["task_id"], 100)
         if name == "retry_task":
-            if (self.engine.active or {}).get("message", {}).get("role") != "user":
-                raise ValueError("Retry this blocked draft from a user chat message.")
+            active = self.engine.active or {}
+            if active.get("message", {}).get("role") != "user" or active.get("auto_restart"):
+                raise ValueError("Explicitly ask to retry this blocked draft in a new user chat message after resolving its missing input.")
             return self.engine.retry({"task_id": task_id})
         return self.workflow.prepare(task_id, string(data["instruction"], 5000, empty=True))
 
     def overview(self):
         """Inventory supplies exact IDs without account credentials or unnecessary document text."""
-        documents = self.w.docs.manifest.copy().values()
-        return {"tasks": self.w.chat.list(), "application_runs": self.w.store.all("application_run")[-10:],
-                "jobs": [{key: job.get(key) for key in ("id", "company", "title", "status")} for job in self.w.store.all("job") if not job.get("removed_at")],
-                "documents": [{key: doc.get(key) for key in ("id", "kind", "document_type", "title", "filename")} for doc in documents],
-                "platforms": self.w.recommendations.preferences(), "searches": self.w.recommendations.state()}
+        inventory = []
+        categories = {resume["id"]: resume["category"] for resume in self.w.resumes.list()}
+        for doc in self.w.docs.manifest.copy().values():
+            if doc.get("removed_from_library_at") or (doc["kind"] == "resume" and doc["id"] not in categories):
+                continue
+            item = {key: doc.get(key) for key in ("id", "kind", "document_type", "title", "filename")}
+            if doc["kind"] == "resume":
+                item["category"] = categories[doc["id"]]
+            inventory.append(item)
+        return {"tasks": self.w.chat.list(), "application_runs": [run_report(run) for run in self.engine.history.application_runs()],
+                "jobs": [{**{key: job.get(key) for key in ("id", "company", "title")}, "status": job.get("manual_status") or job["status"],
+                          "manually_set": bool(job.get("manual_status"))} for job in self.w.store.all("job") if not job.get("removed_at")],
+                "documents": inventory}

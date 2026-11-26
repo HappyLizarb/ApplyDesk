@@ -105,6 +105,47 @@ async function testDynamic(session, url) {
   assert.equal(snapshot.fields.find(field => field.name === 'phone').value, '');
 }
 
+// Replaced radio nodes are audited afresh; later fields in the stale batch stay untouched.
+async function testReplacedRadio(session,url) {
+  let snapshot=await dispatch(session,'open',{url});
+  await session.page.evaluate(()=>document.querySelector('input[value="no"]').addEventListener('change',event=>{
+    const replacement=event.target.cloneNode();replacement.checked=true;event.target.replaceWith(replacement);
+  },{once:true}));
+  const radio=snapshot.fields.find(field=>field.type==='radio'&&field.value==='no');
+  snapshot=await dispatch(session,'fill',{snapshot_id:snapshot.snapshot_id,answers:[
+    {field_id:radio.field_id,value:true},{field_id:snapshot.fields.find(field=>field.name==='phone').field_id,value:'555'}]});
+  assert.equal(snapshot.intervention,'field_replaced_during_fill');
+  assert.equal(snapshot.fields.find(field=>field.type==='radio'&&field.value==='no').checked,true);
+  assert.equal(snapshot.fields.find(field=>field.name==='phone').value,'');
+  assert.equal(snapshot.readbacks.length,0);
+}
+
+// Workday can replace a visible field after inspection but before the first action resolves it.
+async function testReplacedBeforeFill(session,url) {
+  let snapshot=await dispatch(session,'open',{url});
+  const first=snapshot.fields.find(field=>field.name==='first'),phone=snapshot.fields.find(field=>field.name==='phone');
+  const original=session.page.evaluateHandle.bind(session.page);
+  session.page.evaluateHandle=async(fn,id)=>{
+    if(id===first.field_id){
+      session.page.evaluateHandle=original;
+      await session.page.evaluate(()=>{const field=document.querySelector('input[name="first"]');field.replaceWith(field.cloneNode());});
+    }
+    return original(fn,id);
+  };
+  try {
+    snapshot=await dispatch(session,'fill',{snapshot_id:snapshot.snapshot_id,answers:[
+      {field_id:first.field_id,value:'Confirmed name'},{field_id:phone.field_id,value:'555'}]});
+  } finally {session.page.evaluateHandle=original;}
+  assert.equal(snapshot.intervention,'field_replaced_during_fill');
+  assert.equal(snapshot.readbacks.length,0);
+  const replacement=snapshot.fields.find(field=>field.name==='first');
+  assert.notEqual(replacement.field_id,first.field_id);
+  assert.equal(replacement.value,'Incorrect prefill');
+  assert.equal(snapshot.fields.find(field=>field.name==='phone').value,'');
+  snapshot=await dispatch(session,'fill',{snapshot_id:snapshot.snapshot_id,answers:[{field_id:replacement.field_id,value:'Confirmed name'}]});
+  assert.equal(snapshot.readbacks[0].value,'Confirmed name');
+}
+
 // Neither a final button nor a deceptive Next-triggered POST can submit automatically.
 async function testSubmissionGuard(session, fixtureServer) {
   let snapshot = await dispatch(session, 'open', {url: fixtureServer.url});
@@ -189,6 +230,8 @@ async function main() {
     await testFields(session, fixtureServer.url);
     await testDocuments(session, fixtureServer.url, directory);
     await testDynamic(session, fixtureServer.url);
+    await testReplacedRadio(session, fixtureServer.url);
+    await testReplacedBeforeFill(session, fixtureServer.url);
     await testSubmissionGuard(session, fixtureServer);
     await testAuthentication(session, fixtureServer);
     await testHiddenAuthenticationScope(session, fixtureServer);

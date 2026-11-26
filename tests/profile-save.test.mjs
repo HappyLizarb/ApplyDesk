@@ -14,13 +14,13 @@ function control(value='') {
 // These facts independently describe old and new fields expected in the saved profile.
 function sampleProfile() {
   return {identity:{legal_name:'Test Applicant',given_name:'Preserved hidden name',email:'test@example.invalid',
-    phone:'',phone_country_code:'',street_address:'Saved street'},confirmed:true,revision:4,transcript_id:'transcript',
+    phone:'',phone_country_code:'',street_address:'Saved street',postal_code:'00501'},confirmed:true,revision:4,transcript_id:'transcript',
     education:[],experiences:[{title:'Design intern',company:'Example employer',job_type:'Internship',
       start:'2025-06',end:'2025-08',location:'Remote',details:'Designed an accessible form.'}],
     projects:[{name:'Course tracker',start:'2024',end:'Present',details:'Saved project facts',url:'https://example.invalid'}],
     languages:[{name:'French',proficiency:''},{name:'English',proficiency:'Native or bilingual proficiency'}],
-    industries:[],websites:[],authorizations:[{country:'US',sponsorship_required:'no',status:'authorized_no_sponsor'}],
-    skills:['Python','Writing'],preferences:{levels:['Internship'],disability:'decline',veteran:'unknown'}};
+    industries:[{name:'Hardware',years:'0',levels:['Internship']}],websites:[],authorizations:[{country:'US',sponsorship_required:'no',status:'authorized_no_sponsor',immigration_status:'',restrictions:''}],
+    skills:['Python','Writing'],preferences:{levels:['Internship'],disability:'decline',veteran:'no',veteran_service:'no',gender:'Male'}};
 }
 
 // FormData reads named controls exactly as profile.js does, including unchecked confirmation.
@@ -28,7 +28,7 @@ class FormValues {
   constructor(source){this.source=source;}
   has(name){return this.source.fields.has(name)&&(name!=='confirmed'||this.source.fields.get(name).checked);}
   get(name){return this.has(name)?this.source.fields.get(name).value:null;}
-  getAll(name){return name==='levels'?this.source.levels:[];}
+  getAll(name){return this.source.fields.get(name)?.value||[];}
 }
 
 // Build only the public form surface needed to dispatch real profile event handlers.
@@ -44,7 +44,7 @@ function profileForm(profile) {
     });
   }
   for(const [name,value] of Object.entries({skills:profile.skills.join(', '),disability:profile.preferences.disability,
-    veteran:profile.preferences.veteran,confirmed:'on'}))fields.set(name,control(value));
+    veteran:profile.preferences.veteran,veteran_service:profile.preferences.veteran_service,gender:profile.preferences.gender,confirmed:'on'}))fields.set(name,control(value));
   fields.get('confirmed').checked=profile.confirmed;
   fields.get('experiences.0.start').value='Jun 2025';fields.get('experiences.0.end').value='Aug 2025';
   const submit={...control(),tagName:'BUTTON',textContent:'Save profile'},tags=control();
@@ -60,7 +60,7 @@ function profileForm(profile) {
 
 // Each test loads an independent draft module while retaining the real shared API functions.
 beforeEach(async()=>{
-  state.data={profile:sampleProfile(),profile_schema:2,jobs:[],profile_imports:[],chat_tasks:[]};state.view='profile';
+  state.data={profile:sampleProfile(),profile_schema:10,jobs:[],profile_imports:[],chat_tasks:[]};state.view='profile';
   server=structuredClone(state.data);calls=[];form=profileForm(state.data.profile);
   const elements=Object.fromEntries(['#job-count','#profile-indicator','#toast'].map(id=>[id,control()]));
   globalThis.window={addEventListener(){},dispatchEvent(){}};
@@ -92,8 +92,16 @@ test('save preserves new profile fields, canonical months, and hidden identity f
   const saved=calls[0].payload;
   for(const section of ['experiences','projects','languages','skills','authorizations'])assert.deepEqual(saved[section],original[section]);
   assert.equal(saved.identity.given_name,'Preserved hidden name');
+  assert.equal(saved.identity.postal_code,'00501');
+  assert.match(root.innerHTML,/Postal code · optional/);
+  assert.match(root.innerHTML,/name="identity.postal_code" type="text" value="00501"/);
   assert.equal(saved.transcript_id,'transcript');
   assert.equal(saved.confirmed,true);
+  assert.equal(saved.preferences.gender,'Male');
+  assert.equal(saved.preferences.veteran_service,'no');
+  assert.match(root.innerHTML,/name="gender" type="text" value="Male"/);
+  assert.deepEqual(saved.industries,original.industries);
+  assert.doesNotMatch(root.innerHTML,/>Projects<|name="projects\./);
   assert.ok(root.innerHTML.indexOf('name="skills"')<root.innerHTML.indexOf('name="languages.0.name"'));
   assert.match(root.innerHTML,/name="languages\.0\.proficiency"><option value="">Select proficiency/);
 });
@@ -101,7 +109,7 @@ test('save preserves new profile fields, canonical months, and hidden identity f
 // A failed save cannot erase the local draft or turn an edit into a confirmed fact.
 test('rejected save retains edited values when the profile renders again',async()=>{
   form.fields.get('experiences.0.title').value='New unsaved title';
-  form.fields.get('projects.0.start').value='Spring 2024';
+  form.fields.get('experiences.0.start').value='Spring 2024';
   form.emit('input',{target:{name:'experiences.0.title'}});
   respond=async()=>({ok:false,data:{error:'Rejected field'}});
   form.emit('submit',{preventDefault(){}});
@@ -136,13 +144,13 @@ test('edits made during a save remain unsaved and survive rerendering',async()=>
 });
 
 // Rebuilding rows after Add must not discard other fields the user has not saved yet.
-test('adding a language retains unsaved experience and project edits',()=>{
+test('adding a language retains unsaved experience edits',()=>{
   form.fields.get('experiences.0.job_type').value='Part-time';
-  form.fields.get('projects.0.details').value='Changed project details';
+  form.fields.get('experiences.0.details').value='Changed experience details';
   const button={dataset:{add:'languages'}};
-  form.emit('click',{target:{closest:()=>button}});
+  form.emit('click',{target:{closest:selector=>selector==='button'?button:null}});
   assert.match(root.innerHTML,/value="Part-time"/);
-  assert.match(root.innerHTML,/>Changed project details<\/textarea>/);
+  assert.match(root.innerHTML,/>Changed experience details<\/textarea>/);
   assert.match(root.innerHTML,/name="languages\.2\.name"/);
   assert.deepEqual(calls,[]);
 });
@@ -159,6 +167,45 @@ test('missing runtime schema prevents POST and retains the local draft',async()=
   assert.match(root.innerHTML,/value="German"/);
   assert.match(document.querySelector('#toast').textContent,/full restart/);
   assert.doesNotMatch(document.querySelector('#toast').textContent,/saved/i);
+});
+
+// A runtime predating gender support must not discard the newly visible disclosure.
+test('old runtime and discarded gender both retain the edited disclosure',async()=>{
+  state.data.profile_schema=6;
+  form.fields.get('gender').value='Prefer not to disclose';
+  form.emit('input',{target:{name:'gender'}});
+  form.emit('submit',{preventDefault(){}});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(calls,[]);
+  state.data.profile_schema=10;
+  respond=async(path,payload)=>{
+    const saved={...structuredClone(payload),revision:5};delete saved.preferences.gender;
+    return {ok:true,data:saved};
+  };
+  form.emit('submit',{preventDefault(){}});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.match(document.querySelector('#toast').textContent,/did not retain your disclosure/);
+  renderProfile(root);
+  assert.match(root.innerHTML,/name="gender" type="text" value="Prefer not to disclose"/);
+});
+
+// A postal edit survives an old runtime or a response that drops its leading zero.
+test('postal code save requires the new schema and exact returned text',async()=>{
+  state.data.profile_schema=7;
+  form.fields.get('identity.postal_code').value='02108-1234';
+  form.emit('input',{target:{name:'identity.postal_code'}});
+  form.emit('submit',{preventDefault(){}});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(calls,[]);
+  state.data.profile_schema=10;
+  respond=async(path,payload)=>({ok:true,data:{...structuredClone(payload),revision:5,
+    identity:{...payload.identity,postal_code:'2108-1234'}}});
+  form.emit('submit',{preventDefault(){}});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.match(document.querySelector('#toast').textContent,/postal code was not saved/);
+  renderProfile(root);
+  assert.match(root.innerHTML,/name="identity.postal_code" type="text" value="02108-1234"/);
+  assert.equal(state.data.profile.revision,4);
 });
 
 // A nominally successful API response must prove that it retained every submitted row field.
@@ -183,8 +230,8 @@ test('a server response dropping languages preserves the draft without success',
 
 // A response without a complete canonical profile or advancing revision cannot clear local edits.
 test('malformed and unadvanced canonical responses retain the unsaved draft',async()=>{
-  form.fields.get('projects.0.details').value='Keep these new project facts';
-  form.emit('input',{target:{name:'projects.0.details'}});
+  form.fields.get('experiences.0.details').value='Keep these new experience facts';
+  form.emit('input',{target:{name:'experiences.0.details'}});
   for(const changes of [{identity:null},{preferences:null},{skills:'wrong shape'},
     {confirmed:true},{revision:4}]){
     respond=async(path,payload)=>({ok:true,data:{...structuredClone(payload),revision:5,...changes}});
@@ -193,7 +240,7 @@ test('malformed and unadvanced canonical responses retain the unsaved draft',asy
     assert.equal(state.data.profile.revision,4);
     assert.match(document.querySelector('#toast').textContent,/could not be verified/);
     renderProfile(root);
-    assert.match(root.innerHTML,/>Keep these new project facts<\/textarea>/);
+    assert.match(root.innerHTML,/>Keep these new experience facts<\/textarea>/);
   }
   assert.ok(calls.every(call=>call.path==='/api/profile'));
 });

@@ -15,7 +15,7 @@ class RunResumeTests(ChatFixture):
     def setUp(self):
         super().setUp()
         profile = self.w.profile()
-        profile["industries"] = [{"name": "Publishing", "years": "0"}]
+        profile["industries"] = [{"name": "Hardware", "years": "0"}]
         self.w.save_profile(profile)
         self.chosen = self.document("chosen", "resume")
         self.w.resumes.add(self.chosen["id"])
@@ -23,10 +23,10 @@ class RunResumeTests(ChatFixture):
 
     def test_explicit_untagged_upload_wins_and_attaches_original_bytes(self):
         """A named resume does not silently turn into General or the industry-tagged file."""
-        self.w.resumes.tag({"document_id": self.resume["id"], "category": "Publishing"})
+        self.w.resumes.tag({"document_id": self.resume["id"], "category": "Hardware"})
         app = Applications(self.w, resume_choice=self.choice)
         with patch.object(app.documents, "require_review") as review:
-            app._resume(self.job, {"category": "Publishing"})
+            app._resume(self.job, {"category": "Hardware"})
         review.assert_called_once_with(self.chosen["id"])
         selected = self.w.store.get("job", self.job["id"])["resume_id"]
         self.assertEqual(selected, self.chosen["id"])
@@ -38,7 +38,7 @@ class RunResumeTests(ChatFixture):
         """Existing category selection still applies when chat did not name an upload."""
         app = Applications(self.w)
         with patch.object(app.documents, "require_review"):
-            app._resume(self.job, {"category": "Publishing"})
+            app._resume(self.job, {"category": "Hardware"})
         self.assertEqual(self.w.store.get("job", self.job["id"])["resume_id"], self.resume["id"])
 
     def test_changed_source_bytes_stop_before_attachment_selection(self):
@@ -47,7 +47,7 @@ class RunResumeTests(ChatFixture):
         app = Applications(self.w, resume_choice=self.choice)
         with patch.object(app.documents, "require_review") as review:
             with self.assertRaisesRegex(ValueError, "changed"):
-                app._resume(self.job, {"category": "Publishing"})
+                app._resume(self.job, {"category": "Hardware"})
         review.assert_not_called()
         self.assertIsNone(self.w.store.get("job", self.job["id"])["resume_id"])
 
@@ -63,25 +63,26 @@ class RunResumeTests(ChatFixture):
 
     def test_replaced_library_upload_does_not_fall_back_or_delete_history(self):
         """Category replacement keeps historical copies while blocking an old run selection."""
-        self.w.resumes.tag({"document_id": self.chosen["id"], "category": "Publishing"})
+        self.w.resumes.tag({"document_id": self.chosen["id"], "category": "Hardware"})
         historical = self.w.store.add_job("https://example.test/jobs/history")
         self.w.store.job(historical["id"], resume_id=self.chosen["id"], status="submitted")
-        self.w.resumes.tag({"document_id": self.resume["id"], "category": "Publishing"})
+        self.w.resumes.tag({"document_id": self.resume["id"], "category": "Hardware"})
         with self.assertRaisesRegex(ValueError, "no longer available"):
             self.w.resumes.selected(self.chosen["id"], self.choice["sha256"])
         self.assertTrue(self.w.docs.verify(self.chosen["id"]))
         self.assertEqual(self.w.store.get("job", historical["id"])["resume_id"], self.chosen["id"])
 
-    def test_deleted_library_upload_keeps_existing_application_copy(self):
+    def test_deleted_upload_preserves_outcome_but_removes_local_bytes(self):
         """Deleting a chosen upload cannot make a new run silently use General instead."""
         historical = self.w.store.add_job("https://example.test/jobs/history")
         self.w.store.job(historical["id"], resume_id=self.chosen["id"], status="submitted")
         result = DocumentDeletion(self.w).delete({"document_id": self.chosen["id"]})
-        self.assertTrue(result["application_copies_kept"])
+        self.assertFalse(result["application_copies_kept"])
         app = Applications(self.w, resume_choice=self.choice)
         with patch.object(app.documents, "require_review") as review:
             with self.assertRaisesRegex(ValueError, "no longer available"):
-                app._resume(self.job, {"category": "Publishing"})
+                app._resume(self.job, {"category": "Hardware"})
         review.assert_not_called()
-        self.assertTrue(self.w.docs.verify(self.chosen["id"]))
-        self.assertEqual(self.w.store.get("job", historical["id"])["resume_id"], self.chosen["id"])
+        self.assertFalse((self.w.docs.root / self.chosen["id"]).exists())
+        self.assertIsNone(self.w.store.get("job", historical["id"])["resume_id"])
+        self.assertEqual(self.w.store.get("job", historical["id"])["status"], "submitted")

@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from applydesk.application_steps import attachment_plan, audit_snapshot, authenticate, choose_attachment, cover_text_plan
+from applydesk.application_steps import attachment_plan, audit_snapshot, authenticate, choose_attachment
 from applydesk.mapping import answer_field, document_kind, plan_fields
 from applydesk.storage import Store
 
@@ -42,6 +42,31 @@ def auth_page(action="login"):
 
 class MappingTests(unittest.TestCase):
     """Visible wording and native grouping must identify a single confirmed answer."""
+
+    def test_preferred_first_name_uses_the_saved_preference_then_confirmed_given_name(self):
+        """The default carries its original evidence and never creates a preference in the profile."""
+        applicant = {**profile(), "confirmed": True}
+        preferred = field(label="Preferred First Name")
+        answer = answer_field(preferred, applicant, "US")
+        self.assertEqual((answer["value"], answer["fact_ids"]), ("Avery", ["identity.given_name"]))
+        self.assertNotIn("preferred_name", applicant["identity"])
+        self.assertIsNone(answer_field(preferred, {**applicant, "confirmed": False}, "US"))
+        applicant["identity"]["preferred_name"] = "Ava"
+        answer = answer_field(preferred, applicant, "US")
+        self.assertEqual((answer["value"], answer["fact_ids"]), ("Ava", ["identity.preferred_name"]))
+
+    def test_separate_profile_name_parts_fill_first_and_full_name(self):
+        applicant = profile()
+        applicant["identity"].update(legal_name="Avery", given_name="")
+        first = answer_field(field(), applicant, "US")
+        full = answer_field(field(label="Full name"), applicant, "US")
+        self.assertEqual(first["value"], "Avery")
+        self.assertEqual(first["fact_ids"], ["identity.legal_name"])
+        self.assertEqual(full["value"], "Avery Example")
+        self.assertEqual(full["fact_ids"], ["identity.legal_name", "identity.family_name"])
+        applicant["identity"]["legal_name"] = "Avery Example"
+        self.assertIsNone(answer_field(field(), applicant, "US"))
+        self.assertEqual(answer_field(field(label="Full name"), applicant, "US")["value"], "Avery Example")
 
     def test_field_label_takes_priority_over_fieldset(self):
         answer = answer_field(field(group="Name"), profile(), "US")
@@ -146,19 +171,15 @@ class AttachmentTests(unittest.TestCase):
             with self.subTest(accept=accept), self.assertRaises(ValueError):
                 choose_attachment(self.w, self.document, {"accept": accept})
 
-    def test_required_cover_text_uses_reviewed_version_and_excludes_disclosures(self):
-        facts = profile()
-        facts["facts"].append({"id": "preferences.disability", "confirmed": True, "kind": "disclosure"})
-        self.w.profile = lambda: facts
-        self.w.docs.get.return_value = {"id": "letter", "blocks": [{"text": "Dear team"}, {"text": "Avery Example"}]}
+    def test_required_cover_attachment_pauses_without_generating_a_letter(self):
+        """Even a saved letter cannot reactivate the removed customization workflow."""
         documents = Mock()
-        answers, handled = cover_text_plan(self.w, documents, {"cover_id": "letter"},
-                                          {"fields": [field("cover", "Cover letter", type="textarea")]})
-        self.assertEqual(handled, {"cover"})
-        self.assertEqual(answers[0]["value"], "Dear team\n\nAvery Example")
-        self.assertEqual(answers[0]["document_id"], "letter")
-        self.assertEqual(answers[0]["fact_ids"], ["identity.legal_name"])
-        documents.require_review.assert_called_once_with("letter")
+        upload = field("cover", "Cover letter", type="file")
+        for job in ({}, {"cover_id": "old-letter"}):
+            uploads, issues = attachment_plan(self.w, documents, job, {"fields": [upload]})
+            self.assertEqual(uploads, [])
+            self.assertTrue(any("requires a cover letter" in issue for issue in issues))
+        self.assertEqual(documents.mock_calls, [])
 
 
 class AuthenticationTests(unittest.TestCase):
@@ -178,7 +199,8 @@ class AuthenticationTests(unittest.TestCase):
                                     account_origin="https://jobs.example.test", has_password=True)
 
     def test_bound_login_fills_then_uses_exact_button(self):
-        authenticate(self.w, self.session, self.job, auth_page())
+        result = authenticate(self.w, self.session, self.job, auth_page())
+        self.assertEqual(result["intervention"], "authentication_completed")
         self.assertEqual(self.session.call.call_args_list[0].args[0], "fill")
         self.assertEqual(self.session.call.call_args_list[1].args,
                          ("authenticate", {"snapshot_id": "filled", "field_id": "login", "intent": "sign_in"}))
@@ -228,7 +250,7 @@ class AuthenticationTests(unittest.TestCase):
             saved = self.w.store.get("job", job["id"])
             self.assertEqual(saved["account_origin"], "https://jobs.example.test")
             record = self.w.store.get("employer_account", saved["employer_account_id"])
-            self.assertEqual(record["status"], "creation_attempted")
+            self.assertEqual(record["status"], "reserved" if method == "fill" else "creation_attempted")
             return {"snapshot_id": method}
         self.session.call.side_effect = browser_call
         authenticate(self.w, self.session, job, auth_page("create_account"))

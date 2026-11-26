@@ -56,37 +56,4 @@ function linkedinParts(id, origin) {
   return headers.size === 1 ? [...headers.values()][0] : {};
 }
 
-// LinkedIn's visible result buttons contain a separate, explicitly labeled Dismiss control.
-function linkedinCards() {
-  const main = document.querySelector('main,[role="main"]');
-  const cards = new Map();
-  for (const dismiss of main?.querySelectorAll('button,[role="button"]') || []) {
-    const match = clean(dismiss.getAttribute('aria-label') || dismiss.innerText).match(/^Dismiss (.+) job$/);
-    const card = match && dismiss.parentElement?.closest('button,[role="button"]');
-    if (!card || !visible(card) || card.closest('form') || card === dismiss) continue;
-    const label = clean(card.innerText || card.getAttribute('aria-label'));
-    const jobId = card.getAttribute('componentkey')?.match(/^job-card-component-ref-(\d{1,22})$/)?.[1] || '';
-    if (label && label.includes(match[1])) cards.set(card, {element: card, title: match[1], label, jobId});
-  }
-  return [...cards.values()];
-}
-
-// Reacquire one exact observed card; never click its nested dismissal or an ambiguous duplicate.
-function locateLinkedInCard({origin, title, label, jobId}) {
-  if (location.origin !== origin || challengePage()) return null;
-  const matches = linkedinCards().filter(card => card.title === title && (jobId ? card.jobId === jobId : card.label === label));
-  return matches.length === 1 ? matches[0].element : null;
-}
-
-// Dispatch on the verified outer card so a centered Dismiss control cannot receive the click.
-function activateLinkedInCard(args) {
-  const card = locateLinkedInCard(args);
-  if (!card) throw new Error('The observed job card is unavailable or ambiguous.');
-  const before = location.href;
-  const selected = card.getAttribute('aria-selected') === 'true' || card.getAttribute('aria-pressed') === 'true' ||
-    /^(selected[, ]|current[, ])/i.test(card.getAttribute('aria-label') || '');
-  card.dispatchEvent(new MouseEvent('click', {bubbles: true}));
-  return {before, selected};
-}
-
-module.exports = {linkedinHeader, linkedinDescription, linkedinParts, linkedinCards, locateLinkedInCard, activateLinkedInCard};
+module.exports = {linkedinHeader, linkedinDescription, linkedinParts};

@@ -129,25 +129,26 @@ class ResumeTests(unittest.TestCase):
         review.assert_called_once_with(document["id"])
         self.assertEqual(self.w.store.get("job", job["id"])["resume_id"], document["id"])
 
-    def test_resume_generation_import_and_ai_edit_are_disabled(self):
+    def test_document_generation_and_template_uploads_are_unavailable(self):
+        """The document workflow contains only local checks, and uploads reject templates."""
         document = self.upload()
         tasks = DocumentTasks(self.w)
-        self.assertFalse(hasattr(tasks, "generate"))
-        with patch.object(self.w, "client", side_effect=AssertionError("Resume editing called AI")):
-            with self.assertRaisesRegex(ValueError, "AI resume editing"):
-                tasks.chat({"document_id": document["id"], "message": "Rewrite it"})
-            with self.assertRaisesRegex(ValueError, "kept unchanged"):
-                tasks.save({"document_id": document["id"], "edits": {"line:0": "New content"}})
-        with self.assertRaisesRegex(ValueError, "no longer available"):
-            self.w.import_file({"kind": "resume_template"})
+        for method in ("generate", "cover", "chat", "save"):
+            self.assertFalse(hasattr(tasks, method))
+        for kind in ("resume_template", "cover_template"):
+            with self.assertRaisesRegex(ValueError, "Template uploads are no longer available"):
+                self.w.import_file({"kind": kind})
+        self.w.docs.verify(document["id"])
 
-    def test_resume_review_checks_layout_and_claims_without_template(self):
+    def test_resume_integrity_is_checked_without_another_model_or_template(self):
+        """An unchanged uploaded resume needs no separate layout or factual agent."""
         document = self.upload()
         tasks = DocumentTasks(self.w)
-        with patch.object(self.w, "client", return_value=object()), patch.object(self.w.docs, "get_template", side_effect=AssertionError):
-            with patch("applydesk.intelligence.review_layout", return_value={"passed": True, "issues": []}) as layout:
-                with patch("applydesk.intelligence.audit_document", return_value={"passed": False, "issues": ["Unsupported claim"]}):
-                    with self.assertRaisesRegex(ValueError, "Unsupported claim"):
-                        tasks.require_review(document["id"])
-                    self.assertFalse(tasks.review(document["id"])["passed"])
-                    layout.assert_called_once()
+        with patch.object(self.w, "client", side_effect=AssertionError("Unexpected model call")):
+            with patch.object(self.w.docs, "get_template", side_effect=AssertionError("Unexpected template")):
+                result = tasks.require_review(document["id"])
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["method"], "file_integrity")
+        self.w.docs.asset(document["image_paths"][0]).write_bytes(b"")
+        with self.assertRaisesRegex(ValueError, "previews are missing"):
+            tasks.require_review(document["id"])

@@ -3,22 +3,27 @@
 from .agent_contract import object_fields, string
 from .providers import _validate_key
 from .connection_models import CONNECTION_SOURCES, validate_provider
-from .application_window import show_application
+from .application_window import show_application, validate_bounds, save_chrome_approval
 
 
 def orchestrator_action(workspace, action, data):
     """The UI session is required; external draft tokens cannot reach these controls."""
     engine = workspace.orchestrator
+    if action == "auto-start":
+        return engine.auto_start.save(data)
+    if action == "chrome-approval":
+        return save_chrome_approval(workspace, data)
     if action == "show-application":
-        object_fields(data, [])
-        return show_application(workspace)
+        object_fields(data, [], ["bounds"])
+        bounds = validate_bounds(data["bounds"]) if "bounds" in data else None
+        return show_application(workspace, bounds)
     if action in {"api-key", "api-key/remove", "source"}:
         return connection_action(workspace, action, data)
     if action in {"connect", "select", "disconnect", "cancel-signin", "models"}:
         return account_action(workspace, action, data)
     if action in {"settings", "role-settings"}:
         if engine.active:
-            raise ValueError("Stop the agents before changing their settings.")
+            raise ValueError("Stop the agent before changing its settings.")
         save = engine.settings.save_role if action == "role-settings" else engine.settings.save
         return save(data)
     actions = {"send": engine.send, "control": engine.control, "retry": engine.retry, "reset": engine.reset}
@@ -36,7 +41,7 @@ def connection_action(workspace, action, data):
     if action == "api-key":
         _validate_key(data["key"])
     if action == "source" and (not isinstance(data["source"], str) or data["source"] not in CONNECTION_SOURCES):
-        raise ValueError("Choose ChatGPT, OpenAI API, Anthropic API, or Google API.")
+        raise ValueError("Choose ChatGPT, OpenAI API, Anthropic API, Google API, or Grok (xAI).")
     engine.control({"paused": True})
     engine.signin.cancel()
     source = data["source"] if action == "source" else engine.accounts.connection()["source"]

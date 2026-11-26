@@ -49,6 +49,11 @@ class ChatHistory:
             messages = [self.live.copy() if item["id"] == self.live["id"] else item for item in messages]
         return messages
 
+    def application_runs(self):
+        """Expose this chat's recent batches while keeping older receipts in the job tracker."""
+        runs = (run for run in self.w.store.all("application_run") if run.get("conversation_id", "") == self.since)
+        return sorted(runs, key=lambda run: run.get("updated_at", ""))[-10:]
+
     def context(self, current_id, include_ids=False):
         """Bound conversation history and exclude queued user messages from the current turn."""
         messages = sorted(self.w.store.all("chat_message"), key=lambda item: item["created_at"])

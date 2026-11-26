@@ -25,8 +25,10 @@ class Keychain:
         name = account.encode()
         length, data, item = c.c_uint32(), c.c_void_p(), c.c_void_p()
         status = self.sec.SecKeychainFindGenericPassword(None, len(self.service), self.service, len(name), name, c.byref(length), c.byref(data), c.byref(item))
+        if status == 100002:
+            raise RuntimeError("macOS could not find a Keychain resource (100002). Reopen ApplyDesk from your Mac login session and retry.")
         if status not in (0, -25300):
-            raise RuntimeError(f"Keychain access failed ({status}). Unlock your login Keychain and retry.")
+            raise RuntimeError(f"Keychain access failed ({status}). Check the login Keychain and any ApplyDesk access prompt.")
         return status, length.value, data, item
 
     def get(self, account):

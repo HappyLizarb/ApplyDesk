@@ -15,22 +15,24 @@ from applydesk.chat_history import ChatHistory
 from applydesk.orchestrator_tools import MasterTools, master_tools
 from applydesk.storage import Store
 from applydesk.web_research import WebResearch
+from applydesk.recommendation_source import normalize_job
+from recommendation_helpers import listing
 
 TEXT = """Site navigation
 Example Press
-Publishing Editor
+Production Editor
 About the Team
-We build reliable publication schedules for editorial teams and collaborative publishing projects.
+We publish illustrated books for libraries and coordinate production with authors and designers.
 Responsibilities
-• Design and validate editorial releases, document test procedures, and investigate production delays.
+• Check proofs, track editorial corrections, and coordinate production milestones with printers.
 Required Qualifications
-A bachelor's degree in communication and experience with editorial production are required.
+Experience with editorial calendars and coordinating production schedules is required.
 Preferred Qualifications
-Python scripting and familiarity with digital interfaces are helpful.
+Familiarity with print proofing and accessible document formats is helpful.
 Compensation
 $100,000 - $130,000 per year.
 Why Join Us
-Work with experienced editors and develop new products through practical experiments.
+Work with experienced editors and help prepare illustrated books for readers.
 Site footer"""
 
 
@@ -44,17 +46,17 @@ class WebResearchTests(unittest.TestCase):
         self.addCleanup(self.store.close)
         self.workspace = SimpleNamespace(store=self.store, lock=threading.RLock())
         self.history = ChatHistory(self.workspace)
-        message = self.history.add("user", "Find publishing roles on company career sites.", "running")
+        message = self.history.add("user", "Find editing roles on company career sites.", "running")
         self.engine = SimpleNamespace(w=self.workspace, history=self.history, active={"message": message},
                                       check_active=Mock(), run_agent=Mock(side_effect=AssertionError("No provider call")),
                                       accounts=SimpleNamespace(generation=1, state=Mock(return_value={"active": "test"})))
-        self.page = {"title": "Publishing Editor — Example Press", "text": TEXT, "links": []}
+        self.page = {"title": "Production Editor — Example Press", "text": TEXT, "links": []}
         self.after_open, self.redirect = None, None
         self.browser = Mock()
         self.browser.call.side_effect = self.open_page
         self.factory = Mock(return_value=self.browser)
         self.web = WebResearch(self.engine, session_factory=self.factory)
-        self.url = "https://careers.example.test/opportunity?id=publishing-1"
+        self.url = "https://careers.example.test/opportunity?id=editing-1"
         self.validation = patch("applydesk.web_research.public_job_url", side_effect=lambda url: url)
         self.validate = self.validation.start()
         self.addCleanup(self.validation.stop)
@@ -69,11 +71,11 @@ class WebResearchTests(unittest.TestCase):
 
     def job_data(self, capture, **changes):
         """Select the whole observed description while excluding navigation and footer text."""
-        return {"capture_id": capture["capture_id"], "company": "Example Press", "title": "Publishing Editor",
+        return {"capture_id": capture["capture_id"], "company": "Example Press", "title": "Production Editor",
                 "first_line": 4, "last_line": 15, **changes}
 
     def test_search_encodes_query_for_each_engine_without_provider_access(self):
-        query = '"publishing editor" new grad -intern & full-time'
+        query = '"production editor" new grad -intern & full-time'
         hosts = {"google": "www.google.com", "bing": "www.bing.com", "duckduckgo": "duckduckgo.com"}
         for engine, host in hosts.items():
             with self.subTest(engine=engine):
@@ -92,7 +94,7 @@ class WebResearchTests(unittest.TestCase):
         self.page["fields"] = [{"type": "password", "value": "fictional-secret"}]
         result = self.web.read_page("https://unusual.example.test/not-a-job-pattern?opening=42")
         self.assertEqual(result["line_count"], 16)
-        self.assertIn("3: Publishing Editor", result["text"])
+        self.assertIn("3: Production Editor", result["text"])
         self.assertEqual(result["links"], [{"text": "Details", "url": "https://another.example.test/opaque/42"}])
         self.assertNotIn("fictional-secret", json.dumps(result))
         self.assertEqual(self.factory.call_args.kwargs, {"headless": True, "research": True})
@@ -115,10 +117,18 @@ class WebResearchTests(unittest.TestCase):
 
     def test_jobs_are_saved_in_the_order_selected_by_the_agent(self):
         first = self.web.read_page(self.url)
-        second = self.web.read_page("https://careers.example.test/opportunity?id=publishing-2")
+        second = self.web.read_page("https://careers.example.test/opportunity?id=editing-2")
         selected = [self.web.save_job(self.job_data(capture))["job_id"] for capture in (second, first)]
         self.assertEqual([job["id"] for job in self.store.all("job")], selected)
         self.assertEqual([job["url"] for job in self.store.all("job")], [second["url"], first["url"]])
+
+    def test_manual_url_gains_its_verified_capture_on_the_existing_row(self):
+        """A user-saved public link becomes eligible for screening after a complete employer read."""
+        original = self.store.add_job(self.url)
+        result = self.web.save_job(self.job_data(self.web.read_page(self.url)))
+        self.assertEqual(result["job_id"], original["id"])
+        self.assertTrue(self.store.get("job", original["id"])["public_source"]["complete"])
+        self.assertEqual(len(self.store.all("job")), 1)
 
     def test_invented_identity_or_invalid_description_span_does_not_add_job(self):
         capture = self.web.read_page(self.url)
@@ -166,6 +176,36 @@ class WebResearchTests(unittest.TestCase):
         self.store.job(existing["id"], public_source={"url": self.url})
         capture = self.web.read_page(self.url)
         self.assertEqual(self.web.save_job(self.job_data(capture)), {"status": "existing", "job_id": existing["id"]})
+
+    def test_agent_links_verified_alternate_to_pending_import_only(self):
+        """Keep the tracker ID across public sources, and reject a wrong tenant, requisition or draft."""
+        item = listing(company="Example Press", title="Production Editor", employer_url="",
+                       text=TEXT + "\nJob requisition JR000001")
+        saved = normalize_job("linkedin", item)
+        job = self.store.add_job(saved["source_url"])
+        self.store.job(job["id"], recommendation_source=saved, status="needs_review")
+        self.page["text"] = item["text"]
+        target = "https://ep.wd5.myworkdayjobs.com/Careers/job/Example-City/Production-Editor_JR000001"
+        tools = MasterTools(self.engine, Mock())
+        tools.web = self.web
+        for wrong in (target.replace("ep.wd5", "other.wd5"), target.replace("JR000001", "JR000002"), target + "/apply"):
+            capture = self.web.read_page(wrong)
+            with self.subTest(url=wrong), self.assertRaises(ValueError):
+                self.web.save_job(self.job_data(capture, job_id=job["id"]))
+        capture = self.web.read_page(target)
+        command = {"name": "link_saved_listing", "arguments": json.dumps(self.job_data(capture, job_id=job["id"]))}
+        self.assertEqual(tools.call(command), {"status": "linked", "job_id": job["id"]})
+        current = self.store.get("job", job["id"])
+        self.assertEqual(current["public_source"]["url"], target)
+        self.assertEqual(current["recommendation_source"], saved)
+        self.assertEqual(len(self.store.all("job")), 1)
+        duplicate = self.store.add_job(target)
+        with self.assertRaisesRegex(ValueError, "another saved application"):
+            tools.call(command)
+        self.store.remove_jobs([duplicate["id"]])
+        self.store.job(job["id"], submission_receipt={"confirmed": True})
+        with self.assertRaisesRegex(ValueError, "submission attempt"):
+            tools.call(command)
 
     def test_capture_from_another_turn_chat_or_connection_cannot_be_saved(self):
         changes = [lambda: self.engine.active.update(message=self.history.add("user", "Use another role.", "running")),

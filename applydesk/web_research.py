@@ -8,7 +8,11 @@ from urllib.parse import urlencode, urlsplit
 from .agent_contract import string
 from .application_session import ApplicationSession
 from .discovery import canonical_url, page_problem
+from .native_page import incomplete_capture_message
 from .profile import public_job_url
+from .public_discovery import require_public_listing
+from .public_source import validate_alternate_listing
+from .recommendation_checks import same_workday_job
 from .storage import now
 
 SEARCH_ENGINES = {"google": "https://www.google.com/search?", "bing": "https://www.bing.com/search?",
@@ -42,13 +46,14 @@ class WebResearch:
         return {**result, "query": query, "search_engine": engine}
 
     def read_page(self, url):
-        """Read rendered page text and links in an isolated, cancellable browser session."""
+        """Read visible page sections in the retained Chrome research tab."""
         owner = self._binding()
-        target = public_job_url(string(url, 8000))
+        target = public_job_url(require_public_listing(string(url, 8000)))
         with tempfile.TemporaryDirectory(prefix="applydesk-web-") as directory:
             session = self.session_factory(self.engine, directory, headless=True, research=True)
             try:
-                page = session.call("open", {"url": target})
+                from .native_page import public_page
+                page = public_page(session, target)
             finally:
                 session.close()
         if self._binding() != owner:
@@ -57,7 +62,7 @@ class WebResearch:
 
     def _capture(self, page, owner):
         """Number visible text lines so saving a description copies bytes instead of rewriting it."""
-        url = public_job_url(page["url"])
+        url = public_job_url(require_public_listing(page["url"]))
         text = string(page.get("text", ""), 60000, empty=True)
         lines = text.splitlines()
         if self.owner != owner:
@@ -66,11 +71,13 @@ class WebResearch:
         identity = uuid.uuid4().hex
         capture = {"id": identity, "url": url, "title": page.get("title", ""), "text": text,
                    "lines": lines, "captured_at": now(), "problem": page_problem(page),
-                   "truncated": bool(page.get("text_truncated")), "owner": owner}
+                   "truncated": bool(page.get("text_truncated")), "owner": owner,
+                   "capture_diagnostics": page.get("capture_diagnostics", {})}
         self.captures[identity] = capture
         return {"capture_id": identity, "url": url, "title": capture["title"], "line_count": len(lines),
                 "text": "\n".join(f"{index}: {line}" for index, line in enumerate(lines, 1)),
-                "links": self._links(page), "truncated": capture["truncated"], "page_issue": capture["problem"]}
+                "links": self._links(page), "truncated": capture["truncated"], "page_issue": capture["problem"],
+                "capture_diagnostics": capture["capture_diagnostics"]}
 
     def _links(self, page):
         """Skip malformed or non-web destinations without discarding readable page content."""
@@ -94,19 +101,44 @@ class WebResearch:
         if not capture or capture["owner"] != owner:
             raise ValueError("Read this job page again to use its current capture.")
         if capture["problem"] or capture["truncated"]:
-            raise ValueError(capture["problem"] or "Open the individual listing to capture its complete description.")
+            raise ValueError(capture["problem"] or incomplete_capture_message(capture,
+                "Open the individual listing to capture its complete description."))
         source = self._source(capture, data)
         with self.w.lock, self.w.store.lock:
             if self._binding() != owner:
                 raise InterruptedError("The chat changed before the job was saved.")
+            if "job_id" in data:
+                return self._link_saved_job(string(data["job_id"], 100), source, capture["text"])
             previous = self._duplicate(source["url"])
-            if previous:
+            if previous and (previous.get("status") != "new" or previous.get("public_source")
+                             or previous.get("recommendation_source") or previous.get("removed_at")):
                 return {"status": "excluded" if previous.get("removed_at") else "existing", "job_id": previous["id"]}
-            job = self.w.store.add_job(source["url"])
+            # A manually added URL acquires its first verified listing in the same tracker row.
+            job = previous or self.w.store.add_job(source["url"])
             job = self.w.store.job(job["id"], company=source["company"], title=source["title"],
                                    details=source["description"], details_origin="captured", public_source=source,
                                    qualification_status="unverified", progress="Saved from the web")
-            return {"status": "added", "job_id": job["id"], "company": job["company"], "title": job["title"]}
+            return {"status": "existing" if previous else "added", "job_id": job["id"], "company": job["company"], "title": job["title"]}
+
+    def _link_saved_job(self, job_id, source, page_text):
+        """Rebind only a pending import to a verified alternate, keeping its history and attempt identity."""
+        from .application_submission import attempt_key
+        job = self.w.store.get("job", job_id)
+        if not job or job.get("removed_at") or job["status"] not in {"new", "needs_review"}:
+            raise ValueError("Choose a pending saved job.")
+        if job.get("submission_receipt") or self.w.store.get("submission_attempt", attempt_key(job)):
+            raise ValueError("This application already has a submission attempt.")
+        validate_alternate_listing(job.get("recommendation_source"), source, page_text)
+        for other in self.w.store.all("job"):
+            if other["id"] == job_id:
+                continue
+            urls = (other["url"], (other.get("public_source") or {}).get("url"),
+                    (other.get("recommendation_source") or {}).get("employer_url"))
+            if any(url and same_workday_job(url, source["url"]) for url in urls):
+                raise ValueError("That requisition already belongs to another saved application.")
+        self.w.store.job(job_id, public_source=source, details=source["description"], details_origin="captured",
+                         qualification_status="unverified", progress="Verified alternate employer listing")
+        return {"status": "linked", "job_id": job_id}
 
     def _source(self, capture, data):
         """Keep exact page wording for identity and the selected complete description."""

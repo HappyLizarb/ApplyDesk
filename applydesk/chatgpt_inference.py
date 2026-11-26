@@ -1,17 +1,17 @@
-"""One observable, cancellable Responses request per independently configured agent run."""
+"""Observable, cancellable requests for the single configured ApplyDesk agent."""
 
-import json
 import socket
 import threading
-import time
 import uuid
+from http.client import HTTPException
 
 from .chatgpt_accounts import RESOURCE
-from .chatgpt_transport import AccountError, connect, stream_events
+from .chatgpt_transport import AccountError, connect, stream_events, provider_failure
 from .storage import now
 from .providers import ProviderError
-from . import anthropic_agent, google_agent
+from . import anthropic_agent, google_agent, xai_agent
 from .agent_transport import request_json as native_request, check_request
+from .orchestrator_prompts import SELF_CHECK
 
 
 def output_text(response):
@@ -22,7 +22,7 @@ def output_text(response):
 
 
 class ChatGPTRunner:
-    """One role run uses exactly the selected provider and credential, without fallback."""
+    """Every step uses the same selected model, provider, and credential."""
 
     def __init__(self, workspace, accounts, settings):
         self.w, self.accounts, self.settings = workspace, accounts, settings
@@ -32,7 +32,9 @@ class ChatGPTRunner:
 
     def run(self, role, instructions, inputs, cancelled, emit, tools=None, task=None):
         """Bind role, model, task version, and provider response to an app-created run ID."""
-        selection = self.settings.validate(self.settings.read()["roles"][role]).copy()
+        if role != "master":
+            raise ValueError("ApplyDesk uses one agent for every task.")
+        selection = self.settings.validate(self.settings.read()["roles"]["master"]).copy()
         identity = "local:" + uuid.uuid4().hex
         record = {"id": identity, "role": role, "model": selection["model"], "thinking": selection["thinking"],
                   "source": self.accounts.state().get("source", "chatgpt"),
@@ -41,7 +43,7 @@ class ChatGPTRunner:
         self.w.store.put("agent_run", identity, record)
         self.current = record
         try:
-            payload = {"model": selection["model"], "instructions": instructions, "input": inputs, "store": False, "stream": True, "include": ["reasoning.encrypted_content"]}
+            payload = {"model": selection["model"], "instructions": SELF_CHECK + instructions, "input": inputs, "store": False, "stream": True, "include": ["reasoning.encrypted_content"]}
             if selection["thinking"] != "default":
                 payload["reasoning"] = {"effort": selection["thinking"]}
             if tools:
@@ -60,7 +62,7 @@ class ChatGPTRunner:
     def _request(self, payload, cancelled, emit):
         """Stop safely on incomplete streams, provider refusal, cancellation, or account change."""
         source = self.accounts.state().get("source", "chatgpt")
-        if source in {"anthropic_api", "google_api"}:
+        if source in {"anthropic_api", "google_api", "xai_api"}:
             return self._native_request(source.removesuffix("_api"), payload, cancelled, emit)
         if source not in {"chatgpt", "openai_api"}:
             raise ProviderError("Select a supported agent connection source.")
@@ -78,16 +80,17 @@ class ChatGPTRunner:
             with self.connection_lock:
                 self.connection = connection
             return self._consume(response, cancelled, emit, generation)
-        except AccountError:
+        except AccountError as error:
             if cancelled.is_set():
                 raise InterruptedError("Paused.") from None
             if self.accounts.state().get("source") == "openai_api":
-                raise ValueError("OpenAI API request failed. Check the API key, model access, and API usage limits.") from None
+                detail = str(error).replace("ChatGPT authorization expired. Reconnect your account.", "Check the selected API key.").replace("ChatGPT", "OpenAI")
+                raise ProviderError("OpenAI API request failed. " + detail, status=error.status, code=error.code) from None
             raise
-        except (OSError, ValueError):
+        except (OSError, HTTPException, ValueError) as error:
             if cancelled.is_set():
                 raise InterruptedError("Paused.") from None
-            raise AccountError() from None
+            raise AccountError(connection_failed=isinstance(error, (OSError, HTTPException))) from None
         finally:
             with self.connection_lock:
                 self.connection = None
@@ -98,7 +101,7 @@ class ChatGPTRunner:
         """Native providers return bounded final text while retaining cancellable sockets."""
         generation = self.accounts.generation
         check_request(self, cancelled, generation)
-        adapter = anthropic_agent if provider == "anthropic" else google_agent
+        adapter = {"anthropic": anthropic_agent, "google": google_agent, "xai": xai_agent}[provider]
         body = adapter.request_body(payload)
         key = self.accounts.api_key(provider)
         value = native_request(self, provider, payload["model"], body, key, cancelled, generation)
@@ -130,8 +133,8 @@ class ChatGPTRunner:
                     result["output"] = [items[index] for index in sorted(items)]
                 return result
             if event.get("type") in {"error", "response.failed", "response.incomplete"}:
-                raise AccountError()
-        raise AccountError()
+                raise provider_failure(event)
+        raise AccountError(stream_ended=True)
 
     def cancel(self):
         """Closing the active socket interrupts a streamed response without granting writes."""

@@ -143,14 +143,15 @@ class ReadinessTests(unittest.TestCase):
         case[3]["fields"][-1]["name"] = ""
         self.assertFalse(verify_readiness(*case)["ready"])
 
-    def test_required_cover_text_is_audited_without_a_file_upload(self):
+    def test_required_cover_text_blocks_even_with_a_previous_letter(self):
         case = valid_case()
         case[0]["cover_id"] = case[1]["cover_id"] = "cover-v1"
         case[3]["fields"].append({"field_id": "cover", "form_id": "application", "type": "textarea",
                                   "label": "Cover letter", "required": True, "value": "Verified document text", "supported": True})
         case[3]["audit"]["field_ids"].append("cover")
         result = verify_readiness(*case)
-        self.assertTrue(result["ready"])
+        self.assertFalse(result["ready"])
+        self.assertTrue(any("requires a cover letter" in issue for issue in result["issues"]))
         self.assertEqual(result["cover_state"], "required")
 
     def test_optional_prefilled_cover_text_needs_review(self):
@@ -171,6 +172,21 @@ class ReadinessTests(unittest.TestCase):
         case = valid_case()
         case[3]["warnings"] = ["Embedded frames require manual inspection."]
         self.assertFalse(verify_readiness(*case)["ready"])
+
+    def test_normal_browser_still_requires_fresh_action_and_field_audits(self):
+        case = valid_case()
+        case[3]["guard"] = {"manual": False, "mutations_blocked": False, "submission_guarded": False,
+                            "page_networking": "normal", "action_audited": True, "blocked_requests": []}
+        self.assertTrue(verify_readiness(*case)["ready"])
+        for changes in ({"action_audited": False}, {"page_networking": "unknown"}, {"manual": True},
+                        {"blocked_requests": [{"reason": "Private network URL"}]}):
+            changed = copy.deepcopy(case)
+            changed[3]["guard"].update(changes)
+            self.assertFalse(verify_readiness(*changed)["ready"])
+        for missing in ("audit", "snapshot_id"):
+            changed = copy.deepcopy(case)
+            changed[3].pop(missing)
+            self.assertFalse(verify_readiness(*changed)["ready"])
 
 
 if __name__ == "__main__":

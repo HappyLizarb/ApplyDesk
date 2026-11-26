@@ -1,4 +1,4 @@
-"""Scanned upload pages reach independent agents without changing the uploaded resume."""
+"""Scanned upload pages reach the single agent without changing the uploaded resume."""
 
 import base64
 import copy
@@ -6,7 +6,7 @@ import json
 from unittest.mock import patch
 
 from chat_helpers import ChatFixture
-from applydesk.orchestrator_prompts import AUDITOR, DRAFTER, REVIEWER
+from applydesk.orchestrator_prompts import DRAFTER, SELF_CHECK
 
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZ1sAAAAASUVORK5CYII=")
@@ -35,24 +35,22 @@ class DraftSourceImageTests(ChatFixture):
         self.calls.append(copy.deepcopy(payload))
         content = payload["input"][0]["content"]
         material = json.loads(content if isinstance(content, str) else content[0]["text"])
-        if payload["instructions"] == DRAFTER:
-            result = {"profile": self.w.profile(), "notes": []} if material["context"]["task"]["kind"] == "profile" else self.payload()["result"]
-            text = json.dumps({"result": result})
-        else:
-            role = "document_reviewer" if payload["instructions"] == REVIEWER else "application_auditor"
-            text = json.dumps({"passed": True, "issues": [], "checked_items": material["review"]["expected_checks"][role]})
+        self.assertEqual(payload["instructions"], SELF_CHECK + DRAFTER)
+        result = {"profile": self.w.profile(), "notes": []} if material["context"]["task"]["kind"] == "profile" else self.payload()["result"]
+        text = json.dumps({"result": result})
         return {"id": "response-" + str(len(self.calls)), "status": "completed", "output": [
             {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}]}
 
-    def test_scanned_resume_reaches_drafter_and_independent_auditor(self):
-        """Both content agents receive the identical page, identified by source ID and page."""
+    def test_scanned_resume_reaches_the_single_agent_once(self):
+        """The agent receives the page once, identified by source ID and page."""
         self.scanned_resume()
         original = self.w.docs.asset(self.resume["source_path"]).read_bytes()
         with patch.object(self.engine.runner, "_request", side_effect=self.respond):
             result = self.engine.workflow.prepare(self.task["id"], "Use the uploaded resume.")
-        self.assertEqual(result["status"], "reviewed_draft")
-        for prompt in (DRAFTER, AUDITOR):
-            content = next(call for call in self.calls if call["instructions"] == prompt)["input"][0]["content"]
+        self.assertEqual(result["status"], "draft_ready")
+        self.assertEqual(len(self.calls), 1)
+        for prompt in (DRAFTER,):
+            content = next(call for call in self.calls if call["instructions"] == SELF_CHECK + prompt)["input"][0]["content"]
             images = [part for part in content if part["type"] == "input_image"]
             self.assertEqual(len(images), 1)
             self.assertEqual(base64.b64decode(images[0]["image_url"].split(",", 1)[1]), PNG)
@@ -70,10 +68,8 @@ class DraftSourceImageTests(ChatFixture):
                 self.calls = []
                 with patch.object(self.engine.runner, "_request", side_effect=self.respond):
                     self.engine.workflow.prepare(task["id"], "Read the text.")
-                draft = next(call for call in self.calls if call["instructions"] == DRAFTER)
+                draft = next(call for call in self.calls if call["instructions"] == SELF_CHECK + DRAFTER)
                 self.assertIsInstance(draft["input"][0]["content"], str)
-                audit = next(call for call in self.calls if call["instructions"] == AUDITOR)
-                self.assertFalse(any(part["type"] == "input_image" for part in audit["input"][0]["content"]))
 
     def test_profile_extraction_reads_scanned_uploaded_resume(self):
         """Profile drafts use the same scanned source path as application reviews."""
@@ -82,8 +78,8 @@ class DraftSourceImageTests(ChatFixture):
         original = self.w.profile()
         with patch.object(self.engine.runner, "_request", side_effect=self.respond):
             result = self.engine.workflow.prepare(task["id"], "Read my uploaded resume.")
-        self.assertEqual(result["status"], "reviewed_draft")
-        self.assertEqual([call["instructions"] for call in self.calls], [DRAFTER, AUDITOR])
+        self.assertEqual(result["status"], "draft_ready")
+        self.assertEqual([call["instructions"] for call in self.calls], [SELF_CHECK + DRAFTER])
         for call in self.calls:
             image = next(part for part in call["input"][0]["content"] if part["type"] == "input_image")
             self.assertEqual(base64.b64decode(image["image_url"].split(",", 1)[1]), PNG)
@@ -101,7 +97,7 @@ class DraftSourceImageTests(ChatFixture):
         """Scanned sources share the existing forty-page request limit."""
         self.scanned_resume(image_paths=self.resume["image_paths"] * 41)
         with patch.object(self.engine.runner, "_request", side_effect=self.respond):
-            with self.assertRaisesRegex(ValueError, "Too many review pages"):
+            with self.assertRaisesRegex(ValueError, "Too many source pages"):
                 self.engine.workflow.prepare(self.task["id"], "Read the resume.")
         self.assertEqual(self.calls, [])
 
@@ -110,6 +106,6 @@ class DraftSourceImageTests(ChatFixture):
         self.scanned_resume()
         self.w.docs.asset(self.resume["image_paths"][0]).write_bytes(PNG + b"x" * (20 * 1024 * 1024))
         with patch.object(self.engine.runner, "_request", side_effect=self.respond):
-            with self.assertRaisesRegex(ValueError, "Too many review pages"):
+            with self.assertRaisesRegex(ValueError, "Too many source pages"):
                 self.engine.workflow.prepare(self.task["id"], "Read the resume.")
         self.assertEqual(self.calls, [])

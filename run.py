@@ -32,7 +32,10 @@ def main():
     server = AppServer(workspace, args.port)
     instance.publish(server.launch_url)
     if not args.no_open:
-        open_window(server.launch_url, instance.root)
+        try:
+            open_window(server.launch_url, instance.root)
+        except (OSError, RuntimeError) as error:
+            print("ApplyDesk's service is ready; its window could not be focused: " + str(error), flush=True)
     print("ApplyDesk running. Use Quit ApplyDesk, or press Control-C here.", flush=True)
     if args.no_open:
         print(server.launch_url, flush=True)

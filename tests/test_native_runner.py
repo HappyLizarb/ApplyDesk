@@ -37,7 +37,7 @@ class NativeRunnerTests(unittest.TestCase):
         self.cancelled = threading.Event()
         self.emit = Mock()
 
-    def test_four_roles_create_independent_observable_records(self):
+    def test_single_agent_creates_observable_request_records(self):
         """Every role uses its selected model and writes its own completed local identity."""
         response = {'id': 'provider-result', 'stop_reason': 'end_turn', 'content': [{'type': 'text', 'text': 'Complete'}]}
         identities = []
@@ -48,11 +48,20 @@ class NativeRunnerTests(unittest.TestCase):
                 record = self.workspace.store.get('agent_run', identity)
                 self.assertEqual((record['role'], record['source'], record['status']), (role, 'anthropic_api', 'completed'))
                 self.assertEqual(result['status'], 'completed')
-        self.assertEqual(len(set(identities)), 4)
-        self.assertEqual(request.call_count, 4)
+        self.assertEqual(len(set(identities)), 1)
+        self.assertEqual(request.call_count, 1)
         self.accounts.api_key.assert_called_with('anthropic')
         self.accounts.token.assert_not_called()
         self.assertNotIn('private-key', str(self.workspace.store.records))
+
+    def test_retired_agent_roles_are_rejected_before_any_request(self):
+        """Old role names cannot silently create another agent or model request."""
+        with patch.object(self.runner, "_request") as request:
+            for role in ("application", "document_reviewer", "application_auditor"):
+                with self.assertRaisesRegex(ValueError, "one agent"):
+                    self.runner.run(role, "Task", [], self.cancelled, self.emit)
+        request.assert_not_called()
+        self.assertEqual(self.workspace.store.records, {})
 
     def test_anthropic_real_master_tool_loop_keeps_signed_history(self):
         """The orchestrator executes normalized native tools and feeds results into the next call."""
@@ -99,6 +108,28 @@ class NativeRunnerTests(unittest.TestCase):
         engine.tools = Mock()
         engine.tools.call.return_value = {'confirmed': True}
         return engine
+
+    def test_grok_tool_loop_preserves_reasoning_and_uses_its_own_key(self):
+        """Grok receives flat app tools and exact native history, never another provider's key."""
+        self.catalog.update(source='xai_api', active='xai_api',
+                            models=[{'id': 'grok-4.7', 'name': 'Grok', 'thinking': ['low', 'medium', 'high', 'xhigh']}])
+        native = [{'type': 'reasoning', 'encrypted_content': 'opaque'},
+                  {'type': 'function_call', 'name': 'read_profile', 'arguments': '{}', 'call_id': 'call-one'}]
+        replies = [{'id': 'one', 'status': 'completed', 'output': native},
+                   {'id': 'two', 'status': 'completed', 'output': [{'type': 'message', 'content': [{'type': 'output_text', 'text': 'Done.'}]}]}]
+        engine = self._engine()
+        with patch('applydesk.chatgpt_inference.native_request', side_effect=replies) as request:
+            answer = engine._master([{'role': 'user', 'content': 'Check my profile.'}])
+        self.assertEqual(answer, 'Done.')
+        first, second = [call.args[3] for call in request.call_args_list]
+        self.assertFalse(first['store'])
+        self.assertFalse(first['parallel_tool_calls'])
+        self.assertTrue(all(tool['type'] == 'function' for tool in first['tools']))
+        self.assertEqual(second['input'][2:4], native)
+        self.assertEqual(second['input'][-1]['call_id'], 'call-one')
+        self.assertEqual(engine.tools.call.call_count, 1)
+        self.accounts.api_key.assert_called_with('xai')
+        self.accounts.token.assert_not_called()
 
     def test_cancellation_after_response_never_emits_final_text(self):
         """A completed HTTP response is discarded if Stop happened before delivery."""

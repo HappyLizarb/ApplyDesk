@@ -24,7 +24,7 @@ class AgentClient:
 
     def request(self, action, payload=None, query=None):
         """Keep secrets out of arguments, output, proxies, and redirect destinations."""
-        allowed = {"guide", "tasks", "task", "asset", "enqueue", "draft", "review", "block", "capture"}
+        allowed = {"guide", "tasks", "task", "asset", "enqueue", "draft", "block", "capture"}
         if action not in allowed:
             raise ValueError("Unknown chat action.")
         path = "/agent/v1/" + action + ("?" + urlencode(query) if query else "")
@@ -45,7 +45,7 @@ class AgentClient:
 def main():
     """Read mutation payloads from files, preventing accidental shell interpolation of text."""
     parser = argparse.ArgumentParser(description="ApplyDesk chat-only draft interface")
-    parser.add_argument("action", choices=["guide", "tasks", "task", "asset", "enqueue", "draft", "review", "block", "capture"])
+    parser.add_argument("action", choices=["guide", "tasks", "task", "asset", "enqueue", "draft", "block", "capture"])
     parser.add_argument("--data-dir", type=Path, default=Path.home() / "Library/Application Support/ApplyDesk")
     parser.add_argument("--id", help="Task ID for task or asset")
     parser.add_argument("--path", help="Task-bound image path for asset")
@@ -53,7 +53,7 @@ def main():
     parser.add_argument("--output", type=Path, help="Save returned JSON or a page image locally")
     args = parser.parse_args()
     try:
-        write = args.action in {"enqueue", "draft", "review", "block", "capture"}
+        write = args.action in {"enqueue", "draft", "block", "capture"}
         if write != bool(args.input) or (args.action in {"task", "asset"} and not args.id):
             raise ValueError("Write operations require --input; task and asset require --id.")
         if args.action == "asset" and (not args.path or not args.output):

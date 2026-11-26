@@ -52,9 +52,3 @@ class ChatFixture(unittest.TestCase):
                 "required": [{"text": "Python", "met": True, "evidence_ids": ["skills.0"]}]},
                 "answers": [], "form_text": "", "cover_requirement": {"state": "unknown", "quote": "", "source_url": "", "source_text": ""},
                 "cover_edits": []}}
-
-    def reviewer(self, role, actor):
-        """A review names the current artifact version and every expected coverage item."""
-        context = self.w.chat.get(self.task["id"])
-        return {"task_id": self.task["id"], "version": context["version"], "agent_id": actor, "role": role,
-                "passed": True, "issues": [], "checked_items": context["review"]["expected_checks"][role]}

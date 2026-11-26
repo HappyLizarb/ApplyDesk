@@ -4,32 +4,6 @@ const crypto = require('node:crypto');
 const description = 'Build reliable engineering systems with experienced colleagues. Required qualifications: current undergraduate study in computer science, Python programming and clear communication. Preferred qualifications: distributed systems coursework. Candidates may submit at most two applications across the company and its affiliates. Include your available internship dates in your resume.';
 const privateText = '<aside>PRIVATE PROFILE private@example.test PRIVATE INBOX MESSAGE</aside>';
 
-// This local SPA retains its authenticated document when recommendation links are followed.
-const spa = `<script>
-const initialBody=document.body.innerHTML, initialTitle=document.title;
-window.fixtureSessionAlive=true;
-document.addEventListener('click',async event=>{
-  const anchor=event.target.closest('a[href^="/job-search/"],a[href^="/jobs/search-results/"]');if(!anchor)return;
-  event.preventDefault();const response=await fetch(anchor.href);
-  const html=new DOMParser().parseFromString(await response.text(),'text/html');
-  history.pushState({},'',response.url);document.title=html.title;document.body.innerHTML=html.body.innerHTML;
-  fetch('/telemetry',{method:'POST'}).catch(()=>{});fetch('/submit',{method:'POST'}).catch(()=>{});
-  if(html.querySelector('[data-hydrate]'))document.body.innerHTML=await fetch('/hydrate-job',{method:'POST'}).then(response=>response.text());
-  if(location.pathname.endsWith('/9002'))fetch('/graphql',{method:'POST'}).catch(()=>{});
-  if(location.pathname.endsWith('/666666'))fetch('/cdn-cgi/challenge-platform/private-nonce',{method:'POST'}).catch(()=>{});
-});
-addEventListener('popstate',()=>{document.title=initialTitle;document.body.innerHTML=initialBody;});
-</script>`;
-
-// Fixtures reproduce only DOM landmarks observed in the signed-in English source surfaces.
-function feed(source) {
-  const links = source === 'handshake' ? '<a href="/job-search/9001">Engineering intern</a><a href="/job-search/9002">Incomplete listing</a><a href="/job-search/9003">Redirected listing</a>' :
-    '<a href="/jobs/search-results/?currentJobId=9005&origin=JOBS_HOME">Engineering intern</a><a href="/jobs/view/9005/">Duplicate intern</a><a href="/jobs/search-results/?currentJobId=9006">Second intern</a>';
-  const heading = source === 'handshake' ? 'Job picks for software developers and engineers in San Francisco' : 'Jobs that match your profile';
-  return `<title>Recommended jobs</title>${privateText}<main><section><header><div><h2>${heading}</h2></div></header>${links}<button onclick="fetch('/save',{method:'POST'})">Save</button></section>
-    <section><h2>Other content</h2><a href="/job-search/999999">Unrelated school collection</a></section></main>${spa}`;
-}
-
 // A tiny text-only websocket fixture checks forwarding and closure without external dependencies.
 function attachSocketFixture(server) {
   const messages = [], sockets = new Set();
@@ -59,7 +33,7 @@ function handshake(id, folded = true) {
     <button onclick="fetch('/submit',{method:'POST'})">Apply</button></div><script>fetch('/telemetry',{method:'POST'}).catch(()=>{})</script>`;
 }
 
-function linkedin(anchorTitle = false, id = '9005') {
+function linkedin(anchorTitle = false, id = '20002') {
   const title = anchorTitle ? `<a href="/jobs/view/${id}/">Engineering Intern</a>` : '<p>Engineering Intern</p>';
   return `<title>${anchorTitle ? 'Search | LinkedIn' : 'Engineering Intern | Acme Systems | LinkedIn'}</title>${privateText}<main><article>
     <header><a href="/company/acme/life/"><div aria-label="Company, Acme Systems.">Acme Systems</div></a>${title}<p>San Jose, CA · 2 weeks ago · 12 people clicked apply</p></header>
@@ -78,25 +52,11 @@ async function fixtureServer() {
     response.setHeader('Content-Type', 'text/html; charset=utf-8');
     response.setHeader('Content-Security-Policy', "script-src 'self' 'unsafe-inline'; object-src 'none'");
     if (request.method === 'POST') writes.push(url.pathname);
-    if (url.pathname === '/manual-pending') return;
-    if (url.pathname === '/manual-login') {
-      response.writeHead(302, {'Set-Cookie': 'signed=1; Path=/; Max-Age=3600', Location: url.searchParams.get('source') === 'linkedin' ? '/jobs/' : '/home'});
-      return response.end();
-    }
-    if (url.pathname === '/home' || url.pathname === '/jobs/') {
-      const source = url.pathname === '/home' ? 'handshake' : 'linkedin';
-      if (request.headers.cookie?.includes('signed=1')) return response.end(feed(source));
-      return response.end(`<title>Sign in</title><form method="post" action="/manual-login?source=${source}"><label>Password<input type="password"></label><button>Sign in</button></form>`);
-    }
-    if (url.pathname === '/job-search/9001') return response.end('<title>Loading job</title><main data-hydrate></main><script>fetch("/hydrate-job",{method:"POST"}).then(response=>response.text()).then(html=>document.body.innerHTML=html)</script>');
-    if (url.pathname === '/hydrate-job') return setTimeout(() => response.end(handshake('9001')), 250);
-    if (url.pathname === '/job-search/9002') return response.end('<title>Listing</title><script>fetch("/graphql",{method:"POST"}).catch(()=>{})</script>');
-    if (url.pathname === '/job-search/9003') { response.writeHead(302, {Location: '/job-search/9004'}); return response.end(); }
-    if (url.pathname === '/job-search/9004') return response.end(handshake('9004', false));
-    if (url.pathname === '/jobs/view/9005/') return response.end(linkedin());
+    if (url.pathname === '/job-search/10001') return response.end('<title>Loading job</title><main data-hydrate></main><script>fetch("/hydrate-job",{method:"POST"}).then(response=>response.text()).then(html=>document.body.innerHTML=html)</script>');
+    if (url.pathname === '/hydrate-job') return setTimeout(() => response.end(handshake('10001')), 250);
+    if (url.pathname === '/jobs/view/20002/') return response.end(linkedin());
     if (url.pathname === '/jobs/search-results/') return response.end(linkedin(true, url.searchParams.get('currentJobId')));
     if (url.pathname === '/job-search/555555') return;
-    if (url.pathname === '/job-search/666666') return response.end('<title>Just a moment...</title>');
     response.end('<title>Fixture</title>');
   });
   const websocket = attachSocketFixture(server);
@@ -104,4 +64,4 @@ async function fixtureServer() {
   return {server, writes, visits, websocket, origin: `http://127.0.0.1:${server.address().port}`};
 }
 
-module.exports = {fixtureServer, handshake, linkedin, feed, description};
+module.exports = {fixtureServer, handshake, linkedin, description};

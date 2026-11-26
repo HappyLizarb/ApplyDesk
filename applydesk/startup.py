@@ -41,6 +41,9 @@ class LocalInstance:
 def focus_window(root):
     """Ask macOS to activate only the browser using this workspace's interface profile."""
     launcher = Path(__file__).resolve().parent.parent / "ApplyDesk.app/Contents/MacOS/ApplyDesk"
+    bundle = next((parent for parent in Path(__file__).resolve().parents if parent.suffix == ".app"), None)
+    if bundle:
+        launcher = bundle / "Contents/MacOS/ApplyDesk"
     launcher = os.environ.get("APPLYDESK_LAUNCHER", str(launcher))
     result = subprocess.run([str(launcher), "--focus-interface", str(root / "interface")],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)

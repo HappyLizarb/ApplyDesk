@@ -7,7 +7,7 @@ from http.client import HTTPSConnection, HTTPException
 
 from .providers import ProviderError, _json_object, _validate_key, validate_model_id
 
-HOSTS = {"anthropic": "api.anthropic.com", "google": "generativelanguage.googleapis.com"}
+HOSTS = {"anthropic": "api.anthropic.com", "google": "generativelanguage.googleapis.com", "xai": "api.x.ai"}
 MAX_BODY, MAX_RESPONSE, TIME_LIMIT = 32 * 1024 * 1024, 12 * 1024 * 1024, 180
 
 
@@ -49,10 +49,12 @@ def request_json(runner, provider, model, body, key, cancelled, generation):
 
 def _exchange(connection, runner, provider, model, body, key, cancelled, generation):
     """Credentials go only into headers for the explicitly selected official endpoint."""
-    path = "/v1/messages" if provider == "anthropic" else f"/v1beta/models/{model}:generateContent"
+    path = {"anthropic": "/v1/messages", "google": f"/v1beta/models/{model}:generateContent", "xai": "/v1/responses"}[provider]
     headers = {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": "ApplyDesk/1.0"}
     if provider == "anthropic":
         headers.update({"x-api-key": key, "anthropic-version": "2023-06-01"})
+    elif provider == "xai":
+        headers["Authorization"] = "Bearer " + key
     else:
         headers["x-goog-api-key"] = key
     deadline = time.monotonic() + TIME_LIMIT
@@ -69,7 +71,7 @@ def _exchange(connection, runner, provider, model, body, key, cancelled, generat
     check_request(runner, cancelled, generation)
     if response.status != 200:
         hints = {401: "Check the saved API key.", 403: "Check model access.", 429: "Check API quota or try again later."}
-        raise ProviderError(f"{provider.title()} API HTTP {response.status}. " + hints.get(response.status, "Check the model and API settings."))
+        raise ProviderError(f"{provider.title()} API HTTP {response.status}. " + hints.get(response.status, "Check the model and API settings."), status=response.status)
     return _read_response(response, connection, runner, cancelled, generation, deadline)
 
 

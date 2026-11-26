@@ -62,13 +62,13 @@ test('active tool execution stops with an empty composer', async () => {
   state.data.orchestrator.active={task_id:'draft-1'};
   serverState.orchestrator={...state.data.orchestrator,paused:true};
   updateComposeAction();
-  assert.equal(elements['#send-assistant'].attributes['aria-label'],'Stop agents');
+  assert.equal(elements['#send-assistant'].attributes['aria-label'],'Stop agent');
   assert.match(elements['#send-assistant'].innerHTML,/#icon-stop/);
   assert.equal(elements['#send-assistant'].disabled,false);
   await submitComposer();
   assert.deepEqual(calls[0],{path:'/api/orchestrator/control',body:{paused:true}});
   assert.equal(elements['#send-assistant'].disabled,true);
-  assert.equal(elements['#send-assistant'].attributes['aria-label'],'Stopping agents');
+  assert.equal(elements['#send-assistant'].attributes['aria-label'],'Stopping agent');
 });
 
 // Failed resume keeps a retry action, without posting the accepted message twice.

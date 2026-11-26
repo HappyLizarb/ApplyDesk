@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from chat_helpers import ChatFixture
 from applydesk.chatgpt_transport import AccountError
-from applydesk.orchestrator_prompts import MASTER, DRAFTER, REVIEWER, AUDITOR
+from applydesk.orchestrator_prompts import MASTER, DRAFTER, SELF_CHECK
 
 
 def response(text="", calls=None):
@@ -17,6 +17,27 @@ def response(text="", calls=None):
 
 
 class OrchestratorTests(ChatFixture):
+    def test_inventory_shows_current_resume_tags_and_excludes_replaced_upload(self):
+        """The agent sees the same résumé choices as the application's attachment selector."""
+        self.document("replacement", "resume")
+        self.w.resumes.add("replacement")
+        self.w.resumes.tag({"document_id": "replacement", "category": "General"})
+        resumes = [row for row in self.engine.tools.overview()["documents"] if row["kind"] == "resume"]
+        selected = self.w.resumes.select("Unlisted industry")
+        self.assertEqual([(row["id"], row["category"]) for row in resumes], [(selected["id"], "General")])
+        self.assertNotIn("source_path", resumes[0])
+
+    def test_new_chat_excludes_old_submission_limits_and_retains_job_history(self):
+        """Reset limits in both chat views without losing prior attempts or their saved jobs."""
+        run = {"id": "prior", "limit": 5, "results": [], "conversation_id": self.engine.history.since}
+        self.w.store.put("application_run", "prior", run)
+        self.assertEqual(self.engine.tools.overview()["application_runs"][0]["limit"], 5)
+        self.engine.reset({})
+        self.assertEqual(self.engine.state()["application_runs"], [])
+        self.assertEqual(self.engine.tools.overview()["application_runs"], [])
+        self.assertEqual(self.w.store.get("application_run", "prior"), run)
+        self.assertIn(self.job["id"], [job["id"] for job in self.engine.tools.overview()["jobs"]])
+
     def setUp(self):
         """Seed account metadata only; the test adapter must never request real credentials."""
         super().setUp()
@@ -24,69 +45,66 @@ class OrchestratorTests(ChatFixture):
         self.w.store.put("chatgpt", "accounts", {"active": "test", "host_id": "host", "accounts": [{"id": "test", "label": "Test", "connected": True, "client_id": "oaiapp_test", "subject": "subject"}]})
         self.w.store.put("chatgpt_models", "test", [{"id": "test-model", "name": "Test", "thinking": ["low", "high"]}])
         self.calls = []
-        self.fail_review = False
+        self.fail_draft = False
 
     def model(self, payload, cancelled, emit):
-        """Each role gets its own input; the master delegates and never supplies a verdict."""
+        """Sequential chat and draft steps share one model and self-check instruction."""
         self.calls.append(copy.deepcopy(payload))
         self.assertFalse(payload["store"])
         self.assertTrue(payload["stream"])
-        prompt = payload["instructions"]
+        self.assertTrue(payload["instructions"].startswith(SELF_CHECK))
+        prompt = payload["instructions"].removeprefix(SELF_CHECK)
         if prompt == MASTER:
             if any(item.get("type") == "function_call_output" for item in payload["input"]):
                 emit("Your draft is prepared. Nothing was submitted.")
                 return response("Your draft is prepared. Nothing was submitted.")
             return response(calls=[{"type": "function_call", "namespace": "applydesk", "name": "prepare_task", "call_id": "call-1", "arguments": json.dumps({"task_id": self.task["id"], "instruction": "Prepare this draft."})}])
-        if prompt == DRAFTER:
-            return response(json.dumps({"result": self.payload()["result"]}))
-        role = "document_reviewer" if prompt == REVIEWER else "application_auditor"
-        self.assertEqual(prompt, REVIEWER if role == "document_reviewer" else AUDITOR)
-        self.assertEqual(len(payload["input"]), 1)
-        material = json.loads(payload["input"][0]["content"][0]["text"])
-        self.assertNotIn("master_instruction", material)
-        self.assertNotIn("reviews", material)
-        verdict = {"passed": not self.fail_review, "issues": ["Missing evidence"] if self.fail_review else [],
-                   "checked_items": material["review"]["expected_checks"][role]}
-        return response(json.dumps(verdict))
+        self.assertEqual(prompt, DRAFTER)
+        return response(json.dumps({"blocked": ["Missing application answer"]} if self.fail_draft else {"result": self.payload()["result"]}))
 
-    def test_automatic_queue_runs_separate_agents_and_keeps_job_draft(self):
+    def test_automatic_queue_uses_one_agent_and_keeps_job_draft(self):
         """Connected idle app processes the queue without a Codex process or user chat turn."""
         original = self.w.profile()
         with patch.object(self.engine.runner, "_request", side_effect=self.model):
             self.engine.start()
             deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and self.w.chat.get(self.task["id"])["task"]["status"] != "reviewed_draft":
+            while time.monotonic() < deadline:
+                if self.w.chat.get(self.task["id"])["task"]["status"] == "draft_ready" and self.engine.active is None:
+                    break
                 time.sleep(.02)
             self.engine.control({"paused": True})
         task = self.w.chat.get(self.task["id"])["task"]
-        self.assertEqual(task["status"], "reviewed_draft")
-        reviews = task["reviews"]
-        self.assertTrue(all(item["identity_verified"] for item in reviews.values()))
-        self.assertEqual(len({task["agent_id"], *(item["agent_id"] for item in reviews.values())}), 3)
+        self.assertEqual(task["status"], "draft_ready")
+        self.assertEqual(task["reviews"], {})
         self.assertEqual(self.w.profile(), original)
         self.assertEqual(self.w.store.get("job", self.job["id"])["status"], "draft")
-        layout = next(call for call in self.calls if call["instructions"] == REVIEWER)
-        self.assertTrue(any(item["type"] == "input_image" for item in layout["input"][0]["content"]))
-        masters = [run for run in self.w.store.all("agent_run") if run["role"] == "master"]
-        self.assertEqual(len(masters), 2)
-        self.assertEqual(len({run["turn_id"] for run in masters}), 1)
-        self.assertTrue(masters[0]["turn_id"])
+        self.assertEqual(self.engine.history.read()[-1]["status"], "complete")
+        runs = self.w.store.all("agent_run")
+        self.assertEqual({run["role"] for run in runs}, {"master"})
+        self.assertEqual(len(runs), 3)
+        self.assertEqual(len({run["turn_id"] for run in runs}), 1)
+        self.assertTrue(runs[0]["turn_id"])
 
-    def test_failed_reviews_block_retry_and_cannot_be_forged_by_external_chat(self):
-        """A failed reviewer remains a blocker; a client cannot claim app-created run identity."""
-        self.fail_review = True
+    def test_draft_blockers_and_reserved_execution_ids_remain_enforced(self):
+        """Self-check findings block the draft; a client cannot impersonate app-owned execution."""
+        self.fail_draft = True
         with patch.object(self.engine.runner, "_request", side_effect=self.model):
             result = self.engine.workflow.prepare(self.task["id"], "Prepare")
-            count = len(self.calls)
             with self.assertRaises(ValueError):
                 self.engine.workflow.prepare(self.task["id"], "Try again")
         self.assertEqual(result["status"], "needs_input")
-        self.assertEqual(len(self.calls), count)
-        review = self.reviewer("application_auditor", self.w.chat.get(self.task["id"])["task"]["reviews"]["application_auditor"]["agent_id"])
+        job = self.w.store.get("job", self.job["id"])
+        self.assertEqual(job["status"], "needs_review")
+        self.assertEqual(job["exceptions"], ["Missing application answer"])
+        self.assertEqual(len(self.calls), 1)
         with self.assertRaises(ValueError):
-            self.w.chat.review(review)
+            self.w.chat.submit({**self.payload(), "agent_id": "local:invented"})
         self.engine.retry({"task_id": self.task["id"]})
         self.assertEqual(self.w.chat.get(self.task["id"])["task"]["status"], "queued")
+        self.fail_draft = False
+        with patch.object(self.engine.runner, "_request", side_effect=self.model):
+            self.engine.workflow.prepare(self.task["id"], "Prepare the corrected draft")
+        self.assertEqual(self.w.store.get("job", self.job["id"])["exceptions"], [])
 
     def test_pause_discards_completed_but_uncommitted_model_output(self):
         """Cancellation between the provider result and local write leaves the task unchanged."""
@@ -109,7 +127,9 @@ class OrchestratorTests(ChatFixture):
         with patch.object(self.engine.runner, "_request", side_effect=changed):
             with self.assertRaises(ValueError):
                 self.engine.workflow.prepare(self.task["id"], "Prepare")
-        self.assertIsNone(self.w.chat.get(self.task["id"])["task"]["result"])
+        task = self.w.chat.get(self.task["id"])["task"]
+        self.assertIsNone(task["result"])
+        self.assertEqual(task["status"], "queued")
 
     def test_account_changes_and_unavailable_settings_block_requests(self):
         """An account switch invalidates in-flight writes; unknown models do not silently fall back."""
@@ -135,7 +155,7 @@ class OrchestratorTests(ChatFixture):
         self.assertEqual(history[-1]["role"], "assistant")
         self.assertIn("Nothing was submitted", history[-1]["text"])
         self.assertEqual(history[0]["status"], "complete")
-        self.assertEqual(self.w.chat.get(self.task["id"])["task"]["status"], "reviewed_draft")
+        self.assertEqual(self.w.chat.get(self.task["id"])["task"]["status"], "draft_ready")
 
     def test_provider_failure_pauses_automatic_routing_instead_of_retry_loop(self):
         """Usage errors remain visible and require explicit resume, without paid fallback."""
@@ -149,17 +169,43 @@ class OrchestratorTests(ChatFixture):
         self.assertIn("usage limit", self.engine.error)
         self.assertEqual(self.w.chat.get(self.task["id"])["task"]["status"], "queued")
 
-    def test_app_rechecks_external_reported_reviews(self):
-        """Reported passes from the bridge cannot satisfy app-controlled reviewer execution."""
+    def test_summary_retry_never_repeats_an_executed_tool(self):
+        """Recover one transient summary failure after a completed tool and discard its partial text."""
+        self.engine.send({"message": "Check my workspace."})
+        work = self.engine._next()
+        call = {"name": "workspace_overview", "type": "function_call", "call_id": "once", "arguments": "{}"}
+        answers = iter([response(calls=[call]), AccountError(520), response("Done.")])
+        def model(payload, cancelled, emit):
+            item = next(answers)
+            if isinstance(item, AccountError):
+                emit("partial text")
+                raise item
+            return item
+        with patch.object(self.engine.runner, "_request", side_effect=model), patch.object(self.engine.tools, "call", return_value={}) as tool:
+            self.engine._perform(work)
+        tool.assert_called_once_with(call)
+        self.assertEqual(self.engine.history.read()[-1]["text"], "Done.")
+
+    def test_failed_summary_shows_only_this_turns_saved_outcomes(self):
+        """Old blockers stay in the tracker without hiding the latest verified result or provider error."""
+        from applydesk.orchestrator_tools import run_report
+        prior = {"job_id": "older-job", "status": "needs_review", "issues": ["Old issue"]}
+        current = {"job_id": self.job["id"], "status": "needs_review", "issues": ["Resume upload unavailable."]}
+        run = {"id": "r", "message_result_starts": {"current": 1}, "results": [prior, current], "submitted_count": 0}
+        self.engine.applications.run = run
+        self.assertEqual(run_report(run, "current")["results"], [current])
+        self.assertNotIn("results", run_report(run))
+        detail = self.engine._run_error(AccountError(503), {"id": "current"})
+        self.assertIn("Resume upload unavailable", detail)
+        self.assertIn("HTTP 503", detail)
+        self.assertNotIn("Old issue", detail)
+
+    def test_prepared_draft_does_not_schedule_more_model_requests(self):
+        """A valid existing draft is reusable without any reviewer or repeated draft call."""
         self.w.chat.submit(self.payload())
-        self.w.chat.review(self.reviewer("document_reviewer", "external-reviewer"))
-        self.w.chat.review(self.reviewer("application_auditor", "external-auditor"))
-        with patch.object(self.engine.runner, "_request", side_effect=self.model):
-            result = self.engine.workflow.prepare(self.task["id"], "Check this draft")
-        reports = self.w.chat.get(self.task["id"])["task"]["reviews"]
-        self.assertTrue(all(report["identity_verified"] for report in reports.values()))
-        self.assertEqual(result["status"], "reviewed_draft")
-        self.assertEqual([call["instructions"] for call in self.calls], [REVIEWER, AUDITOR])
+        with patch.object(self.engine.runner, "_request", side_effect=AssertionError("Unexpected request")):
+            result = self.engine.workflow.prepare(self.task["id"], "Use this draft")
+        self.assertEqual(result["status"], "draft_ready")
 
     def test_empty_completed_reply_is_an_error_not_a_successful_chat_turn(self):
         """A successful transport cannot hide a missing answer behind a synthetic success message."""

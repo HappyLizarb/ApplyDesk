@@ -3,13 +3,13 @@
 import uuid
 
 from .agent_context import guide, inputs_for, task_context
-from .agent_contract import application_draft, document_draft, object_fields, profile_draft, string, strings
+from .agent_contract import application_draft, object_fields, profile_draft, string, strings
 from .profile import public_job_url
 from .storage import now
 
 
 class AgentTasks:
-    """Accept bounded proposals and experimental reviews, never readiness or submission."""
+    """Accept bounded drafts without granting readiness or submission authority."""
 
     def __init__(self, workspace):
         # Storage survives chat interruptions; no background model process is started.
@@ -38,8 +38,8 @@ class AgentTasks:
     def enqueue(self, data):
         """Queueing is durable and idempotent; it never starts a provider request."""
         object_fields(data, ["kind", "target_id"], ["instruction"])
-        if data["kind"] not in {"profile", "application", "document"}:
-            raise ValueError("Choose profile, application, or document.")
+        if data["kind"] not in {"profile", "application"}:
+            raise ValueError("Choose profile or application. Letter customization is unavailable.")
         instruction = string(data.get("instruction", ""), 5000, empty=True)
         task = {"id": uuid.uuid4().hex, "kind": data["kind"], "target_id": string(data["target_id"], 100),
                 "instruction": instruction, "status": "queued", "draft_revision": 0, "reviews": {},
@@ -63,64 +63,30 @@ class AgentTasks:
             raise ValueError("Inputs changed. Read the task again before submitting a draft.")
         task, inputs = context["task"], context["inputs"]
         actor = string(data["agent_id"], 200)
-        self._execution(data, execution, "application", context)
-        validators = {"application": application_draft, "document": document_draft}
+        self._execution(data, execution, "master", context)
+        if task["kind"] == "document":
+            raise ValueError("Letter customization is unavailable; saved letters can be previewed or downloaded.")
         result = (profile_draft(data["result"]) if task["kind"] == "profile"
-                  else validators[task["kind"]](data["result"], inputs))
-        documents = self._artifacts(task, inputs, result)
-        task.update(result=result, document_ids=documents, agent_id=actor, reviews={}, issues=[], status="awaiting_review",
+                  else application_draft(data["result"], inputs))
+        documents = self._artifacts(task, result)
+        task.pop("blocked_version", None)
+        task.update(result=result, document_ids=documents, agent_id=actor, reviews={}, issues=[], status="draft_ready", draft_version=None,
                     draft_revision=task["draft_revision"] + 1, input_version=context["input_version"], updated_at=now())
         self.w.store.put("chat_task", task["id"], task)
         if task["kind"] == "application":
             self.w.store.job(task["target_id"], status="draft", analysis=result["analysis"], resume_id=documents[0],
-                             cover_id=documents[1] if len(documents) > 1 else None,
-                             cover_state=result["cover_requirement"]["state"], draft_answers=result["answers"],
-                             progress="Draft saved. Separate chat reviews are pending; nothing has been filled or submitted.")
+                             cover_state=result["cover_requirement"]["state"], draft_answers=result["answers"], exceptions=[],
+                             progress="Draft saved. Nothing has been filled or submitted.")
+        task["draft_version"] = self.get(task["id"])["draft_version"]
+        self.w.store.put("chat_task", task["id"], task)
         return self.get(task["id"])
 
-    def _artifacts(self, task, inputs, result):
-        """Render cover drafts locally while selecting uploaded resumes without changing bytes."""
+    def _artifacts(self, task, result):
+        """Select an unchanged uploaded resume; this workflow creates no letter artifacts."""
         if task["kind"] == "profile":
             return []
-        if task["kind"] == "document":
-            edits = {item["id"]: item["text"] for item in result["edits"]}
-            return [self.w.docs.edit(task["target_id"], edits)["id"]]
         resume = self.w.resumes.select(result["analysis"]["category"])
-        documents = [resume["id"]]
-        if result["cover_requirement"]["state"] == "required":
-            edits = {item["id"]: item["text"] for item in result["cover_edits"]}
-            letter = self.w.docs.create(inputs["template"]["id"], edits,
-                                        inputs["job"]["company"] + " cover letter draft", job_id=task["target_id"])
-            documents.append(letter["id"])
-        return documents
-
-    def review(self, data, execution=None):
-        """Record distinct reported reviewers; passing reviews still produce only a draft."""
-        object_fields(data, ["task_id", "version", "agent_id", "role", "passed", "issues", "checked_items"])
-        context = self.get(data["task_id"])
-        task, actor = context["task"], string(data["agent_id"], 200)
-        verified = self._execution(data, execution, data["role"], context)
-        roles = ["application_auditor"] if task["kind"] == "profile" else ["document_reviewer", "application_auditor"]
-        if not task.get("result") or task["status"] == "stale" or data["version"] != context["version"]:
-            raise ValueError("Review the current draft and input version first.")
-        if data["role"] not in roles or not isinstance(data["passed"], bool):
-            raise ValueError("Choose a required reviewer role and a boolean verdict.")
-        others = [review["agent_id"] for role, review in task["reviews"].items() if role != data["role"]]
-        if actor == task["agent_id"] or actor in others:
-            raise ValueError("The drafter and each reviewer must report different agent IDs.")
-        issues, checked = strings(data["issues"]), strings(data["checked_items"], 5000)
-        expected = context["review"]["expected_checks"][data["role"]]
-        if len(checked) != len(set(checked)) or set(checked) != set(expected):
-            raise ValueError("The review must cover every expected item exactly once.")
-        if data["passed"] and issues:
-            raise ValueError("A passing review cannot contain unresolved issues.")
-        task["reviews"][data["role"]] = {**data, "updated_at": now(), "identity_verified": verified}
-        complete = all(task["reviews"].get(role, {}).get("passed") for role in roles)
-        task.update(status="reviewed_draft" if complete else "awaiting_review" if data["passed"] else "needs_input", updated_at=now())
-        self.w.store.put("chat_task", task["id"], task)
-        if task["kind"] == "application":
-            self.w.store.job(task["target_id"], status="draft", progress="Chat review recorded. Draft only; user review is still required.")
-        return {"task_id": task["id"], "status": task["status"], "draft_only": True}
+        return [resume["id"]]
 
     def block(self, data):
         """Uncertainty persists as a visible blocker instead of a guessed answer."""
@@ -132,8 +98,11 @@ class AgentTasks:
         if not issues:
             raise ValueError("Describe what is missing or uncertain.")
         task = context["task"]
-        task.update(status="needs_input", issues=issues, updated_at=now())
+        task.update(status="needs_input", issues=issues, blocked_version=context["version"], updated_at=now())
         self.w.store.put("chat_task", task["id"], task)
+        if task["kind"] == "application":
+            self.w.store.job(task["target_id"], status="needs_review", exceptions=issues,
+                             progress="Needs input: " + issues[0])
         return {"task_id": task["id"], "status": task["status"], "issues": issues}
 
     def capture(self, data):

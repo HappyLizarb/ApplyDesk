@@ -72,8 +72,8 @@ class AgentRoutes:
         """No operation exposes profile confirmation, application filling, or submission."""
         chat = self.server.workspace.chat
         if self.server.workspace.orchestrator.active:
-            raise ValueError("The in-app agents are working. Pause them before external draft writes.")
-        actions = {"enqueue": chat.enqueue, "draft": chat.submit, "review": chat.review,
+            raise ValueError("The in-app agent is working. Pause it before external draft writes.")
+        actions = {"enqueue": chat.enqueue, "draft": chat.submit,
                    "block": chat.block, "capture": chat.capture}
         action = path.removeprefix("/agent/v1/")
         if action not in actions:

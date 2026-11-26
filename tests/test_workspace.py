@@ -100,62 +100,33 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(saved["revision"], profile["revision"] + 1)
         self.assertEqual(self.workspace.store.get("job", job["id"])["status"], "needs_review")
 
-    def test_job_document_edit_copies_master_and_invalidates_only_job(self):
-        # A per-job edit leaves the reusable resume and other applications untouched.
-        job = self.workspace.store.add_job("https://jobs.example.test/role")
-        other = self.workspace.store.add_job("https://jobs.example.test/other")
-        for record in (job, other):
-            self.workspace.store.job(record["id"], resume_id="master", status="ready")
-        self.workspace.store.put("library", "engineering", {"document_id": "master"})
-        master = {"id": "master", "job_id": None, "category": "Engineering"}
-        edited = {"id": "edited", "job_id": job["id"], "document_type": "resume"}
-        self.workspace.docs = Mock()
-        self.workspace.docs.get.return_value = master
-        self.workspace.docs.copy_for_job.return_value = {**master, "id": "job-copy", "job_id": job["id"]}
-        self.workspace.docs.edit.return_value = edited
-        tasks = DocumentTasks(self.workspace)
-        with patch.object(tasks, "review", return_value={"passed": True}):
-            tasks.save({"document_id": "master", "job_id": job["id"], "edits": {"block": "Changed"}})
-        self.workspace.docs.copy_for_job.assert_called_once_with("master", job["id"])
-        self.workspace.docs.edit.assert_called_once_with("job-copy", {"block": "Changed"})
-        self.assertEqual(self.workspace.store.get("library", "engineering")["document_id"], "master")
-        self.assertEqual(self.workspace.store.get("job", job["id"])["status"], "documents_changed")
-        self.assertEqual(self.workspace.store.get("job", other["id"])["resume_id"], "master")
+    def test_template_upload_rejection_precedes_decoding_or_file_changes(self):
+        """Disabled uploads cannot reach the renderer or mutate saved settings."""
+        prior = self.workspace.settings()
+        with patch.object(self.workspace.docs, "import_file") as importer:
+            for kind in ("resume_template", "cover_template"):
+                with self.assertRaisesRegex(ValueError, "Template uploads"):
+                    self.workspace.import_file({"kind": kind, "data": "invalid base64"})
+        importer.assert_not_called()
+        self.assertEqual(self.workspace.settings(), prior)
 
-    def test_saved_version_survives_unavailable_review_provider(self):
-        # A missing key leaves the saved edit available but explicitly unapproved.
-        self.workspace.docs = Mock()
-        self.workspace.docs.get.return_value = {"id": "previous", "category": "Engineering"}
-        self.workspace.docs.edit.return_value = {"id": "saved-version", "category": "Engineering"}
-        tasks = DocumentTasks(self.workspace)
-        with patch.object(tasks, "review", side_effect=ValueError("Add a provider API key in Settings.")):
-            result = tasks.save({"document_id": "previous", "edits": {"block": "Edited fact"}})
-        self.assertEqual(result["document_id"], "saved-version")
-        self.assertFalse(result["review"]["passed"])
-        self.assertTrue(result["review"]["pending"])
-        self.assertEqual(self.workspace.store.get("library", "engineering")["document_id"], "saved-version")
-        self.assertTrue(self.workspace.store.get("document_review", "saved-version")["pending"])
-        self.workspace.docs.edit.assert_called_once_with("previous", {"block": "Edited fact"})
 
-    def test_cached_review_is_rebound_to_current_document_version(self):
-        # Byte-identical copies may reuse review work but must name the current version.
+
+    def test_local_integrity_checks_name_the_current_document_version(self):
+        """Byte-identical copies keep their own result and never reuse model audit claims."""
         self.workspace.docs = Mock()
-        original = {"id": "master", "template_id": "template", "sha256": "pdf-hash",
-                    "docx_sha256": "docx-hash", "image_paths": ["preview.png"]}
+        original = {"id": "master", "image_paths": ["preview.png"]}
         self.workspace.docs.get.return_value = original
-        self.workspace.docs.get_template.return_value = {"source_sha256": "source-hash", "image_paths": ["template.png"]}
+        self.workspace.docs.asset.return_value.read_bytes.return_value = b"preview bytes"
         tasks = DocumentTasks(self.workspace)
-        with patch.object(self.workspace, "client", return_value=object()), patch.object(tasks, "_images", return_value=[]):
-            with patch("applydesk.intelligence.review_format", return_value={"passed": True, "issues": []}) as formatting:
-                with patch("applydesk.intelligence.audit_document", return_value={"passed": True, "issues": []}) as factual:
-                    self.assertEqual(tasks.review("master")["document_id"], "master")
-                    self.workspace.docs.get.return_value = {**original, "id": "job-copy"}
-                    result = tasks.review("job-copy")
-                    formatting.assert_called_once()
-                    factual.assert_called_once()
+        with patch.object(self.workspace, "client", side_effect=AssertionError("Unexpected model call")):
+            self.assertEqual(tasks.review("master")["document_id"], "master")
+            self.workspace.docs.get.return_value = {**original, "id": "job-copy"}
+            result = tasks.review("job-copy")
         self.assertEqual(result["document_id"], "job-copy")
         self.assertTrue(result["passed"])
-        self.assertEqual(self.workspace.store.get("document_review", "job-copy")["document_id"], "job-copy")
+        self.assertEqual(self.workspace.docs.verify.call_count, 2)
+        self.assertEqual(self.workspace.store.get("document_review", "job-copy")["method"], "file_integrity")
 
 
 class HttpBoundaryTests(unittest.TestCase):

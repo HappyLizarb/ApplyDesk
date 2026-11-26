@@ -30,7 +30,11 @@ async function start() {
     document.querySelectorAll('[data-view]').forEach(button=>button.onclick=()=>location.hash=button.dataset.view);
     window.addEventListener('hashchange',navigate);
     window.addEventListener('workspace-updated',()=>{
-      if(state.view==='applications')renderApplications(document.querySelector('#main'));
+      if(state.view==='applications'){
+        const main=document.querySelector('#main'),focused=main.querySelector('select[data-job-status]:focus');
+        if(!focused)renderApplications(main);
+        else focused.onblur=()=>setTimeout(()=>{if(state.view==='applications'&&focused.isConnected)renderApplications(main);},0);
+      }
       if(state.view==='settings')updateAccount();
     });
     setInterval(()=>refresh().catch(()=>{}),3500);

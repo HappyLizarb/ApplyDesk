@@ -42,13 +42,11 @@ class ChatHttpTests(ChatFixture):
         with patch.object(self.w, "client", side_effect=AssertionError("Model call")):
             guide = self.client.request("guide")
             self.assertTrue(guide["draft_only"])
-            self.assertIn("separate subagents", guide["instructions"])
+            self.assertIn("Use one agent", guide["instructions"])
             tasks = self.client.request("tasks")
             self.assertEqual(tasks[0]["id"], self.task["id"])
-            self.client.request("draft", self.payload())
-            self.client.request("review", self.reviewer("document_reviewer", "reviewer"))
-            result = self.client.request("review", self.reviewer("application_auditor", "auditor"))
-        self.assertEqual(result["status"], "reviewed_draft")
+            result = self.client.request("draft", self.payload())["task"]
+        self.assertEqual(result["status"], "draft_ready")
         self.assertEqual(self.w.store.get("job", self.job["id"])["status"], "draft")
         self.assertNotIn(self.server.agent_token, json.dumps(self.w.state()))
 
@@ -69,7 +67,7 @@ class ChatHttpTests(ChatFixture):
         headers = {"Cookie": "applydesk=" + self.server.token, "Origin": self.server.origin,
                    "X-ApplyDesk": "1", "Content-Type": "application/json"}
         routes = ["job/prepare", "job/focus", "job/submitted", "models/refresh", "settings", "jobs/discover",
-                  "document/chat", "document/review", "extract"]
+                  "document/chat", "document/review", "document/save", "cover-template", "template/confirm", "extract"]
         with patch.object(self.w, "client", side_effect=AssertionError("Provider access")):
             for route in routes:
                 self.assertEqual(self.request("POST", "/api/" + route, {"id": self.job["id"]}, headers)[0], 400, route)
@@ -91,6 +89,6 @@ class ChatHttpTests(ChatFixture):
     def test_connection_is_private_and_readiness_is_not_in_client_actions(self):
         """Published local credentials are private and not a generic HTTP proxy."""
         self.assertEqual((self.w.root / "agent.connection.json").stat().st_mode & 0o777, 0o600)
-        for action in ["../api/profile", "http://attacker.test", "submit", "fill"]:
+        for action in ["../api/profile", "http://attacker.test", "submit", "fill", "review"]:
             with self.assertRaises(ValueError):
                 self.client.request(action, {})

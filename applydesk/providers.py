@@ -41,6 +41,11 @@ MAX_RESPONSE = 8 * 1024 * 1024
 class ProviderError(ValueError):
     """An actionable provider failure safe to display without credential leakage."""
 
+    def __init__(self, message, status=0, code=""):
+        self.status = status
+        self.code = code
+        super().__init__(message)
+
 
 def validate_settings(settings):
     """Custom IDs retain provider defaults; explicit controls require a documented preset."""
@@ -144,7 +149,7 @@ def _request_json(provider, url, headers, body=None, timeout=60, limit=MAX_RESPO
                  403: "Check model access.", 404: "This model may no longer be available.",
                  429: "Rate or account limit reached; try again later."}
         hint = hints.get(exc.code, "Provider request failed; try again later.")
-        raise ProviderError(f"{provider} HTTP {exc.code}: {hint}") from None
+        raise ProviderError(f"{provider} HTTP {exc.code}: {hint}", status=exc.code) from None
     except (error.URLError, socket.timeout, TimeoutError, OSError):
         raise ProviderError("Provider connection failed or timed out; check connectivity.") from None
 

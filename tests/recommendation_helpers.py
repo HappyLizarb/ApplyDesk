@@ -1,7 +1,4 @@
-"""Synthetic listings and explicit selection for isolated recommendation tests."""
-
-from applydesk.recommendation_import import import_selected
-
+"""Synthetic listings and browser responses for saved-source tests."""
 
 def listing(identity="123", platform="linkedin", **changes):
     """Known source URLs and invented descriptions keep these tests entirely local."""
@@ -14,13 +11,3 @@ def listing(identity="123", platform="linkedin", **changes):
 def response(status="ready", platform="linkedin", **changes):
     """The mock retains the controlled browser protocol rather than a page snapshot."""
     return {"source": platform, "status": status, "jobs": [], "issues": [], **changes}
-
-
-def accept_captured(case, platform="linkedin"):
-    """Only bookkeeping tests approve every synthetic capture; relevance has separate tests."""
-    report = case.finished(platform)
-    records = case.w.store.get("recommendation_candidates", platform, {}).get("records", [])
-    with case.w.lock, case.w.store.lock:
-        report = import_selected(case.w, records, report)
-        case.w.store.put("recommendation", platform, report)
-    return report

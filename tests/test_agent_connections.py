@@ -119,11 +119,22 @@ class ConnectionsTests(unittest.TestCase):
         selection = {"model": "gpt-5.4", "thinking": "high"}
         result = orchestrator_action(self.w, "role-settings", {"role": "master", "selection": selection})
         self.assertEqual(result["roles"]["master"], selection)
-        self.assertEqual(result["roles"]["application"], data["roles"]["application"])
+        self.assertEqual(set(result["roles"]), {"master"})
         self.assertFalse(result["automatic"])
-        result = orchestrator_action(self.w, "role-settings", {"role": "application", "selection": selection})
-        self.assertEqual(result["roles"]["application"], selection)
-        self.assertEqual(result["roles"]["document_reviewer"], data["roles"]["document_reviewer"])
+        with self.assertRaises(ValueError):
+            settings.save_role({"role": "application", "selection": selection})
+
+    def test_legacy_settings_keep_only_the_existing_master_selection(self):
+        """Retired model choices never cause a fallback or another agent request."""
+        self.save()
+        legacy = {"roles": {role: {"model": "retired-model", "thinking": "ultra"} for role in
+                            ("application", "document_reviewer", "application_auditor")}, "automatic": False}
+        selection = {"model": "gpt-5.4", "thinking": "high"}
+        legacy["roles"]["master"] = selection
+        self.w.store.put("agent_settings", "openai_api", legacy)
+        result = AgentSettings(self.w, self.accounts).read()
+        self.assertEqual(result, {"roles": {"master": selection}, "automatic": False})
+        self.assertEqual(self.w.store.get("agent_settings", "openai_api"), legacy)
 
     def test_invalid_role_edits_never_change_saved_settings(self):
         self.save()
@@ -137,7 +148,7 @@ class ConnectionsTests(unittest.TestCase):
                 settings.save_role(value)
             self.assertEqual(settings.read(), prior)
         self.w.orchestrator = SimpleNamespace(settings=settings, active={"message": "running"})
-        with self.assertRaisesRegex(ValueError, "Stop the agents"):
+        with self.assertRaisesRegex(ValueError, "Stop the agent"):
             orchestrator_action(self.w, "role-settings", {"role": "master", "selection": {"model": "gpt-5.4", "thinking": "high"}})
         self.assertEqual(settings.read(), prior)
 

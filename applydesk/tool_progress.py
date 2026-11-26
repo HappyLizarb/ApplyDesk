@@ -3,6 +3,8 @@
 import json
 from urllib.parse import urldefrag
 
+from .auto_start import usage_limited
+
 
 class ToolProgress:
     """Track progress within one chat turn, without limiting useful research steps."""
@@ -15,7 +17,7 @@ class ToolProgress:
     def execute(self, item):
         """Repeated reads reuse the exact capture; changed results count as progress."""
         key = self.key(item)
-        cached = item.get("name") in {"read_page", "web_search"}
+        cached = item.get("name") in {"read_page", "web_search", "find_jobs"}
         if cached and key in self.pages:
             result = self.pages[key]
         else:
@@ -24,6 +26,8 @@ class ToolProgress:
             except InterruptedError:
                 raise
             except Exception as exc:
+                if usage_limited(exc):
+                    raise
                 result = {"error": str(exc)[:1000]}
             if cached:
                 self.pages[key] = result
@@ -42,7 +46,7 @@ class ToolProgress:
             arguments = json.loads(item.get("arguments", "{}"))
             if item.get("name") == "read_page" and isinstance(arguments.get("url"), str):
                 arguments["url"] = urldefrag(arguments["url"])[0]
-            if item.get("name") == "web_search" and isinstance(arguments.get("query"), str):
+            if item.get("name") in {"web_search", "find_jobs"} and isinstance(arguments.get("query"), str):
                 arguments["query"] = " ".join(arguments["query"].split())
         except (ValueError, AttributeError, TypeError):
             arguments = item.get("arguments")

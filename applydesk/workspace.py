@@ -6,18 +6,17 @@ import shlex
 import sys
 from pathlib import Path
 
+from . import PROGRAM_ROOT
 from .documents import DocumentService
 from .employer_accounts import EmployerAccounts
 from .keychain import Keychain
 from .profile import PROFILE_SCHEMA_VERSION, empty_profile, model_profile, profile_with_defaults, public_job_url, validate_profile
 from .agent_tasks import AgentTasks
+from .native_application_browser import NativeApplicationBrowser
 from .orchestrator import Orchestrator
 from .recommendations import Recommendations
 from .resumes import ResumeLibrary
 from .storage import Store, now
-
-DEFAULT_AGENT = {"provider": "openai", "model": "gpt-5.4", "thinking": "medium"}
-
 
 class Workspace:
     """Share local storage and bounded background work across HTTP requests."""
@@ -28,6 +27,7 @@ class Workspace:
         self.secrets = secrets or Keychain()
         self.docs = DocumentService(self.root / "documents")
         self.sessions = {}
+        self.application_browser = NativeApplicationBrowser(self)
         self.tasks = {}
         self.lock = threading.RLock()
         self.resumes = ResumeLibrary(self)
@@ -48,17 +48,15 @@ class Workspace:
         return profile_with_defaults(self.store.get("profile", "main", empty_profile()))
 
     def settings(self):
-        """Default roles independently so a cheaper formatting model can be selected."""
-        roles = {role: DEFAULT_AGENT.copy() for role in ("application", "formatting", "auditor")}
-        roles["formatting"]["model"] = "gpt-5.4-mini"
-        return self.store.get("settings", "main", {"roles": roles, "keys": {}, "cover_template_id": ""})
+        """Keep document preferences; the orchestrator owns the single model selection."""
+        return self.store.get("settings", "main", {"cover_template_id": ""})
 
     def state(self):
         """Expose UI state while keeping secrets and browser session internals private."""
         return {"profile": self.profile(), "profile_schema": PROFILE_SCHEMA_VERSION,
                 "settings": {"cover_template_id": self.settings().get("cover_template_id", "")},
-                "chat_tasks": self.chat.list(), "draft_only": False, "submission_requires_chat_limit": True, "orchestrator": self.orchestrator.state(),
-                "chat_command": shlex.join([sys.executable, str(Path(__file__).resolve().parent.parent / "agent.py")]),
+                "chat_tasks": self.chat.list(), "draft_only": False, "submission_requires_chat_limit": False, "orchestrator": self.orchestrator.state(),
+                "chat_command": shlex.join([sys.executable, str(PROGRAM_ROOT / "agent.py")]),
                 "profile_imports": [{key: record.get(key) for key in ("id", "filename", "needs_manual_entry")}
                                     for record in self.docs.manifest.copy().values() if record["kind"] == "profile"],
                 "discovery": self.store.get("discovery", "main", {}),
@@ -66,6 +64,8 @@ class Workspace:
                 "recommendation_preferences": self.recommendations.preferences(),
                 "jobs": [EmployerAccounts(self).display(job) for job in self.store.all("job") if not job.get("removed_at")], "templates": self.docs.list_templates(),
                 "documents": self.docs.list_documents(), "library": self.store.all("library"),
+                "uploads": [{key: record.get(key) for key in ("id", "kind", "filename", "title")}
+                            for record in self.docs.manifest.copy().values() if record["kind"] != "document"],
                 "resumes": self.resumes.list(), "resume_categories": self.resumes.categories(),
                 "tasks": list(self.tasks.values()), "data_path": str(self.root)}
 
@@ -98,7 +98,7 @@ class Workspace:
     def invalidate_profile_jobs(self, message):
         """Changed confirmed inputs require fresh checks while preserving completed applications."""
         for job in self.store.all("job"):
-            if job["status"] not in {"new", "submitted"}:
+            if job["status"] not in {"new", "submitted", "submitting", "submission_unknown"}:
                 self.store.job(job["id"], status="needs_review", exceptions=[message])
 
     def add_job(self, data):
@@ -115,16 +115,16 @@ class Workspace:
             if any(task["status"] == "running" for task in self.tasks.values()):
                 raise ValueError("Another task is running. Wait for it to finish first.")
             ids = self.store.remove_jobs(data.get("ids"))
-            for job_id in ids:
-                session = self.sessions.pop(job_id, None)
-                if session:
-                    session.close()
+            sessions = [self.sessions.pop(job_id, None) for job_id in ids]
+        for session in sessions:
+            if session:
+                session.close()
         return {"removed": len(ids)}
 
     def import_file(self, data):
         """Decode bounded uploads and retain transcript identity in the profile."""
-        if data.get("kind") == "resume_template":
-            raise ValueError("Resume generation is no longer available. Upload a finished resume instead.")
+        if data.get("kind") in {"resume_template", "cover_template"}:
+            raise ValueError("Template uploads are no longer available. Upload a finished resume instead.")
         try:
             content = base64.b64decode(data["data"], validate=True)
         except (ValueError, KeyError):
@@ -162,5 +162,9 @@ class Workspace:
         self.orchestrator.close()
         self.recommendations.close()
         for session in self.sessions.values():
-            session.close()
+            if getattr(self.application_browser, "native", False) and getattr(session, "manager", None) is self.application_browser:
+                session.park()
+            else:
+                session.close()
+        self.application_browser.close()
         self.store.close()

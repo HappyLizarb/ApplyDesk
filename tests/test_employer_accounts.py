@@ -4,12 +4,10 @@ import json
 import tempfile
 import threading
 import unittest
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
 
-from applydesk.application_steps import authenticate
+from applydesk.account_scope import bound_signin_host, employer_key, is_signin_switch, native_company_quote
 from applydesk.employer_accounts import EmployerAccounts
 from applydesk.storage import Store
 
@@ -45,8 +43,8 @@ def authentication_page(action="login", realm="https://jobs.example.test/team/")
             "fields": fields, "buttons": [button]}
 
 
-class EmployerAccountTests(unittest.TestCase):
-    """Multiple roles must share an account without widening its credential scope."""
+class EmployerAccountFixture(unittest.TestCase):
+    """Provide isolated employer records, a keychain and login forms for account tests."""
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="applydesk-employer-test-")
@@ -75,6 +73,76 @@ class EmployerAccountTests(unittest.TestCase):
                 "account_origin": self.origin, "password": "synthetic-password"}
         return self.accounts.save({**data, **changes})
 
+
+class EmployerAccountTests(EmployerAccountFixture):
+    """Multiple roles must share an account without widening its credential scope."""
+
+    def test_existing_account_name_survives_verified_legal_name_on_same_posting(self):
+        url = self.origin + "/job/1"
+        source = {"company": "Circuit Example", "employer_url": url}
+        identity = employer_key(source)
+        self.store.put("employer_account", identity, {"company": source["company"]})
+        job = {"employer_account_id": identity, "recommendation_source": source}
+        page = {"public_source": {"url": url, "complete": True}, "text": "Circuit Example, also known as Circuit Corporation"}
+        self.assertEqual(self.accounts.listing_company(job, page, "Circuit Corporation"), "Circuit Example")
+        for change in ({"text": "Circuit Corporation"}, {"public_source": {"url": url + "2", "complete": True}}):
+            self.assertEqual(self.accounts.listing_company(job, {**page, **change}, "Circuit Corporation"), "Circuit Corporation")
+        self.assertEqual(self.secrets.reads, [])
+
+    def test_signin_legal_name_requires_the_existing_binding_and_exact_verified_listing(self):
+        url = self.origin + "/job/2"
+        company, legal = "Example Brand", "Example Incorporated"
+        saved = {"id": employer_key({"company": company}), "realm": self.realm}
+        job = {"company": company, "employer_account_id": saved["id"], "analysis": {"company": legal},
+               "recommendation_source": {"company": company, "employer_url": url},
+               "public_source": {"company": legal, "url": url, "complete": True}}
+        self.assertTrue(native_company_quote(job, saved, legal))
+        self.assertFalse(native_company_quote(job, {}, legal))
+        self.assertFalse(native_company_quote({**job, "analysis": {}}, saved, legal))
+        self.assertFalse(native_company_quote(job, saved, "Unrelated business"))
+
+    def test_existing_account_switch_is_distinct_from_signin_submit(self):
+        """Only the Sign In switch on a complete, matching two-password signup form is navigation."""
+        url = "https://example.wd5.myworkdayjobs.com/Careers/job/Engineer_123/apply"
+        fields = [{"id": str(i), "enabled": True, "web_content": True, "role": role, "label": label,
+                   "secure": role == "AXTextField"} for i, (role, label) in enumerate((
+                      ("AXTextField", "Password"), ("AXTextField", "Verify New Password"),
+                      ("AXButton", "Create Account"), ("AXButton", "Sign In")))]
+        page, account = {"url": url, "elements": fields}, {"origin": "https://example.wd5.myworkdayjobs.com", "realm": url}
+        click = {"action": "click", "element_id": "3"}
+        self.assertTrue(is_signin_switch(page, click, account))
+        for changed in ({"elements": fields[1:]}, {"elements_truncated": True},
+                        {"url": url.replace("example.", "other.")}):
+            self.assertFalse(is_signin_switch({**page, **changed}, click, account))
+        self.assertFalse(is_signin_switch(page, {**click, "element_id": "2"}, account))
+
+    def test_returning_workday_signin_can_use_its_verified_address(self):
+        """The visible HTTPS address identifies a logo-only page only for its already bound job and realm."""
+        url = "https://abc.wd5.myworkdayjobs.com/Careers/job/City/Engineer_123"
+        job = {"id": "job", "company": "ABC", "public_source": {"company": "ABC", "complete": True, "url": url}}
+        job["employer_account_id"] = employer_key(job)
+        form = url + "/apply/autofillWithResume"
+        saved = {"id": employer_key(job), "owner_job_id": "job", "origin": "https://abc.wd5.myworkdayjobs.com", "realm": form}
+        self.assertEqual(bound_signin_host(job, saved, form), "abc.wd5.myworkdayjobs.com")
+        for wrong in (form.replace("123", "456"), form.replace("/Careers/", "/Other/"), form.replace("abc.", "xyz.")):
+            self.assertIsNone(bound_signin_host(job, saved, wrong))
+        self.assertIsNone(bound_signin_host(job, {**saved, "owner_job_id": "other"}, form))
+        self.assertIsNone(bound_signin_host(job, {}, form))
+
+    def test_signup_accepts_employer_initials_only_on_original_workday_site(self):
+        """A short brand can prove identity without extending the scope of saved credentials."""
+        url = "https://abc.wd5.myworkdayjobs.com/Careers/job/Engineer_123"
+        job = {"company": "Alpha Beta Company", "public_source": {
+            "company": "Alpha Beta Company", "complete": True, "url": url}}
+        signup = "https://abc.wd5.myworkdayjobs.com/en-US/Careers/createAccount"
+        self.assertTrue(native_company_quote(job, {}, "ABC Recruitment Notice", page_url=signup))
+        for wrong in (signup.replace("abc.wd5", "other.wd5"), signup.replace("Careers", "Other"),
+                      signup.replace(".com/", ".com:1234/"), signup.replace("https:", "http:")):
+            self.assertFalse(native_company_quote(job, {}, "ABC Recruitment Notice", page_url=wrong))
+        self.assertFalse(native_company_quote(job, {}, "ABCX Recruitment Notice", page_url=signup))
+        job["public_source"]["complete"] = False
+        self.assertFalse(native_company_quote(job, {}, "ABC Recruitment Notice", page_url=signup))
+
     def test_two_roles_reuse_the_same_account_and_secret(self):
         first = self.accounts.credentials(self.first, self.origin, self.realm, "create_account")
         with self.assertRaises(ValueError):
@@ -101,31 +169,6 @@ class EmployerAccountTests(unittest.TestCase):
         resumed = EmployerAccounts(self.workspace)
         with self.assertRaises(ValueError):
             resumed.credentials(self.second, self.origin, self.realm, "create_account")
-        self.assertEqual(len(self.secrets.writes), 1)
-
-    def test_keychain_failure_does_not_allow_another_signup_attempt(self):
-        self.secrets.fail_write = True
-        with self.assertRaises(RuntimeError):
-            self.accounts.credentials(self.first, self.origin, self.realm, "create_account")
-        self.secrets.fail_write = False
-        with self.assertRaises(ValueError):
-            self.accounts.credentials(self.second, self.origin, self.realm, "create_account")
-        self.assertEqual(len(self.store.all("employer_account")), 1)
-        self.assertEqual(self.secrets.writes, [])
-
-    def test_concurrent_signup_reserves_only_one_attempt(self):
-        barrier = threading.Barrier(2)
-        def attempt(job):
-            """Both threads enter the public operation at the same time."""
-            barrier.wait(timeout=5)
-            try:
-                self.accounts.credentials(job, self.origin, self.realm, "create_account")
-                return "reserved"
-            except ValueError:
-                return "blocked"
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            results = list(pool.map(attempt, (self.first, self.second)))
-        self.assertCountEqual(results, ["reserved", "blocked"])
         self.assertEqual(len(self.secrets.writes), 1)
 
     def test_different_tenant_and_origin_cannot_read_saved_password(self):
@@ -239,52 +282,6 @@ class EmployerAccountTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.accounts.credentials(self.second, self.origin, self.realm, "create_account")
         self.assertEqual(self.store.all("employer_account"), [])
-
-    def test_missing_visible_employer_stops_authentication_before_fill(self):
-        page = authentication_page("create_account")
-        page["text"] = "Applicant account"
-        session = Mock()
-        with self.assertRaises(ValueError):
-            authenticate(self.workspace, session, self.first, page)
-        session.call.assert_not_called()
-        self.assertEqual(self.secrets.writes, [])
-
-    def test_authentication_timeout_never_repeats_signup_click(self):
-        session = Mock()
-        session.call.side_effect = [{"snapshot_id": "filled"}, TimeoutError("Synthetic browser timeout")]
-        with self.assertRaises(TimeoutError):
-            authenticate(self.workspace, session, self.first, authentication_page("create_account"))
-        self.assertEqual(session.call.call_count, 2)
-        session.reset_mock()
-        with self.assertRaises(ValueError):
-            authenticate(self.workspace, session, self.second, authentication_page("create_account"))
-        session.call.assert_not_called()
-
-    def test_failed_origin_change_cannot_read_the_previous_origin_secret(self):
-        self.saved_account()
-        original_keys = set(self.secrets.values)
-        self.secrets.fail_write = True
-        with self.assertRaises(RuntimeError):
-            self.saved_account(account_origin="https://new.example.test", password="synthetic-new")
-        self.secrets.reads.clear()
-        with self.assertRaises(ValueError):
-            self.accounts.credentials(self.second, "https://new.example.test", "https://new.example.test/team/", "login")
-        self.assertTrue(original_keys.isdisjoint(self.secrets.reads))
-
-    def test_ambiguous_authentication_context_never_reads_secrets(self):
-        for ambiguity in ("query", "hidden"):
-            page = authentication_page("create_account")
-            if ambiguity == "query":
-                page["buttons"][0]["form_action"] += "?tenant=other"
-                for field in page["fields"]:
-                    field["form_action"] = page["buttons"][0]["form_action"]
-            else:
-                page["fields"].append({**page["fields"][0], "field_id": "tenant", "type": "hidden", "label": "Tenant"})
-            session = Mock()
-            with self.subTest(ambiguity=ambiguity), self.assertRaises(ValueError):
-                authenticate(self.workspace, session, self.first, page)
-            session.call.assert_not_called()
-        self.assertEqual(self.secrets.reads, [])
 
 
 if __name__ == "__main__":

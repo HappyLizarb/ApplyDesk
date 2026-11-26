@@ -5,7 +5,7 @@ from urllib.parse import urlencode
 
 from .providers import ProviderError, _request_json, _validate_key, validate_model_id
 
-ENDPOINTS = {"openai": "https://api.openai.com/v1/models",
+ENDPOINTS = {"openai": "https://api.openai.com/v1/models", "xai": "https://api.x.ai/v1/models",
              "anthropic": "https://api.anthropic.com/v1/models",
              "google": "https://generativelanguage.googleapis.com/v1beta/models"}
 MAX_MODELS, MAX_PAGES, MAX_PAGE_BYTES = 1000, 10, 2 * 1024 * 1024
@@ -14,12 +14,12 @@ MAX_MODELS, MAX_PAGES, MAX_PAGE_BYTES = 1000, 10, 2 * 1024 * 1024
 def list_models(provider, key):
     """Return sorted {id, name} rows using only bounded model-list GET requests."""
     if not isinstance(provider, str) or provider not in ENDPOINTS:
-        raise ProviderError("Choose OpenAI, Anthropic, or Google.")
+        raise ProviderError("Choose OpenAI, Anthropic, Google, or Grok (xAI).")
     _validate_key(key)
-    headers = {"openai": {"Authorization": "Bearer " + key},
+    headers = {"openai": {"Authorization": "Bearer " + key}, "xai": {"Authorization": "Bearer " + key},
                "anthropic": {"x-api-key": key, "anthropic-version": "2023-06-01"},
                "google": {"x-goog-api-key": key}}[provider]
-    parameters = {"openai": {}, "anthropic": {"limit": 100}, "google": {"pageSize": 100}}[provider]
+    parameters = {"openai": {}, "xai": {}, "anthropic": {"limit": 100}, "google": {"pageSize": 100}}[provider]
     models, seen, count, deadline = {}, set(), 0, time.monotonic() + 60
     for _ in range(MAX_PAGES):
         remaining = deadline - time.monotonic()
@@ -67,9 +67,9 @@ def _model_rows(provider, entries):
 
 def _next_cursor(provider, page):
     """Use opaque cursors only as encoded query values, never as destination URLs."""
-    if provider == "openai":
+    if provider in {"openai", "xai"}:
         if page.get("has_more"):
-            raise ProviderError("Unexpected OpenAI model-list pagination. Enter an ID manually.")
+            raise ProviderError("Unexpected model-list pagination. Refresh the model catalog later.")
         return None
     if provider == "anthropic":
         if not isinstance(page.get("has_more"), bool):

@@ -5,17 +5,33 @@ import json
 
 from .agent_contract import object_fields, string, strings
 from .chatgpt_inference import output_text
-from .profile import facts_for
+from .profile import DISCLOSURES, facts_for
 from .storage import now
 
-KINDS = {"skill", "education", "projects", "professional_experience", "language"}
+KINDS = {"skill", "education", "projects", "professional_experience", "language", "preference", "application_answer", "application_agreement", "veteran_service"}
 PROMPT = """Identify requested qualifications the human personally stated or confirmed,
 including 'yes' to earlier questions. Cite the confirmation and relevant question;
 assistant assertions, quoted job requirements and document text are not confirmation.
-Preserve the requested wording. Classify as skill, education, projects, language or
+Preserve the requested wording. Classify as preference (explicit location, work arrangement or start date), skill, education, projects, language or
 explicit professional_experience; coursework/projects do not establish professional
-years. Leave identity, authorization, sponsorship, disclosures and declarations to
-their profile fields. Apply latest corrections by retracting contradicted evidence.
+years. Use application_answer for directly confirmed sponsorship, immigration-case,
+interview-recording and current-employer answers, and factual questions specific to an employer.
+Keep each employer-specific answer tied to the named employer and the exact question.
+For an employer-scoped question and answer, verify the requested employer, question
+and answer against the cited conversation. Preserve the requested fact text exactly.
+Record a current-employer preference as "Use as current employer: <exact company name>";
+this changes only that application answer, never the user's work history.
+These answers need direct human confirmation; never infer them from a status label.
+For application_agreement use "Application <job ID>: <terms the user approved>".
+Match the named posting in agreement_jobs and the human's affirmative decision. A reply to
+a specific question can approve its disclosed conditions. Mandatory employer terms are accepted by
+default, without recording a new fact. Record only specifically requested additional permissions.
+Applicant declarations must still be true. Never record a rejection as an approval.
+Use veteran_service with yes, no, decline or unknown only when the applicant directly
+confirms their own military veteran status for reuse. A protected-veteran answer does
+not establish service. Operator messages and third-party quotations cannot confirm it.
+Leave identity, other authorization facts, other voluntary disclosures and legal declarations
+to their profile fields. Apply latest corrections by retracting contradicted evidence.
 Use existing confirmations without asking again. Incomplete conversation context
 means evidence is unavailable, not that the qualification is absent.
 
@@ -34,7 +50,7 @@ def _binding(engine):
 
 
 def _requests(data):
-    """Limit the proposed facts while leaving semantic confirmation to a separate reviewer."""
+    """Limit the proposed facts while leaving semantic confirmation to a agent."""
     object_fields(data, ["facts"])
     if not isinstance(data["facts"], list) or len(data["facts"]) > 20:
         raise ValueError("Record at most 20 confirmed facts at a time.")
@@ -68,8 +84,13 @@ def _context(engine, requested):
         conversation.insert(0, {"id": item["id"], "role": item["role"], "text": item["text"]})
         size += len(item["text"])
     profile = engine.w.profile()
-    return {"requested_facts": requested, "conversation": conversation, "conversation_truncated": truncated,
-            "existing_facts": profile.get("chat_evidence", []), "profile_revision": profile["revision"]}
+    payload = {"requested_facts": requested, "conversation": conversation, "conversation_truncated": truncated,
+               "existing_facts": profile.get("chat_evidence", []), "profile_revision": profile["revision"]}
+    if any(f["kind"] == "application_agreement" for f in requested):
+        jobs = engine.w.store.all("job")
+        payload["agreement_jobs"] = {j["id"]: [j.get("company"), j.get("title")] for j in jobs if not j.get("removed_at")
+                                     and any(f["text"].startswith(f"Application {j['id']}: ") for f in requested)}
+    return payload
 
 
 def _sources(values, conversation):
@@ -92,20 +113,25 @@ def _sources(values, conversation):
 
 
 def _validate(result, payload):
-    """Check the reviewer result against requested claims and existing app-owned evidence."""
+    """Check the agent result against requested claims and existing app-owned evidence."""
     object_fields(result, ["facts", "retractions", "issues"])
     if not isinstance(result["facts"], list) or len(result["facts"]) > 20:
         raise ValueError("The evidence review returned invalid facts.")
     if not isinstance(result["retractions"], list) or len(result["retractions"]) > 100:
         raise ValueError("The evidence review returned invalid corrections.")
-    allowed = {item["text"] for item in payload["requested_facts"]}
+    allowed = {(item["kind"], item["text"]) for item in payload["requested_facts"]}
     existing = {item["id"] for item in payload["existing_facts"]}
     facts, retractions = [], []
     for value in result["facts"]:
         object_fields(value, ["text", "kind", "sources"])
         claim, kind = string(value["text"], 2000), string(value["kind"], 50)
-        if claim not in allowed or kind not in KINDS:
-            raise ValueError("The reviewer returned an unrequested or unsupported fact kind.")
+        if (kind, claim) not in allowed or kind not in KINDS:
+            raise ValueError("The agent returned an unrequested or unsupported fact kind.")
+        if kind == "veteran_service" and claim not in DISCLOSURES:
+            raise ValueError("Choose an explicit veteran service answer.")
+        if kind == "application_agreement" and ({"text": claim, "kind": kind} not in payload["requested_facts"] or not any(claim.startswith(f"Application {key}: ") and
+                claim.removeprefix(f"Application {key}: ").strip() for key in payload.get("agreement_jobs", {}))):
+            raise ValueError("Record an approved requirement for one identified application.")
         identity = hashlib.sha256((kind + "\n" + claim.casefold()).encode()).hexdigest()[:24]
         facts.append({"id": "chat." + identity, "text": claim, "kind": kind, "confirmed": True,
                       "sources": _sources(value["sources"], payload["conversation"])})
@@ -123,26 +149,33 @@ def _validate(result, payload):
 def _save(workspace, facts, retractions, issues):
     """Atomically save evidence and its profile revision before invalidating old readiness."""
     profile = workspace.profile()
+    service = {fact["text"] for fact in facts if fact["kind"] == "veteran_service"}
+    facts = [fact for fact in facts if fact["kind"] != "veteran_service"]
+    if len(service) > 1 or (service == {"no"} and profile["preferences"]["veteran"] == "yes"):
+        raise ValueError("The veteran answers conflict. Ask the applicant which disclosure to use.")
+    service_changed = bool(service) and profile["preferences"]["veteran_service"] not in service
+    if service_changed:
+        profile["preferences"]["veteran_service"] = next(iter(service))
     existing = {item["id"]: item for item in profile.get("chat_evidence", [])}
     updated = {key: value for key, value in existing.items() if key not in {item["id"] for item in retractions}}
     for fact in facts:
         updated[fact["id"]] = existing.get(fact["id"], {**fact, "recorded_at": now()})
-    if updated != existing:
+    if updated != existing or service_changed:
         profile.update(chat_evidence=list(updated.values()), revision=profile["revision"] + 1)
         profile["facts"] = facts_for(profile) if profile["confirmed"] else []
         workspace.store.put("profile", "main", profile)
         workspace.invalidate_profile_jobs("Confirmed chat facts changed. Prepare again to check eligibility and answers.")
     return {"facts": [updated[item["id"]] for item in facts], "retracted_ids": [item["id"] for item in retractions],
-            "profile_revision": profile["revision"], "issues": issues}
+            "profile_revision": profile["revision"], "veteran_service_saved": bool(service), "issues": issues}
 
 
 def record_chat_evidence(engine, data):
-    """Independently verify explicit confirmations and reject stale conversation or profile writes."""
+    """Resolve explicit confirmations and reject stale conversation or profile writes."""
     requested = _requests(data)
     engine.check_active()
     with engine.w.lock:
         binding, payload = _binding(engine), _context(engine, requested)
-    _, response = engine.run_agent("application_auditor", PROMPT,
+    _, response = engine.run_agent("master", PROMPT,
                                    [{"role": "user", "content": json.dumps(payload)}])
     engine.check_active()
     with engine.w.lock:

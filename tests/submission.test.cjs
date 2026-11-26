@@ -15,7 +15,10 @@ async function fixtureServer() {
       return response.end(request.url === '/uncertain' ? '<h1>Processing</h1>' : '<h1>Your application has been submitted</h1>');
     }
     const target = request.url === '/no-receipt' ? '/uncertain' : '/submit';
-    const terms = request.url === '/declaration' ? '<p>By submitting you agree to our terms of service.</p>' : '';
+    const terms = {
+      '/terms': '<p>By submitting you agree to our terms of service.</p>',
+      '/declaration': '<p>By submitting, I consent to optional interview recording.</p>',
+    }[request.url] || '';
     const form = `<main><h1>Example Co — Analyst</h1><form method="post" action="${target}"><label>Full name<input name="name"></label><label>Resume<input name="resume" type="file"></label>${terms}<button>Submit application</button></form></main>`;
     if (request.url === '/platform') return response.end(`<main><h1>Example Co — Analyst</h1><button onclick="document.querySelector('dialog').showModal()">Apply</button><dialog>${form}</dialog></main>`);
     if (request.url === '/deceptive-entry') return response.end('<main><h1>Example Co — Analyst</h1><button onclick="fetch(\'/submit\',{method:\'POST\'})">Apply</button></main>');
@@ -35,7 +38,7 @@ function permission(snapshot) {
 async function testConfirmed(directory, fixture) {
   const session = await start({dataRoot: path.join(directory, 'confirmed'), headless: true, allowLocal: true});
   try {
-    let snapshot = await dispatch(session, 'open', {url: fixture.origin});
+    let snapshot = await dispatch(session, 'open', {url: fixture.origin + '/terms'});
     const before = fixture.posts.length;
     await session.page.locator('button').click();
     assert.equal(fixture.posts.length, before, 'ordinary clicks cannot submit');

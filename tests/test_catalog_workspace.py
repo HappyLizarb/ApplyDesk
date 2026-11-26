@@ -109,13 +109,10 @@ class CatalogRouteTests(WorkspaceFixture, unittest.TestCase):
             start.assert_not_called()
         self.secrets.get.assert_not_called()
 
-    def test_recommendation_connection_returns_without_a_foreground_task(self):
-        # Sign-in waiting cannot monopolize the workspace's agent task slot.
+    def test_retired_recommendation_connection_cannot_start_a_browser(self):
+        # Old UI tabs cannot restart the removed job-platform connection flow.
         data = {"platform": "linkedin", "limit": 5}
-        result = {"platform": "linkedin", "run_id": "test-run"}
-        with patch.object(self.workspace.recommendations, "begin", return_value=result) as begin:
-            self.assertEqual(self.post("/api/recommendations/begin", data), (200, result))
-            begin.assert_called_once_with(data)
+        self.assertEqual(self.post("/api/recommendations/begin", data)[0], 400)
         self.assertEqual(self.workspace.tasks, {})
 
     def test_recommendation_cancel_works_during_an_agent_task(self):

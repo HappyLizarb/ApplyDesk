@@ -6,21 +6,20 @@ main:not([data-view=applications]) .page-head h1{font-size:27px;letter-spacing:-
 .panel-heading h2+p{margin-top:5px}
 .panel-heading>.actions{justify-content:flex-end}
 main button:not(.quiet):not(.doc-link):not(.inline-link):not(.job-title):not(.row-remove){border-radius:4px}
-main .panel-heading>button:not(.primary),main .template-choice>button:not(.primary){border-color:var(--border)}
+main .panel-heading>button:not(.primary){border-color:var(--border)}
 main .panel-heading>button:hover{border-color:var(--accent)}
 main .panel-heading>.actions button{padding:7px 10px}
 .form-grid>label,.form-grid>fieldset{min-width:0}
 .form-grid input,.form-grid select{min-height:42px}
 .form-grid textarea{min-height:108px}
+.form-grid textarea[name$=".coursework"]{min-height:0}
 .row-editor+.row-editor{margin-top:22px}
-.row-editor .row-remove{padding:5px 0}
 .form-footer{z-index:2;box-shadow:0 4px 18px #00000008}
 .documents-stack{display:grid;gap:20px}
 .documents-stack>.panel{margin:0;min-width:0}
 .documents-stack .empty{padding:36px 20px 42px}
 .documents-stack .empty-symbol{color:var(--accent)}
 .documents-stack .file-icon{background:transparent;border:0}
-.documents-stack .template-choice{margin-top:20px;padding-top:20px;border-top:1px solid var(--border)}
 .documents-stack .resume-row:first-of-type{padding-top:0}
 .documents-stack input[type=file]{background:var(--panel)}
 .documents-stack+p{padding:0 4px;margin-top:16px}
@@ -30,13 +29,11 @@ main .panel-heading>.actions button{padding:7px 10px}
 .connection-overview label{display:block;margin-bottom:8px}
 .connection-overview select{width:min(100%,340px);min-width:240px;margin-top:0}
 .connection-overview p{max-width:650px;margin:8px 0 0}
+.connection-overview p:empty,#account-status:empty,#account-picker:empty{display:none}
 .connection-overview .actions{align-self:flex-end}
 .account-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;align-items:stretch;margin-bottom:20px}
 .account-grid>.panel{margin:0;min-width:0}
 .provider-card{display:flex;flex-direction:column;min-width:0}
-.provider-card-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px}
-.provider-card-heading h2,.provider-card-heading h3{margin:0}
-.provider-card-heading .badge{flex:none}
 .provider-card form{display:grid;gap:16px;min-width:0}
 .provider-card form label{min-width:0}
 .provider-card form input{width:100%}
@@ -45,8 +42,9 @@ main .panel-heading>.actions button{padding:7px 10px}
 .provider-card .field-help{margin:6px 0 0}
 .provider-card p{overflow-wrap:anywhere}
 .provider-card .panel-heading{align-items:flex-start;flex-wrap:wrap}
-.account-grid #account-actions{width:100%;justify-content:flex-start}
-.account-grid #account-picker{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}
+.account-connection-row{display:flex;align-items:flex-end;gap:12px 16px;flex-wrap:wrap}
+.account-grid #account-actions{flex:0 1 auto;justify-content:flex-end}
+.account-grid #account-picker{display:flex;align-items:flex-end;gap:12px;flex:1 1 320px;min-width:0;flex-wrap:wrap}
 .account-grid .account-select{flex:1;min-width:180px;margin:0}
 .account-grid .account-note{margin-top:auto;padding-top:20px;font-size:12px}
 .connection-setup>.panel:last-child .agent-auto{margin:0}
@@ -65,13 +63,11 @@ main .panel-heading>.actions button{padding:7px 10px}
   .panel-heading h2{font-size:17px}
   main[data-view=applications]>.applications-panel{margin:0}
   .row-editor{grid-template-columns:minmax(0,1fr);gap:10px}
-  .row-editor .row-remove{justify-self:end;margin:0}
   .form-footer{bottom:12px}
   .documents-stack,.account-grid{gap:16px}
   .connection-overview{gap:16px}
   .connection-overview select{min-width:0;width:100%}
   .connection-overview>div{width:100%}
-  .provider-card-heading{align-items:flex-start;flex-wrap:wrap}
 }
 /* Editable timeline rows preserve profile hierarchy without enclosing each field. */
 .profile-entry{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;padding:24px 0;border-bottom:1px solid var(--border)}
@@ -97,20 +93,29 @@ main .panel-heading>.actions button{padding:7px 10px}
 .entry-location{width:100%}
 .entry-location input{font-size:12px;color:var(--muted)}
 .entry-description{margin-top:8px}
-.entry-description textarea{line-height:1.6;min-height:80px;resize:vertical}
-.entry-url{margin-top:4px}
-.entry-url input{font-size:12px;color:var(--accent)}
+.entry-description textarea{line-height:1.6;min-height:0;resize:vertical}
+.entry-education-meta>div{min-width:0;max-width:100%;flex:0 1 auto}
+.entry-degree{width:220px}.entry-field{width:360px}.entry-gpa,.entry-gpa-scale{width:70px}
+.entry-education-meta input{font-size:14px}
+.entry-coursework{margin-top:8px}
+.entry-coursework textarea{min-height:0;padding:8px 10px;background:var(--input);border-color:var(--border)}
+.profile-entry .education-date{flex:0 1 auto;max-width:100%}
+.profile-entry .date-fields{display:flex;align-items:center;gap:3px;color:var(--muted)}
+.profile-entry .date-fields select,.profile-entry .date-fields input{width:auto;margin:0;padding:4px 1px;border:1px solid transparent;background:transparent;font-size:12px;color:var(--muted)}
+.profile-entry .date-fields select:hover,.profile-entry .date-fields input:hover{background:var(--input);border-color:var(--border)}
+.profile-entry .date-fields select:focus,.profile-entry .date-fields input:focus{background:var(--input);border-color:var(--accent)}
 .entry-remove{align-self:start;margin-top:4px;padding:5px 0;font-size:11px}
 /* Supporting browsers size short inline facts to their content, like ordinary text. */
 @supports(field-sizing:content){
+  .entry-education-meta>div{width:auto}
+  .entry-education-meta input{field-sizing:content;width:auto;min-width:8ch;max-width:100%}
+  .profile-entry .date-fields select,.profile-entry .date-fields input{field-sizing:content;max-width:16ch}
   .entry-company,.entry-job-type{width:auto;max-width:100%}
   .entry-company input,.entry-job-type input{field-sizing:content;min-width:10ch;max-width:min(42ch,100%)}
   .entry-date input{field-sizing:content;min-width:2ch;max-width:100%}
 }
 .profile-languages{position:relative;min-width:0;border:0;margin:26px 0 0;padding:0}
 .profile-languages legend{font-size:14px;font-weight:600;padding:0 0 12px}
-.language-heading{display:flex;justify-content:flex-end;margin-top:-34px;margin-bottom:12px}
-.language-heading button{padding:5px 0;font-size:12px;color:var(--accent)}
 .language-row{display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:10px 0;border-bottom:1px solid var(--border)}
 .language-row:last-child{border-bottom:0;padding-bottom:0}
 .language-row input,.language-row select{min-width:0;margin:0;padding:6px 5px;border:1px solid transparent;background:transparent}
@@ -140,9 +145,9 @@ main .panel-heading>.actions button{padding:7px 10px}
 .profile-list-row .list-primary,.profile-list-row .list-secondary{min-width:0;max-width:100%}
 .profile-list-row .list-primary{flex:0 1 240px}
 .profile-list-row .list-secondary{display:flex;align-items:center;gap:4px;flex:0 1 auto;color:var(--muted);font-size:13px}
-.profile-list-row input,.profile-list-row select{min-width:0;max-width:100%;margin:0;padding:5px 4px;border:1px solid transparent;background:transparent;border-radius:4px}
-.profile-list-row input:hover,.profile-list-row select:hover{background:var(--input);border-color:var(--border)}
-.profile-list-row input:focus,.profile-list-row select:focus{background:var(--input);border-color:var(--accent)}
+.profile-list-row input:not([type=checkbox]),.profile-list-row select{min-width:0;max-width:100%;margin:0;padding:5px 4px;border:1px solid transparent;background:transparent;border-radius:4px}
+.profile-list-row input:not([type=checkbox]):hover,.profile-list-row select:hover{background:var(--input);border-color:var(--border)}
+.profile-list-row input:not([type=checkbox]):focus,.profile-list-row select:focus{background:var(--input);border-color:var(--accent)}
 .profile-list-row .list-secondary select{width:auto;max-width:100%}
 .profile-list-row .list-secondary input{width:auto;min-width:2ch;max-width:100%}
 .profile-list-row .row-remove,.profile-list-row .list-remove{flex:none;margin:0 0 0 auto;padding:5px 0;font-size:11px}
@@ -157,3 +162,45 @@ main .panel-heading>.actions button{padding:7px 10px}
   .profile-list-row .list-primary{max-width:100%}
   .profile-list-row .list-secondary{max-width:100%}
 }
+
+.website-list-row .list-secondary input{min-width:10ch}
+
+.api-keys-panel{grid-column:1/-1}
+.api-keys-panel>.panel-heading{margin-bottom:12px}
+.api-key-row{display:grid;grid-template-columns:minmax(140px,180px) minmax(180px,1fr) auto;align-items:end;gap:8px 16px;padding:16px 0;border-bottom:1px solid var(--border)}
+.api-key-row:first-child{padding-top:0}
+.api-key-row:last-child{border-bottom:0;padding-bottom:0}
+.api-key-row label{min-width:0;font-size:12px;color:var(--muted)}
+.api-key-row input,.api-key-row select{margin-top:4px;width:100%}
+.api-key-row [data-key-status]{grid-column:1/-1}
+.api-key-row .actions{gap:8px;padding-bottom:2px}
+.api-key-row .actions button{white-space:nowrap}
+@media(max-width:650px){.api-key-row{grid-template-columns:1fr}.api-key-row .actions{flex-wrap:wrap}.api-key-row [data-key-status]{grid-column:1}}
+
+.connection-setup .account-grid{grid-template-columns:minmax(0,1fr)}
+@media(max-width:650px){.website-list-row>span{display:none}}
+
+.profile-detail-list{margin-top:24px;padding-top:20px;border-top:1px solid var(--border)}
+.profile-detail-list .panel-heading h3{margin:0;font-size:14px;font-weight:600}
+
+/* Experience and desired seniority belong to the same compact role row. */
+.role-preference-row .role-levels{flex:0 1 auto;width:max-content;min-width:min(180px,100%);max-width:min(720px,100%)}
+.role-preference-row .level-picker{width:100%;margin:0}
+.role-preference-row .level-picker summary{min-height:32px;padding:5px 8px}
+.role-preference-row .level-menu{width:min(280px,100%);max-height:260px;overflow:auto}
+.role-preference-row .level-picker summary>span:last-child{flex:none}
+.role-preference-row .level-menu .check-label{align-items:center;gap:9px}
+.role-preference-row .level-menu input[type=checkbox]{margin:0;padding:0;flex:0 0 15px}
+
+/* Small bottom actions keep each list open for another entry. */
+.profile-add{display:block;margin-top:14px;padding:4px 0;font-size:12px;color:var(--accent);border:0;background:transparent}
+.profile-add:hover,.authorization-status:hover{text-decoration:underline;background:transparent}
+.entry-gpa-pair{display:flex;align-items:center;gap:4px}
+.entry-gpa-pair>div{min-width:0;max-width:100%}
+.entry-gpa-pair>span{color:var(--muted)}
+.entry-gpa-pair input{min-width:5ch;max-width:16ch}
+@supports(field-sizing:content){.entry-gpa-pair>div{width:auto}}
+.authorization-status{padding:4px;font-size:12px;color:var(--accent)}
+.authorization-dialog{width:min(520px,calc(100vw - 32px))}
+.authorization-details{display:grid;gap:16px}
+.authorization-details p{margin:0}

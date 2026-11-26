@@ -6,7 +6,10 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from applydesk.chat_evidence import PROMPT, record_chat_evidence
+from applydesk.application_answers import with_application_source
+from applydesk.mapping import answer_field
 from applydesk.intelligence import validate_eligibility
+from applydesk.profile import model_profile
 from chat_helpers import ChatFixture
 
 
@@ -15,13 +18,13 @@ class ChatEvidenceTests(ChatFixture):
         """Use actual profile/task persistence without accessing accounts or provider services."""
         super().setUp()
         self.history = self.w.orchestrator.history
-        self.question = self.history.add("assistant", "Have you personally used object-oriented SystemVerilog and debugged publishing testbenches in coursework or projects?")
+        self.question = self.history.add("assistant", "Have you personally used object-oriented SystemVerilog and debugged hardware testbenches in coursework or projects?")
         self.confirmation = self.history.add("user", "Yes, I personally did both in coursework and projects, not professional employment.")
         self.current = self.history.add("user", "Continue using my unchanged uploaded resume.", "running")
         self.engine = SimpleNamespace(w=self.w, history=self.history, active={"message": self.current},
                                       check_active=Mock(), run_agent=Mock(side_effect=self.model),
                                       accounts=SimpleNamespace(state=Mock(return_value={"active": "test-account"}), generation=1))
-        self.claim = {"text": "Used object-oriented SystemVerilog and personally debugged publishing testbenches in coursework and projects.", "kind": "projects"}
+        self.claim = {"text": "Used object-oriented SystemVerilog and personally debugged hardware testbenches in coursework and projects.", "kind": "projects"}
         self.sources = [{"message_id": self.question["id"], "quote": self.question["text"]},
                         {"message_id": self.confirmation["id"], "quote": self.confirmation["text"]}]
         self.result = {"facts": [{**self.claim, "sources": self.sources}], "retractions": [], "issues": []}
@@ -29,7 +32,7 @@ class ChatEvidenceTests(ChatFixture):
 
     def model(self, role, prompt, inputs):
         """Capture actual independent-review input while returning a controlled semantic verdict."""
-        self.assertEqual((role, prompt), ("application_auditor", PROMPT))
+        self.assertEqual((role, prompt), ("master", PROMPT))
         self.payload = json.loads(inputs[0]["content"])
         response = {"output": [{"type": "message", "content": [{"type": "output_text", "text": json.dumps(self.result)}]}]}
         return "synthetic-evidence-review", response
@@ -37,6 +40,22 @@ class ChatEvidenceTests(ChatFixture):
     def record(self):
         """Exercise the public evidence operation with the exact proposed personal qualification."""
         return record_chat_evidence(self.engine, {"facts": [self.claim]})
+
+    def test_employer_question_survives_confirmation_and_reuses_its_source(self):
+        """A saved answer carries its original fact ID when the same employer asks the question again."""
+        note = "For Example Labs, my answer to 'Which shift do you prefer?' is Evening."
+        message = self.history.add("user", note, "running")
+        self.engine.active = {"message": message}
+        self.claim = {"text": "Employer: Example Labs\nQuestion: Which shift do you prefer?\nAnswer: Evening",
+                      "kind": "application_answer"}
+        self.result["facts"] = [{**self.claim, "sources": [{"message_id": message["id"], "quote": note}]}]
+        self.record()
+        saved = self.w.profile()
+        fact = next(row for row in saved["facts"] if row["text"] == self.claim["text"])
+        field = {"field_id": "shift", "type": "text", "label": "Which shift do you prefer?"}
+        self.assertEqual(answer_field(field, with_application_source(saved, {"company": "Example Labs"}), "US"),
+                         {"field_id": "shift", "value": "Evening", "fact_ids": [fact["id"]]})
+        self.assertIsNone(answer_field(field, with_application_source(saved, {"company": "Sample Labs"}), "US"))
 
     def test_prior_confirmation_gets_durable_ids_in_draft_context(self):
         revision = self.w.profile()["revision"]
@@ -61,21 +80,22 @@ class ChatEvidenceTests(ChatFixture):
         self.assertEqual(self.w.store.get("application_run", "run"), run)
         self.assertEqual(self.w.store.get("submission_attempt", "one"), attempt)
 
-    def test_assumed_years_do_not_reclassify_coursework_as_employment(self):
-        """Eligibility may be assumed while stored personal facts retain their actual meaning."""
+    def test_unsupported_work_years_do_not_reclassify_coursework_as_employment(self):
+        """An unmet work-history requirement fails while confirmed project facts retain their meaning."""
         fact = self.record()["facts"][0]
         profile = self.w.profile()
         requirement = {"text": "Object-oriented SystemVerilog", "met": True, "evidence_ids": [fact["id"]]}
         analysis = {"requirements_complete": True, "required": [requirement]}
         self.assertTrue(validate_eligibility(analysis, profile)["eligible"])
-        requirement["text"] = "Two years of professional publishing experience"
+        requirement["text"] = "Two years of professional hardware experience"
         requirement["evidence_ids"] = []
-        self.assertTrue(validate_eligibility(analysis, profile)["eligible"])
+        requirement["met"] = False
+        self.assertFalse(validate_eligibility(analysis, profile)["eligible"])
         self.assertEqual(self.w.profile(), profile)
         self.assertEqual(fact["kind"], "projects")
 
     def test_quoted_job_text_is_not_recorded_when_reviewer_rejects_confirmation(self):
-        self.current["text"] = 'The job description says "Requires five years editorial experience"; do I qualify?'
+        self.current["text"] = 'The job description says "Requires five years of ASIC experience"; do I qualify?'
         self.w.store.put("chat_message", self.current["id"], self.current)
         self.result = {"facts": [], "retractions": [], "issues": ["The quoted requirement is not a personal statement."]}
         revision = self.w.profile()["revision"]
@@ -105,7 +125,7 @@ class ChatEvidenceTests(ChatFixture):
 
     def test_correction_retracts_old_reference_and_rechecks_pending_jobs(self):
         old = self.record()["facts"][0]
-        correction = self.history.add("user", "Correction: I have not personally debugged publishing testbenches.", "running")
+        correction = self.history.add("user", "Correction: I have not personally debugged hardware testbenches.", "running")
         self.engine.active = {"message": correction}
         self.result = {"facts": [], "retractions": [{"fact_id": old["id"],
                        "sources": [{"message_id": correction["id"], "quote": correction["text"]}]}], "issues": []}
@@ -173,6 +193,20 @@ class ChatEvidenceTests(ChatFixture):
         for kind in ("authorizations", "disclosure", "identity", "declaration"):
             with self.subTest(kind=kind), self.assertRaises(ValueError):
                 record_chat_evidence(self.engine, {"facts": [{"text": "Yes", "kind": kind}]})
+
+    def test_chat_agent_saves_confirmed_service_only_as_a_disclosure(self):
+        """A personal answer survives a reload without becoming a screening qualification."""
+        current = self.history.add("user", "I am not a veteran. Save this in my profile.", "running")
+        self.engine.active = {"message": current}
+        self.claim = {"text": "no", "kind": "veteran_service"}
+        self.result["facts"] = [{**self.claim, "sources": [{"message_id": current["id"], "quote": current["text"]}]}]
+        protected = self.w.profile()["preferences"]["veteran"]
+        self.assertTrue(self.record()["veteran_service_saved"])
+        saved = self.w.profile()
+        self.assertEqual(saved["preferences"]["veteran_service"], "no")
+        self.assertEqual(saved["preferences"]["veteran"], protected)
+        self.assertNotIn("veteran_service", model_profile(saved)["preferences"])
+        self.assertEqual(saved["chat_evidence"], [])
 
     def test_old_confirmation_is_not_lost_to_an_arbitrary_message_count(self):
         for _ in range(110):

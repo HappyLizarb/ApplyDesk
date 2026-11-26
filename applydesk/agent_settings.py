@@ -1,13 +1,12 @@
-"""Four local agent roles use models exposed by the explicitly selected connection."""
+"""One agent uses the model exposed by the explicitly selected connection."""
 
 from .agent_contract import object_fields
 
-ROLES = {"master": "Master Agent", "application": "Application Agent",
-         "document_reviewer": "Document Reviewer", "application_auditor": "Application Auditor"}
+ROLES = {"master": "ApplyDesk Agent"}
 
 
 class AgentSettings:
-    """Each connection retains its own four-role choices, separate from credentials."""
+    """Keep the former master selection; obsolete role settings are never used."""
 
     def __init__(self, workspace, accounts):
         self.w, self.accounts = workspace, accounts
@@ -47,7 +46,7 @@ class AgentSettings:
         object_fields(data, ["role", "selection"])
         role = data["role"]
         if not isinstance(role, str) or role not in ROLES:
-            raise ValueError("Choose one of the four predefined agents.")
+            raise ValueError("Choose the ApplyDesk agent.")
         with self.accounts.lock:
             selection = self.validate(data["selection"])
             active = self.accounts.state()["active"]

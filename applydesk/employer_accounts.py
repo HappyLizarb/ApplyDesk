@@ -1,5 +1,6 @@
 """One durable applicant account per known employer, shared across its roles."""
 
+import re
 import secrets
 import uuid
 from urllib.parse import urlsplit
@@ -24,6 +25,25 @@ class EmployerAccounts:
         if current.get("employer_account_id") not in {None, key}:
             raise ValueError("This application's employer changed. Review its account manually.")
         return current, key
+
+    def listing_company(self, job, page, analyzed_company):
+        """Keep the linked account's verified employer name when both names appear on this same public listing."""
+        source = job.get("recommendation_source") or {}
+        public = page.get("public_source") or {}
+        identity = job.get("employer_account_id")
+        if not identity or not public.get("complete") or not source.get("company") or not source.get("employer_url"):
+            return analyzed_company
+        from .discovery import canonical_url
+        if canonical_url(public["url"]) != canonical_url(source["employer_url"]) or employer_key(source) != identity:
+            return analyzed_company
+        account = self.store.get("employer_account", identity)
+        if not account or employer_key(account) != identity:
+            return analyzed_company
+        text = " ".join(page.get("text", "").casefold().split())
+        names = [account["company"], analyzed_company]
+        if all(re.search(r"(?<!\w)" + re.escape(" ".join(name.casefold().split())) + r"(?!\w)", text) for name in names):
+            return account["company"]
+        return analyzed_company
 
     def _related(self, key):
         """Include removed applications so deleting a row never forgets a previous signup."""
@@ -76,18 +96,18 @@ class EmployerAccounts:
         self.store.put("employer_account", record["id"], record)
         return password
 
-    def credentials(self, job, origin, realm, action):
+    def credentials(self, job, origin, realm, action, *, reserve_only=False):
         """Reserve before any external write, and never retry an existing or uncertain signup."""
         with self.store.lock:
             job, key = self._job(job)
             record = self.store.get("employer_account", key) or self._legacy(job, key)
-            if record and action == "create_account":
+            if record and action == "create_account" and not (reserve_only and record.get("status") == "reserved" and record.get("owner_job_id") == job["id"]):
                 raise ValueError("An account or signup attempt already exists for this employer. Use Sign in or account recovery; no second account will be created.")
             if record:
                 self._check_scope(record, job, origin, realm)
                 password = self._password(record)
             elif action == "create_account":
-                record, password = self._reserve(job, key, origin, realm)
+                record, password = self._reserve(job, key, origin, realm, reserve_only)
             else:
                 raise ValueError("Save this employer's existing account in the application row, or sign in manually.")
             if not password:
@@ -96,6 +116,23 @@ class EmployerAccounts:
             self.store.put("employer_account", key, record)
             self._attach(job, record)
             return record["account"], password
+
+    def registration_pending(self, job):
+        """Only a local reservation with no dispatched signup may reopen Create Account."""
+        current, key = self._job(job)
+        record = self.store.get("employer_account", key)
+        return bool(record and record.get("status") == "reserved" and record.get("owner_job_id") == current["id"])
+
+    def mark_authentication(self, job, action):
+        """Persist the uncertain-write boundary immediately before dispatching a signup."""
+        if action != "create_account":
+            return
+        with self.store.lock:
+            current, key = self._job(job)
+            record = self.store.get("employer_account", key)
+            if not record or record.get("status") != "reserved" or record.get("owner_job_id") != current["id"]:
+                raise ValueError("This employer already has an account-creation attempt. Check its outcome before retrying.")
+            self.store.put("employer_account", key, {**record, "status": "creation_attempted", "attempted_at": now()})
 
     def _check_scope(self, record, job, origin, realm):
         """A path is an extra boundary, not proof of a shared recruiting site's tenant."""
@@ -108,7 +145,7 @@ class EmployerAccounts:
         if conflicts:
             raise ValueError("This sign-in page is shared by another employer identity. Sign in manually.")
 
-    def _reserve(self, job, key, origin, realm):
+    def _reserve(self, job, key, origin, realm, reserve_only=False):
         """A persisted reservation survives crashes, failed fills, and uncertain HTTP responses."""
         if any(item.get("realm") == realm or origin in {*item.get("claimed_origins", []), item.get("origin")}
                for item in self.store.all("employer_account")):
@@ -121,10 +158,12 @@ class EmployerAccounts:
         account = self.w.profile()["identity"].get("email", "").strip()
         if not account:
             raise ValueError("Add your account email before creating an employer account.")
-        record = self._new(job, key, account, origin, "creation_attempted")
+        record = self._new(job, key, account, origin, "reserved" if reserve_only else "creation_attempted")
         record.update(realm=realm, attempted_at=now())
         self.store.put("employer_account", key, record)
-        password = secrets.token_urlsafe(24)
+        # The verified Supermicro signup accepts at most 18 ASCII characters.
+        size = 10 if realm == "https://career4.successfactors.com/career?company=supermicro" else 24
+        password = secrets.token_urlsafe(size) + "Aa1!"
         self.w.secrets.set(record["secret_key"], password)
         return record, password
 

@@ -137,6 +137,33 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("next", browser.methods)
         self.assertNotIn("authenticate", browser.methods)
 
+    def test_required_cover_fields_pause_before_filling(self):
+        """Required letter uploads and text fields never generate, fill, or submit a letter."""
+        for kind in ("file", "textarea"):
+            page = snapshot()
+            page["fields"].append(field("cover", kind, "Cover letter"))
+            browser = BrowserFixture(page)
+            with patch.object(self.app, "_prepare", side_effect=lambda _job: self.run_walk(browser)):
+                with self.assertRaisesRegex(ValueError, "requires a cover letter"):
+                    self.app.prepare(self.job["id"])
+            job = self.store.get("job", self.job["id"])
+            self.assertEqual(job["status"], "needs_review")
+            self.assertIn("requires a cover letter", job["exceptions"][0])
+            self.assertNotIn("fill", browser.methods)
+            self.assertNotIn("submit", browser.methods)
+
+    def test_empty_optional_cover_letter_needs_no_model_request(self):
+        """Optional letters stay empty while a supported resume application can become ready."""
+        for kind in ("file", "textarea"):
+            page = snapshot()
+            page["fields"].append(field("cover", kind, "Cover letter", required=False))
+            browser = BrowserFixture(page)
+            with patch.object(self.w, "client", side_effect=AssertionError("Unexpected model request")):
+                result = self.run_walk(browser)
+            self.assertEqual(result["status"], "ready")
+            cover = next(item for item in browser.page["fields"] if item["field_id"] == "cover")
+            self.assertEqual((cover["value"], cover["files"]), ("", []))
+
     def test_unknown_required_answer_blocks_before_any_fill(self):
         """The coordinator cannot invent a response simply to finish a form."""
         page = snapshot()

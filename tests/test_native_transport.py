@@ -61,6 +61,16 @@ class NativeTransportTests(unittest.TestCase):
         self.response.read.assert_not_called()
         self.connection.close.assert_called_once()
 
+    def test_grok_request_uses_only_the_official_xai_host(self):
+        """Grok's key is a header on its pinned Responses endpoint, never an OpenAI request."""
+        agent_transport.request_json(self.runner, 'xai', 'grok-4.7', {'store': False}, 'private-key', self.cancelled, 7)
+        self.assertEqual(self.factory.call_args.args[0], 'api.x.ai')
+        method, path, body, headers = self.connection.request.call_args.args
+        self.assertEqual((method, path), ('POST', '/v1/responses'))
+        self.assertEqual(headers['Authorization'], 'Bearer private-key')
+        self.assertNotIn('x-goog-api-key', headers)
+        self.assertNotIn(b'private-key', body)
+
     def test_cancellation_before_request_opens_no_socket(self):
         """An already-paused operation cannot start a provider request."""
         self.cancelled.set()

@@ -26,6 +26,16 @@ class ProfileControlTests(unittest.TestCase):
         self.assertEqual(phone['value'], '+44 20 7946 0000')
         self.assertEqual(phone['fact_ids'], ['identity.phone', 'identity.phone_country_code'])
 
+    def test_github_website_round_trips_and_answers_its_matching_field(self):
+        """GitHub retains its own type instead of replacing a personal portfolio link."""
+        self.raw['websites'] = [{'type': 'GitHub', 'url': 'https://github.com/example'},
+                                {'type': 'Portfolio', 'url': 'https://example.test'}]
+        saved = validate_profile(self.raw, empty_profile())
+        answer = answer_field({'field_id': 'github', 'label': 'GitHub URL'}, saved, 'US')
+        self.assertEqual(saved['websites'], self.raw['websites'])
+        self.assertEqual(answer['value'], 'https://github.com/example')
+        self.assertEqual(answer['fact_ids'], ['websites.0'])
+
     def test_legacy_phone_never_gets_an_inferred_code(self):
         """National and already-international legacy strings remain lossless."""
         for phone in ['415 555 0101', '+1 415 555 0101']:

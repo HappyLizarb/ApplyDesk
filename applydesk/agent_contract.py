@@ -2,7 +2,8 @@
 
 from urllib.parse import urlsplit
 
-from .intelligence import _validate_edits, validate_eligibility
+from .intelligence import validate_eligibility
+from .mapping import COVER_LETTER_REQUIRED
 from .profile import empty_profile, public_job_url, validate_profile
 
 
@@ -58,7 +59,7 @@ def profile_draft(result):
 def application_draft(result, inputs):
     """Qualifications are assumed; observed requirements and specific personal claims stay grounded."""
     object_fields(result, ["analysis", "answers", "form_text", "cover_requirement", "cover_edits"])
-    analysis = object_fields(result["analysis"], ["category", "required", "requirements_complete"], ["no_required_quote"])
+    analysis = object_fields(result["analysis"], ["category", "required", "requirements_complete"], ["no_required_quote", "source_text"])
     if analysis["category"] not in inputs["resume_categories"]:
         raise ValueError("Choose a profile industry or General.")
     string(result["form_text"], 100000, empty=True)
@@ -72,16 +73,11 @@ def application_draft(result, inputs):
             raise ValueError("Each required qualification must quote the saved description exactly.")
     answers = validate_answers(result["answers"], result["form_text"], inputs["profile"])
     cover = cover_requirement(result["cover_requirement"])
-    edits = result["cover_edits"]
-    if cover["state"] != "required" and edits:
-        raise ValueError("Only an explicitly required cover letter may be drafted.")
     if cover["state"] == "required":
-        if not inputs.get("template"):
-            raise ValueError("Select a confirmed cover-letter template in Documents first.")
-        edits = _validate_edits({"edits": edits, "issues": []}, inputs["profile"], inputs["template"])["edits"]
-        if not edits:
-            raise ValueError("Required cover letters need grounded template edits.")
-    return {**result, "analysis": analysis, "answers": answers, "cover_requirement": cover, "cover_edits": edits}
+        raise ValueError(COVER_LETTER_REQUIRED)
+    if result["cover_edits"] != []:
+        raise ValueError("Letter customization is unavailable. Leave cover_edits empty.")
+    return {**result, "analysis": analysis, "answers": answers, "cover_requirement": cover}
 
 
 def validate_answers(answers, source, profile):
@@ -114,12 +110,3 @@ def cover_requirement(value):
         if not quote or quote not in source:
             raise ValueError("A cover-letter decision requires an exact observed source quote.")
     return value
-
-
-def document_draft(result, inputs):
-    """Only cover-letter text edits are allowed; uploaded resumes cannot be rewritten."""
-    object_fields(result, ["edits", "issues"])
-    checked = _validate_edits(result, inputs["profile"], inputs["document"])
-    if checked["issues"] or not checked["edits"]:
-        raise ValueError("Resolve document issues and supply at least one grounded edit.")
-    return checked

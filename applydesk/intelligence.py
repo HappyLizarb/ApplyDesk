@@ -1,9 +1,17 @@
 """Evidence-bound AI tasks with deterministic checks before any caller can act."""
 
 import json
+import re
 from collections import Counter
 
 from . import ai_prompts as prompts
+from .immigration_eligibility import TOPIC, check_immigration
+
+# Match the complete future review clause, including when it follows a separate license requirement.
+FUTURE_VEHICLE_REVIEW = re.compile(
+    r"(?:^|(?<=[.!?])\s+|\blicen[cs]e\s+and\s+)"
+    r"(as a condition of employment,\s+must pass [\w&.-]+(?:[ -][\w&.-]+){0,3}['’]s motor vehicle records? review)"
+    r"(?=\.(?:\s|$)|[ \t]*$)", re.I | re.M)
 
 
 def _facts(profile):
@@ -27,18 +35,6 @@ def _evidence_errors(ids, facts):
     return []
 
 
-def _review(result):
-    """A review passes only when its explicit decision and issue list agree."""
-    issues = result.get("issues")
-    if not isinstance(issues, list) or any(not isinstance(x, str) for x in issues):
-        return {"passed": False, "issues": ["Reviewer returned an invalid issue list."]}
-    issues = [issue for issue in issues if issue.strip()]
-    passed = result.get("passed") is True and not issues
-    if not passed and not issues:
-        issues = ["Reviewer did not explicitly pass this check."]
-    return {"passed": passed, "issues": issues}
-
-
 def extract_profile(client, text) -> dict:
     """Import explicit source information as an editable draft, never as evidence."""
     if not isinstance(text, str) or not text.strip():
@@ -58,8 +54,13 @@ def extract_profile(client, text) -> dict:
 
 
 def analyze_job(client, profile, page) -> dict:
-    """Extract job requirements; qualification and independent audit remain separate."""
-    result = client.ask(prompts.ANALYZE, {"profile": profile, "page": page})
+    """Extract job requirements once before local validation."""
+    evidence = page
+    if isinstance(page, dict) and page.get("native"):
+        # Screening uses the employer's posting. Other Chrome tabs can belong to unrelated applications.
+        keys = ("native", "url", "title", "text", "text_truncated", "public_source", "recommendation_source")
+        evidence = {key: page[key] for key in keys if key in page}
+    result = client.ask(prompts.ANALYZE, {"profile": profile, "page": evidence})
     for key in ("company", "title", "details", "country", "category"):
         if not isinstance(result.get(key), str):
             raise ValueError(f"Job analysis returned an invalid {key}.")
@@ -68,17 +69,43 @@ def analyze_job(client, profile, page) -> dict:
             raise ValueError(f"Job analysis returned an invalid {key} list.")
     if not isinstance(result.get("cover_letter_required"), bool):
         raise ValueError("Cover-letter requirement must be explicitly classified.")
+    _repair_citations(client, profile, result["required"])
     result["source_text"] = page if isinstance(page, str) else page.get("text", "")
     return result
 
 
+def _repair_citations(client, profile, requirements):
+    """Give the agent one chance to replace invalid references without changing its eligibility decision."""
+    facts = _facts(profile)
+    invalid = [row for row in requirements if isinstance(row, dict) and row.get("met") is True
+               and row.get("evidence_ids") and _evidence_errors(row["evidence_ids"], facts)]
+    if not invalid:
+        return
+    prompt = prompts.BASE + prompts.QUALIFICATIONS + """
+For each quoted requirement, return its directly supporting confirmed profile fact IDs.
+Return {citations:[[id,...],...]}, in order. Use [] when the facts do not support it.
+Check the kind of experience and any minimum years. A document ID is not a profile fact.
+"""
+    answer = client.ask(prompt, {"requirements": [row.get("text") for row in invalid],
+                                 "facts": list(facts.values())}).get("citations")
+    if not isinstance(answer, list) or len(answer) != len(invalid) or any(_evidence_errors(ids, facts) for ids in answer):
+        raise ValueError("The agent could not verify its profile citations. This posting needs another review.")
+    for row, ids in zip(invalid, answer):
+        row["evidence_ids"] = ids
+
+
 def _requirement_errors(requirement, facts, source):
-    """Validate observed requirements without turning assumed qualifications into facts."""
+    """Reject unmet requirements without turning assumed skills into personal facts."""
     if not isinstance(requirement, dict) or not isinstance(requirement.get("text"), str):
         return ["A required qualification is missing or malformed."]
     label = requirement["text"].strip()
     if not label or type(requirement.get("met")) is not bool:
         return ["A required qualification has missing text or an invalid match flag."]
+    if not requirement["met"]:
+        if not any(match[1] == label.removesuffix(".") for match in FUTURE_VEHICLE_REVIEW.finditer(source)):
+            return [f"{label}: A mandatory requirement is unmet or needs confirmation."]
+    if not source and TOPIC.search(label):
+        return ["An eligibility condition needs its observed source text before it can be checked."]
     if source and label not in source:
         return ["A required qualification does not quote the observed description."]
     ids = requirement.get("evidence_ids")
@@ -89,7 +116,7 @@ def _requirement_errors(requirement, facts, source):
 
 
 def validate_eligibility(analysis, profile) -> dict:
-    """Honor assumed qualifications while checking the description and supplied evidence structure."""
+    """Honor supported matches while checking complete requirements and supplied evidence."""
     reasons = []
     facts = _facts(profile)
     if not isinstance(analysis, dict):
@@ -108,100 +135,9 @@ def validate_eligibility(analysis, profile) -> dict:
             source = ""
         for requirement in required:
             reasons.extend(_requirement_errors(requirement, facts, source))
-    return {"eligible": not reasons, "reasons": reasons}
-
-
-def audit_eligibility(client, profile, page, analysis) -> dict:
-    """Review the source and process prerequisites without re-screening assumed qualifications."""
-    baseline = validate_eligibility(analysis, profile)
-    if not baseline["eligible"]:
-        return {"passed": False, "issues": baseline["reasons"]}
-    result = client.ask(prompts.AUDIT_ELIGIBILITY,
-                        {"profile": profile, "page": page, "prior_analysis": analysis})
-    result["source_text"] = page if isinstance(page, str) else page.get("text", "")
-    checks = validate_eligibility(result, profile)
-    review = _review(result)
-    review["issues"].extend(checks["reasons"])
-    source = (page.get("recommendation_source") or page.get("public_source")) if isinstance(page, dict) else None
-    if source:
-        from .recommendation_checks import process_issues
-        review["issues"].extend(process_issues(result, source, result["source_text"]))
-    review["passed"] = review["passed"] and checks["eligible"]
-    review["passed"] = review["passed"] and not review["issues"]
-    return review
-
-
-def _validate_edits(result, profile, template):
-    """Keep model changes inside existing template slots with confirmed provenance."""
-    blocks = template.get("blocks", [])
-    known = {block["id"] for block in blocks if isinstance(block, dict)
-             and "id" in block and block.get("editable", True)}
-    edits, issues = result.get("edits"), result.get("issues", [])
-    if not isinstance(edits, list) or not isinstance(issues, list):
-        raise ValueError("Document response must contain edits and issues lists.")
-    if any(not isinstance(issue, str) for issue in issues):
-        raise ValueError("Document issues must be readable strings.")
-    seen, facts = set(), _facts(profile)
-    for edit in edits:
-        if not isinstance(edit, dict) or not isinstance(edit.get("id"), str):
-            raise ValueError("Document edit has no valid block ID.")
-        block_id = edit["id"]
-        if block_id not in known or block_id in seen:
-            raise ValueError("Document edit targets an unknown or repeated template block.")
-        if set(edit) != {"id", "text", "fact_ids"} or not isinstance(edit["text"], str):
-            raise ValueError("Document edits may change text only, with evidence IDs.")
-        errors = _evidence_errors(edit["fact_ids"], facts)
-        if errors:
-            raise ValueError(f"Document block {block_id}: {errors[0]}")
-        seen.add(block_id)
-    return {"edits": edits, "issues": issues}
-
-
-def generate_document(client, profile, template: dict, instruction: str) -> dict:
-    """Generate text replacements for a reusable resume or required cover letter."""
-    facts = _facts(profile)
-    if not facts:
-        raise ValueError("Confirm supporting profile facts before generating documents.")
-    result = client.ask(prompts.DOCUMENT, {"facts": list(facts.values()),
-                        "template": template, "instruction": instruction})
-    return _validate_edits(result, profile, template)
-
-
-def chat_document(client, profile, template: dict, instruction: str, history=None) -> dict:
-    """Apply an explicit editor request under the same template and evidence rules."""
-    if not _facts(profile):
-        raise ValueError("Confirm supporting profile facts before editing documents.")
-    result = client.ask(prompts.DOCUMENT, {"facts": list(_facts(profile).values()),
-                        "template": template, "instruction": instruction,
-                        "history": history or []})
-    return _validate_edits(result, profile, template)
-
-
-def audit_document(client, profile, document) -> dict:
-    """Audit every populated block, including unsupported untouched template claims."""
-    blocks = document.get("blocks", [])
-    blocks = [block for block in blocks if isinstance(block, dict)
-              and isinstance(block.get("text"), str) and block["text"].strip()]
-    ids = [block.get("id") for block in blocks]
-    if not ids or any(not isinstance(item, str) for item in ids) or len(set(ids)) != len(ids):
-        return {"passed": False, "issues": ["Complete document text with unique block IDs is required."]}
-    facts = _facts(profile)
-    if not facts:
-        return {"passed": False, "issues": ["Confirmed profile evidence is required."]}
-    result = client.ask(prompts.AUDIT_DOCUMENT, {"facts": list(facts.values()),
-                        "document": document})
-    review, checks = _review(result), result.get("block_checks", [])
-    checked = [item.get("id") for item in checks if isinstance(item, dict)] if isinstance(checks, list) else []
-    if len(checked) != len(ids) or any(not isinstance(item, str) for item in checked) or set(checked) != set(ids):
-        review["issues"].append("The auditor did not verify every document block exactly once.")
-    if isinstance(checks, list):
-        for item in checks:
-            if not isinstance(item, dict) or not isinstance(item.get("personal_claims"), bool):
-                review["issues"].append("The auditor returned an incomplete block check.")
-            elif item["personal_claims"]:
-                review["issues"].extend(_evidence_errors(item.get("fact_ids"), facts))
-    review["passed"] = review["passed"] and not review["issues"]
-    return review
+    immigration = check_immigration(profile, analysis.get("source_text", ""), analysis.get("country", ""), required if isinstance(required, list) else [])
+    return {"eligible": not reasons and immigration["eligible"], "reasons": reasons + immigration["reasons"],
+            "needs_input": immigration["needs_input"]}
 
 
 def _field_errors(profile, snapshot, expected):
@@ -228,31 +164,11 @@ def _field_errors(profile, snapshot, expected):
     return issues
 
 
-def audit_fields(client, profile, snapshot, expected) -> dict:
-    """Check live values first, then independently audit wording and evidence."""
+def audit_fields(profile, snapshot, expected) -> dict:
+    """Check live readbacks and confirmed evidence without another model request."""
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get("fields"), list):
         return {"passed": False, "issues": ["The live form snapshot is unavailable."]}
     if not isinstance(expected, list) or not expected:
         return {"passed": False, "issues": ["No expected field evidence was supplied."]}
     issues = _field_errors(profile, snapshot, expected)
-    if issues:
-        return {"passed": False, "issues": issues}
-    return _review(client.ask(prompts.AUDIT_FIELDS,
-                   {"profile": profile, "snapshot": snapshot, "expected": expected}))
-
-
-def review_format(client, template_images, rendered_images) -> dict:
-    """Compare rendered pages without granting any authority over factual content."""
-    if not template_images or not rendered_images:
-        return {"passed": False, "issues": ["Both template and output page images are required."]}
-    result = client.ask(prompts.FORMAT, {"template_pages": len(template_images),
-                        "rendered_pages": len(rendered_images)},
-                        images=list(template_images) + list(rendered_images))
-    return _review(result)
-
-
-def review_layout(client, images) -> dict:
-    """Check an uploaded resume's readability without a template or content changes."""
-    if not images:
-        return {"passed": False, "issues": ["Resume page images are required."]}
-    return _review(client.ask(prompts.LAYOUT, {"pages": len(images)}, images=images))
+    return {"passed": not issues, "issues": issues}

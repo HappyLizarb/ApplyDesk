@@ -23,7 +23,7 @@ class ProviderConnectionsTests(unittest.TestCase):
         secrets = SimpleNamespace(get=self.secrets.get, set=lambda name, key: self.secrets.__setitem__(name, key))
         self.w = SimpleNamespace(root=Path(tempfile.gettempdir()) / "provider-connections", store=MemoryStore(), secrets=secrets)
         self.accounts = AgentConnections(self.w)
-        self.catalogs = {"openai": [{"id": "gpt-5.4", "name": "OpenAI model"}],
+        self.catalogs = {"xai": [{"id": "grok-4.7", "name": "Grok model"}], "openai": [{"id": "gpt-5.4", "name": "OpenAI model"}],
                          "anthropic": [{"id": "claude-sonnet-4-6", "name": "Claude model"}],
                          "google": [{"id": "gemini-3.8-flash", "name": "Gemini model"}]}
         self.catalog = patch("applydesk.agent_connections.list_models", side_effect=lambda provider, key: self.catalogs[provider])
@@ -48,7 +48,7 @@ class ProviderConnectionsTests(unittest.TestCase):
         self.assertTrue(self.accounts.state()["api_key_saved"])
         self.assertNotIn("test-secret", json.dumps(self.accounts.state()))
         self.assertNotIn("test-secret", str(self.w.store.records))
-        self.assertEqual(self.w.orchestrator.control.call_count, 3)
+        self.assertEqual(self.w.orchestrator.control.call_count, 4)
 
     def test_removing_one_key_preserves_other_sources_and_keys(self):
         for provider in self.catalogs:

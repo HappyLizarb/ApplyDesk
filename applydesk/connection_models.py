@@ -2,12 +2,14 @@
 
 from .providers import MODEL_OPTIONS
 
-API_PROVIDERS = {"openai": "OpenAI", "anthropic": "Anthropic", "google": "Google"}
+API_PROVIDERS = {"openai": "OpenAI", "anthropic": "Anthropic", "google": "Google", "xai": "Grok (xAI)"}
 CONNECTION_SOURCES = {"chatgpt", *(provider + "_api" for provider in API_PROVIDERS)}
 # Only explicitly verified model capabilities appear; other live IDs use provider defaults.
 # Claude: https://platform.claude.com/docs/en/build-with-claude/effort
 # Gemini: https://aistudio.google.com/docs/thinking
 THINKING = {
+    "xai": {"grok-4.7": ["low", "medium", "high", "xhigh"],
+            "grok-4.6": ["low", "medium", "high", "xhigh"], "grok-4.5": ["low", "medium", "high"]},
     "openai": {model: [value for value in values if value != "default"]
                for model, values in MODEL_OPTIONS["openai"].items()},
     "anthropic": {
@@ -32,7 +34,7 @@ THINKING = {
 def validate_provider(provider):
     """Reject unsupported provider names before choosing any credential or destination."""
     if not isinstance(provider, str) or provider not in API_PROVIDERS:
-        raise ValueError("Choose OpenAI, Anthropic, or Google.")
+        raise ValueError("Choose OpenAI, Anthropic, Google, or Grok (xAI).")
     return provider
 
 
@@ -43,8 +45,8 @@ def text_model(provider, identity):
             return False
         prefixes = ("gpt-", "o1", "o3", "o4", "codex-")
     else:
-        prefixes = ("claude-",) if provider == "anthropic" else ("gemini-",)
-    excluded = ("realtime", "audio", "transcribe", "tts", "image", "embedding", "search", "computer-use")
+        prefixes = {"anthropic": ("claude-",), "google": ("gemini-",), "xai": ("grok-",)}[provider]
+    excluded = ("realtime", "audio", "transcribe", "tts", "image", "video", "multi-agent", "embedding", "search", "computer-use")
     return identity.startswith(prefixes) and not any(part in identity for part in excluded)
 
 

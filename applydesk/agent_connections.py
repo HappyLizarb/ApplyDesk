@@ -1,4 +1,4 @@
-"""Explicit ChatGPT-plan and provider-API connections share the four-agent workflow."""
+"""Explicit ChatGPT-plan and provider-API connections share the single-agent workflow."""
 
 from .chatgpt_accounts import ChatGPTAccounts
 from .connection_models import API_PROVIDERS, CONNECTION_SOURCES, catalog_models, validate_provider
@@ -32,7 +32,7 @@ class AgentConnections(ChatGPTAccounts):
     def select_source(self, source):
         """Changing sources invalidates pending inference and never chooses a fallback."""
         if not isinstance(source, str) or source not in CONNECTION_SOURCES:
-            raise ValueError("Choose ChatGPT, OpenAI API, Anthropic API, or Google API.")
+            raise ValueError("Choose ChatGPT, OpenAI API, Anthropic API, Google API, or Grok (xAI).")
         with self.lock:
             connection = self.connection()
             self.generation += 1

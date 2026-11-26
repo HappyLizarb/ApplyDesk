@@ -1,6 +1,5 @@
 """Draft-only execution, evidence gates, stale reviews, and credential-free persistence."""
 
-import base64
 import copy
 from unittest.mock import patch
 
@@ -9,6 +8,7 @@ from test_documents import sample_docx
 from applydesk.workspace import Workspace
 from test_workspace import FakeSecrets
 from applydesk.agent_contract import profile_draft
+from applydesk.agent_context import digest
 
 
 class ChatTaskTests(ChatFixture):
@@ -16,10 +16,9 @@ class ChatTaskTests(ChatFixture):
         """Even reported passing subagents cannot mark a job ready or submitted."""
         with patch.object(self.w, "client", side_effect=AssertionError("Provider access")):
             context = self.w.chat.submit(self.payload())
-            self.assertEqual(context["task"]["status"], "awaiting_review")
-            self.w.chat.review(self.reviewer("document_reviewer", "reviewer-1"))
-            result = self.w.chat.review(self.reviewer("application_auditor", "auditor-1"))
-        self.assertEqual(result["status"], "reviewed_draft")
+            self.assertEqual(context["task"]["status"], "draft_ready")
+            result = context["task"]
+        self.assertEqual(result["status"], "draft_ready")
         self.assertEqual(self.w.chat.get(self.task["id"])["next_action"], "await_user")
         self.assertEqual(self.w.store.get("job", self.job["id"])["status"], "draft")
         task = self.w.chat.get(self.task["id"])["task"]
@@ -38,29 +37,106 @@ class ChatTaskTests(ChatFixture):
                 self.w.chat.submit(payload)
         self.assertIsNone(self.w.chat.get(self.task["id"])["task"]["result"])
 
-    def test_assumed_qualification_allows_draft_but_not_invented_answers(self):
-        """A broad qualification assumption never supplies a specific professional history answer."""
+    def test_saved_draft_round_trips_using_current_listing_as_its_source(self):
+        """A copied draft can be revised, but only the saved employer listing supports a quote."""
+        draft = self.w.chat.submit(self.payload())["task"]["result"]
+        latest = "Required: Python. Updated posting."
+        self.w.store.job(self.job["id"], details=latest)
+        payload = {**self.payload(), "result": draft}
+        saved = self.w.chat.submit(payload)["task"]
+        self.assertEqual(saved["draft_revision"], 2)
+        self.assertEqual(saved["result"]["analysis"]["source_text"], latest)
+        draft["analysis"]["source_text"] = "Forged requirement"
+        draft["analysis"]["required"][0]["text"] = "Forged requirement"
+        with self.assertRaisesRegex(ValueError, "quote"):
+            self.w.chat.submit({**self.payload(), "result": draft})
+
+    def test_failed_rework_waits_at_its_version_without_discarding_the_prior_draft(self):
+        """New inputs can reopen a blocker without reprocessing the same revision."""
+        saved = self.w.chat.submit(self.payload())["task"]
+        self.w.store.job(self.job["id"], details="Required: Python. Revised listing.")
+        task_id = self.task["id"]
+        changed = self.w.chat.get(task_id)
+        self.assertEqual(changed["task"]["status"], "stale")
+        self.w.chat.block({"task_id": task_id, "version": changed["version"], "issues": ["Invalid draft"]})
+        blocked = self.w.chat.get(task_id)
+        self.assertEqual((blocked["task"]["status"], blocked["next_action"]), ("needs_input", "resolve_input"))
+        self.assertEqual(blocked["task"]["result"], saved["result"])
+        self.assertEqual(blocked["task"]["draft_revision"], 1)
+        with patch.object(self.w.orchestrator, "run_agent") as model:
+            with self.assertRaisesRegex(ValueError, "blocker"):
+                self.w.orchestrator.workflow.prepare(task_id, "Try the same inputs")
+            model.assert_not_called()
+        self.w.store.job(self.job["id"], details="Required: Python. Another revision.")
+        changed = self.w.chat.get(task_id)
+        self.assertEqual((changed["task"]["status"], changed["next_action"]), ("stale", "draft"))
+        self.assertEqual(self.w.chat.submit(self.payload())["task"]["draft_revision"], 2)
+
+    def test_blocked_attachment_change_and_explicit_retry_keep_the_saved_draft(self):
+        """Both replacing the selected attachment and explicit retry permit another draft attempt."""
+        original = self.w.chat.submit(self.payload())["task"]
+        task_id = self.task["id"]
+        self.w.store.job(self.job["id"], resume_id=None)
+        self.w.chat.block({"task_id": task_id, "version": self.payload()["version"], "issues": ["Missing attachment"]})
+        self.assertEqual(self.w.chat.get(task_id)["next_action"], "resolve_input")
+        self.w.store.job(self.job["id"], resume_id=self.resume["id"])
+        self.assertEqual(self.w.chat.get(task_id)["next_action"], "draft")
+        self.w.store.job(self.job["id"], details="Required: Python. Revised listing.")
+        self.w.chat.block({"task_id": task_id, "version": self.payload()["version"], "issues": ["Answer required"]})
+        self.w.orchestrator.retry({"task_id": task_id})
+        retried = self.w.chat.get(task_id)
+        self.assertEqual((retried["task"]["status"], retried["next_action"]), ("queued", "draft"))
+        self.assertEqual(retried["task"]["result"], original["result"])
+        self.assertEqual(retried["task"]["document_ids"], original["document_ids"])
+        self.assertEqual(retried["task"]["issues"], [])
+        self.assertEqual(self.w.chat.submit(self.payload())["task"]["draft_revision"], 2)
+
+    def test_assumed_skill_allows_draft_but_not_invented_work_years(self):
+        """An unlisted skill never supplies a specific professional history answer."""
         payload = self.payload()
-        payload["result"]["analysis"]["required"][0].update(met=False, evidence_ids=[])
+        payload["result"]["analysis"]["required"][0].update(met=True, evidence_ids=[])
         payload["result"].update(form_text="How many years of professional Python experience?", answers=[
             {"question": "How many years of professional Python experience?", "answer": "5", "fact_ids": []}])
         with self.assertRaisesRegex(ValueError, "confirmed supporting facts"):
             self.w.chat.submit(payload)
         payload["result"]["answers"] = []
         context = self.w.chat.submit(payload)
-        self.assertEqual(context["task"]["status"], "awaiting_review")
-        self.assertFalse(context["task"]["result"]["analysis"]["required"][0]["met"])
+        self.assertEqual(context["task"]["status"], "draft_ready")
+        self.assertTrue(context["task"]["result"]["analysis"]["required"][0]["met"])
 
-    def test_self_review_missing_coverage_and_conflicting_verdict_are_rejected(self):
-        """Recorded reviewer separation and full coverage are mandatory even in experimental mode."""
+    def test_failed_requirement_cannot_be_saved_as_a_prepared_draft(self):
+        """An explicitly unmet requirement stays blocked before any draft artifact is saved."""
+        payload = self.payload()
+        payload["result"]["analysis"]["required"][0].update(met=False, evidence_ids=[])
+        with self.assertRaisesRegex(ValueError, "mandatory requirement"):
+            self.w.chat.submit(payload)
+        self.assertIsNone(self.w.chat.get(self.task["id"])["task"]["result"])
+
+    def test_legacy_pending_reviews_become_prepared_without_model_calls(self):
+        """Existing drafts no longer wait for retired agents, while input changes stay stale."""
         self.w.chat.submit(self.payload())
-        for change in [{"agent_id": "main-1"}, {"checked_items": []}, {"issues": ["Unresolved"]}, {"passed": "true"}]:
-            review = self.reviewer("document_reviewer", "reviewer-1") | change
-            with self.assertRaises(ValueError):
-                self.w.chat.review(review)
-        self.w.chat.review(self.reviewer("document_reviewer", "reviewer-1"))
-        with self.assertRaises(ValueError):
-            self.w.chat.review(self.reviewer("application_auditor", "reviewer-1"))
+        task = self.w.store.get("chat_task", self.task["id"])
+        task["status"] = "awaiting_review"
+        self.w.store.put("chat_task", task["id"], task)
+        context = self.w.chat.get(self.task["id"])
+        self.assertEqual(context["task"]["status"], "draft_ready")
+        self.assertEqual(context["next_action"], "await_user")
+        self.assertNotIn("pending_review_roles", context)
+
+    def test_legacy_completed_review_preserves_exact_artifact_binding(self):
+        """Opening an old draft keeps it prepared until its source or preview actually changes."""
+        context = self.w.chat.submit(self.payload())
+        material = context["review"]
+        checks = material["expected_checks"]
+        legacy = {**material, "expected_checks": {"document_reviewer": checks["layout"], "application_auditor": checks["facts"]}}
+        task = self.w.store.get("chat_task", self.task["id"])
+        version = digest({"inputs": context["inputs"], "material": legacy, "draft_revision": task["draft_revision"]})
+        task.pop("draft_version")
+        task.update(status="reviewed_draft", reviews={"document_reviewer": {"version": version, "passed": True}})
+        self.w.store.put("chat_task", task["id"], task)
+        self.assertEqual(self.w.chat.get(task["id"])["task"]["status"], "draft_ready")
+        self.w.docs.asset("resume/page.png").write_bytes(b"changed preview")
+        self.assertEqual(self.w.chat.get(task["id"])["task"]["status"], "stale")
 
     def test_profile_change_and_resume_replacement_invalidate_reviews(self):
         """Both task submissions and reviews require the latest profile and resume selection."""
@@ -69,12 +145,9 @@ class ChatTaskTests(ChatFixture):
         with self.assertRaises(ValueError):
             self.w.chat.submit(old)
         self.w.chat.submit(self.payload())
-        review = self.reviewer("application_auditor", "auditor-1")
         self.document("replacement", "resume");self.w.resumes.add("replacement")
         self.w.resumes.tag({"document_id": "replacement", "category": "General"})
         self.assertEqual(self.w.chat.get(self.task["id"])["task"]["status"], "stale")
-        with self.assertRaises(ValueError):
-            self.w.chat.review(review)
         self.w.chat.submit(self.payload())
         self.assertEqual(self.w.store.get("job", self.job["id"])["resume_id"], "replacement")
 
@@ -116,24 +189,17 @@ class ChatTaskTests(ChatFixture):
         with self.assertRaises(ValueError):
             self.w.chat.submit(payload)
 
-    def test_cover_rendering_preserves_resume_and_resubmission_clears_reviews(self):
-        """Use the real DOCX renderer once to exercise the complete draft document path."""
-        template = self.w.import_file({"filename": "Letter.docx", "kind": "cover_template", "data": base64.b64encode(sample_docx()).decode()})
-        self.w.save_settings({"cover_template_id": template["id"]})
-        block = next(block for block in template["blocks"] if block.get("editable", True))
+    def test_required_letter_blocks_without_loading_templates_or_rendering(self):
+        """A required letter is reported without generating a document or sending template content."""
         payload = self.payload()
-        payload["result"]["cover_requirement"] = {"state": "required", "quote": "Cover letter required", "source_text": "Cover letter required", "source_url": "https://example.test/apply"}
-        payload["result"]["cover_edits"] = [{"id": block["id"], "text": "Alex Test", "fact_ids": ["identity.legal_name"]}]
-        with patch("applydesk.agent_contract.public_job_url", side_effect=lambda url: url), patch.object(self.w, "client", side_effect=AssertionError("Provider call")):
-            context = self.w.chat.submit(payload)
-        self.assertEqual(len(context["review"]["documents"]), 2)
-        letter = context["review"]["documents"][1]
-        self.assertEqual(letter["document_type"], "cover")
-        self.w.docs.verify(letter["id"])
-        self.w.chat.review(self.reviewer("document_reviewer", "reviewer-1"))
-        self.w.chat.submit(self.payload())
-        self.assertEqual(self.w.chat.get(self.task["id"])["task"]["reviews"], {})
+        payload["result"]["cover_requirement"] = {"state": "required", "quote": "Cover letter required",
+            "source_text": "Cover letter required", "source_url": "https://example.test/apply"}
+        with patch("applydesk.agent_contract.public_job_url", side_effect=lambda url: url):
+            with patch.object(self.w.docs, "create", side_effect=AssertionError("Unexpected letter generation")):
+                with self.assertRaisesRegex(ValueError, "requires a cover letter"):
+                    self.w.chat.submit(payload)
         self.assertEqual(self.w.docs.get("resume"), self.resume)
+        self.assertIsNone(self.w.store.get("job", self.job["id"]).get("cover_id"))
 
     def test_capture_respects_removed_records_and_blocks_survive_restart(self):
         """Copied evidence is marked as reported and cannot restore excluded applications."""
@@ -162,7 +228,6 @@ class ChatTaskTests(ChatFixture):
     def test_preview_changes_and_attachment_changes_invalidate_passed_reviews(self):
         """A passing report covers exact previews and the same current job attachments."""
         self.w.chat.submit(self.payload())
-        self.w.chat.review(self.reviewer("document_reviewer", "reviewer-1"))
         self.w.docs.asset("resume/page.png").write_bytes(b"changed preview")
         context = self.w.chat.get(self.task["id"])
         self.assertEqual(context["task"]["status"], "stale")
@@ -173,25 +238,25 @@ class ChatTaskTests(ChatFixture):
 
     def test_resume_edit_requests_are_rejected_before_rendering(self):
         """The chat's document workflow cannot revive removed resume customization."""
-        with self.assertRaisesRegex(ValueError, "Only a generated cover letter"):
+        with self.assertRaisesRegex(ValueError, "customization is unavailable"):
             self.w.chat.enqueue({"kind": "document", "target_id": "resume", "instruction": "Rewrite"})
 
-    def test_cover_edit_task_creates_separate_draft_with_template_review(self):
-        """Chat edits preserve the attached letter and require template page coverage."""
-        template = self.w.import_file({"filename": "Letter.docx", "kind": "cover_template", "data": base64.b64encode(sample_docx()).decode()})
-        block = next(block for block in template["blocks"] if block.get("editable", True))
-        original = self.w.docs.create(template["id"], {block["id"]: "Alex Test"}, "Original letter", job_id=self.job["id"])
-        self.w.store.job(self.job["id"], cover_id=original["id"])
-        task = self.w.chat.enqueue({"kind": "document", "target_id": original["id"], "instruction": "Use my name"})
+    def test_legacy_letter_edit_task_is_readable_but_cannot_restart(self):
+        """Saved files survive; queued legacy customization does not trigger a model request."""
+        template = self.w.docs.import_file("Letter.docx", sample_docx(), "cover_template")
+        original = self.w.docs.create(template["id"], {}, "Original letter", job_id=self.job["id"])
+        task = {"id": "legacy-letter-edit", "kind": "document", "target_id": original["id"], "instruction": "Old edit",
+                "status": "queued", "draft_revision": 0, "reviews": {}, "document_ids": [], "result": None}
+        self.w.store.put("chat_task", task["id"], task)
         context = self.w.chat.get(task["id"])
-        payload = {"task_id": task["id"], "version": context["version"], "agent_id": "main-1",
-                   "result": {"edits": [{"id": block["id"], "text": "Alex Test", "fact_ids": ["identity.legal_name"]}], "issues": []}}
-        with patch.object(self.w, "client", side_effect=AssertionError("Provider access")):
-            result = self.w.chat.submit(payload)
-        self.assertNotEqual(result["task"]["document_ids"], [original["id"]])
-        self.assertEqual(self.w.store.get("job", self.job["id"])["cover_id"], original["id"])
-        self.assertIn("template:page:1", result["review"]["expected_checks"]["document_reviewer"])
+        self.assertEqual((context["task"]["status"], context["next_action"]), ("needs_input", "resolve_input"))
+        with patch.object(self.w.orchestrator.runner, "_request") as request:
+            with self.assertRaisesRegex(ValueError, "blocker"):
+                self.w.orchestrator.workflow.prepare(task["id"], "Continue")
+        request.assert_not_called()
         self.w.docs.verify(original["id"])
+        with self.assertRaisesRegex(ValueError, "customization is unavailable"):
+            self.w.chat.enqueue({"kind": "document", "target_id": original["id"]})
 
     def test_profile_coursework_list_becomes_plain_text_without_confirming_profile(self):
         """The former agent contract's list shape is normalized only for coursework."""

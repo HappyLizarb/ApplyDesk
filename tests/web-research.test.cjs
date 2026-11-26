@@ -8,7 +8,7 @@ const {start, dispatch} = require('../browser/worker.cjs');
 // A normal client-rendered careers page reads job details with a POST request.
 async function fixture() {
   const posts = [];
-  const description = 'Example Press\nPublishing Editor\nResponsibilities\nEdit nonfiction manuscripts and prepare production proofs.\nRequired qualifications\nBachelor degree in communication and experience with editorial production.\nCompensation\n$90000/yr';
+  const description = 'Example Circuits\nHardware Engineer\nResponsibilities\nBuild and validate electronic hardware for lab prototypes.\nRequired qualifications\nBachelor degree in electrical engineering and experience with circuit design.\nCompensation\n$90000/yr';
   const server = http.createServer((req, res) => {
     if (req.method === 'POST') posts.push(req.url);
     if (req.url === '/lookup') return res.end(description);
