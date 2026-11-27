@@ -1,8 +1,7 @@
 """Explicit ChatGPT-plan and provider-API connections share the single-agent workflow."""
 
 from .chatgpt_accounts import ChatGPTAccounts
-from .connection_models import API_PROVIDERS, CONNECTION_SOURCES, catalog_models, validate_provider
-from .model_catalog import list_models
+from .model_catalog import API_PROVIDERS, CONNECTION_SOURCES, catalog_models, list_models, validate_provider
 from .providers import _validate_key
 
 

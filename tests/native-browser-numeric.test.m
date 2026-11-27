@@ -1,5 +1,4 @@
-#import "../native-browser-numeric.h"
-#import "../native-browser-input.h"
+#import "../native/native-browser.h"
 
 // Geometry and structure come from the two observed native year controls, without any applicant data.
 static void numericWrapperEvidence(void) {

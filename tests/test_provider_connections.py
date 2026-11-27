@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from applydesk.agent_connections import AgentConnections
 from applydesk.agent_settings import AgentSettings
-from applydesk.connection_models import catalog_models
+from applydesk.model_catalog import catalog_models
 from applydesk.orchestrator_http import orchestrator_action
 from test_agent_connections import MemoryStore
 

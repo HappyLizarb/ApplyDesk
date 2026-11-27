@@ -1,6 +1,9 @@
 """One chat agent with automatic queue routing and local draft validation."""
 
 import json
+import os
+import subprocess
+import sys
 import threading
 
 from .agent_contract import object_fields, string
@@ -13,10 +16,9 @@ from .chatgpt_auth import ChatGPTSignIn
 from .chatgpt_inference import ChatGPTRunner, output_text
 from .chatgpt_transport import AccountError
 from .orchestrator_prompts import MASTER
-from .orchestrator_tools import MasterTools, master_tools, run_report
+from .orchestrator_tools import MasterTools, ToolProgress, master_tools, run_report
 from .orchestrator_workflow import DraftWorkflow
-from .tool_progress import ToolProgress
-from .application_window import status as application_browser_status
+from .application_session import status as application_browser_status
 
 
 class Orchestrator:
@@ -33,6 +35,8 @@ class Orchestrator:
         self.tools = MasterTools(self, self.workflow)
         self.stop, self.cancelled, self.wake = threading.Event(), threading.Event(), threading.Event()
         self.thread, self.active = None, None
+        self._sleep_lock = threading.Lock()
+        self._sleep_assertion = None
         self.paused = workspace.store.get("agent_control", "main", {}).get("paused", False)
         self.generation, self.attempted = 0, {}
         self.error = ""
@@ -65,9 +69,7 @@ class Orchestrator:
         self.auto_start.forget()
         message = self.history.add("user", text, "queued")
         if self.active:
-            self.cancelled.set()
-            self.runner.cancel()
-            self.w.application_browser.interrupt()
+            self.interrupt()
         self.wake.set()
         return {"message_id": message["id"], "status": "queued"}
 
@@ -81,10 +83,7 @@ class Orchestrator:
         if self.paused:
             if not automatic:
                 self.auto_start.disable()
-            self.cancelled.set()
-            self.runner.cancel()
-            self.w.application_browser.interrupt()
-            self.w.recommendations.cancel_all("Paused by the user.")
+            self.interrupt()
         else:
             self.error = ""
         self.wake.set()
@@ -97,7 +96,6 @@ class Orchestrator:
             self.control({"paused": True})
             self.history.clear()
             self.error = ""
-            self.w.recommendations.cancel_all("Stopped when chat was reset.")
         return {"cleared": True, "paused": True}
 
     def retry(self, data):
@@ -118,6 +116,29 @@ class Orchestrator:
         """Run cancellation and account identity are checked again immediately before commits."""
         if self.stop.is_set() or self.paused or self.cancelled.is_set() or self.generation != self.accounts.generation:
             raise InterruptedError("Paused or account changed. No further draft changes were saved.")
+
+    def prevent_idle_sleep(self):
+        """Let the display sleep while macOS keeps the active agent turn running."""
+        with self._sleep_lock:
+            self.check_active()
+            if sys.platform == "darwin" and self._sleep_assertion is None:
+                self._sleep_assertion = subprocess.Popen(
+                    ["/usr/bin/caffeinate", "-i", "-w", str(os.getpid())], stdin=subprocess.DEVNULL)
+
+    def allow_idle_sleep(self):
+        """Release the process-owned assertion once, including when Pause races completion."""
+        with self._sleep_lock:
+            if self._sleep_assertion is not None:
+                self._sleep_assertion.kill()
+                self._sleep_assertion.wait()
+                self._sleep_assertion = None
+
+    def interrupt(self):
+        """Withdraw active work and its sleep assertion before interrupting blocking I/O."""
+        self.cancelled.set()
+        self.allow_idle_sleep()
+        self.runner.cancel()
+        self.w.application_browser.interrupt()
 
     def run_agent(self, role, prompt, inputs, context=None, tools=None):
         """Record sequential steps of the same agent; only chat prose is streamed."""
@@ -187,12 +208,14 @@ class Orchestrator:
                         self.cancelled.clear()
                         self.generation = self.accounts.generation
                 if work:
+                    self.prevent_idle_sleep()
                     self._perform(work)
             except Exception as exc:
                 if not self.stop.is_set():
                     self.error = str(exc)[:1000]
                     self.control({"paused": True}, automatic=True)
             finally:
+                self.allow_idle_sleep()
                 self.active = None
 
     def _perform(self, work):
@@ -202,11 +225,7 @@ class Orchestrator:
                 return
             message = work.get("message")
             work.setdefault("retry_binding", self.auto_start.binding(work))
-            if message:
-                message["status"] = "running"
-                self.w.store.put("chat_message", message["id"], message)
-            assistant = self.history.add("assistant", "", "running", request_id=message["id"] if message else None)
-            self.history.live = assistant.copy()
+            assistant = self.history.begin_turn(message)
         text = message["text"] if message else f"Automatically prepare the already-authorized queued draft task {work['task_id']}. Use prepare_task and report actual results."
         if work.get("auto_restart"):
             text = "Continue this unfinished request after a usage-limit interruption. Reuse saved results; do not repeat completed work.\n\n" + text
@@ -270,12 +289,9 @@ class Orchestrator:
     def close(self):
         """Stop callbacks and inference before closing SQLite; unfinished tasks remain resumable."""
         self.stop.set()
-        self.cancelled.set()
+        self.interrupt()
         self.wake.set()
-        self.runner.cancel()
         self.signin.cancel()
-        self.w.application_browser.interrupt()
-        self.w.recommendations.cancel_all("Stopped when ApplyDesk closed.")
         with self.accounts.lock:
             pass  # Wait for any token renewal or model-list write before SQLite closes.
         if self.thread and self.thread is not threading.current_thread():

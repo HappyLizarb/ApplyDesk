@@ -93,11 +93,15 @@ async function searchChecks(page, fixture) {
   await page.reload();
   await page.click('[data-find-first]');
   await page.waitForSelector('#assistant-panel:visible');
+  assert.equal(fixture.writes.filter(item => item.path === '/api/orchestrator/send').length, 0);
+  const input=page.locator('#assistant-input');
+  assert.match(await input.inputValue(), /Publishing/);
+  await input.fill('Find entry-level publishing roles.');
+  await page.click('#send-assistant');
+  await page.waitForFunction(()=>document.querySelector('#assistant-input').value==='');
   const request = fixture.writes.find(item => item.path === '/api/orchestrator/send');
   assert.ok(request, 'Find jobs queues a scoped chat search');
-  assert.match(request.data.message, /Publishing/);
-  assert.match(request.data.message, /Entry level/);
-  assert.match(request.data.message, /Google X-ray/);
+  assert.equal(request.data.message, 'Find entry-level publishing roles.');
   assert.equal(fixture.writes.filter(item => item.path === '/api/recommendations/begin').length, 0);
   await page.goto(origin + '/#profile');
   assert.equal(await page.locator('#job-platforms,[data-source-start]').count(), 0);
@@ -145,7 +149,7 @@ async function modelCatalogChecks(page, fixture) {
 // Archived letters remain readable without controls that generate or edit them.
 async function readOnlyDocumentChecks(page, fixture) {
   const before=fixture.writes.length;
-  await page.evaluate(() => import('/editor.js').then(module=>module.openEditor('old-cover')));
+  await page.evaluate(() => import('/documents.js').then(module=>module.openEditor('old-cover')));
   await page.getByTitle('Saved document preview').waitFor();
   assert.equal(await page.locator('#save-document,#agent-toggle,[data-block],#ask-document-agent').count(),0);
   assert.equal(await page.getByRole('link',{name:'Download PDF'}).count(),1);

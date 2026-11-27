@@ -3,7 +3,7 @@
 from urllib.parse import urlsplit
 
 from .intelligence import validate_eligibility
-from .mapping import COVER_LETTER_REQUIRED
+from .application_policy import COVER_LETTER_REQUIRED
 from .profile import empty_profile, public_job_url, validate_profile
 
 

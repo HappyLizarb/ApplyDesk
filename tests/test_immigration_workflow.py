@@ -17,7 +17,7 @@ def confirmed_authorization(workspace, status="f1_opt", restrictions=""):
 
 class ImmigrationApplicationTests(unittest.TestCase):
     def setUp(self):
-        self.case = public_applications.PublicApplicationTests()
+        self.case = public_applications.PublicApplicationFixture()
         self.case.setUp()
         self.addCleanup(self.case.tearDown)
 
@@ -34,7 +34,7 @@ class ImmigrationApplicationTests(unittest.TestCase):
         run = self.case.run_public()
         self.assertEqual(run["attempted_count"], 0)
         self.assertTrue(all(result["status"] == "skipped" for result in run["results"]))
-        self.assertTrue(all("fill" not in browser.methods for browser in self.case.browsers))
+        self.assertTrue(all(not browser.name for browser in self.case.browsers))
 
     def test_conditional_authorization_becomes_needs_input_not_excluded(self):
         confirmed_authorization(self.case.w, "f1_stem_opt", "Employment must relate to my degree")
@@ -42,7 +42,7 @@ class ImmigrationApplicationTests(unittest.TestCase):
         run = self.case.run_public()
         self.assertEqual(run["attempted_count"], 0)
         self.assertTrue(all(result["status"] == "needs_review" for result in run["results"]))
-        self.assertTrue(all("fill" not in browser.methods for browser in self.case.browsers))
+        self.assertTrue(all(not browser.name for browser in self.case.browsers))
 
     def test_confirmed_citizen_can_pass_an_explicit_citizen_requirement(self):
         confirmed_authorization(self.case.w, "us_citizen")

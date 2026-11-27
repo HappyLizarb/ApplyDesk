@@ -7,8 +7,7 @@ from pathlib import Path
 
 from applydesk.server import AppServer
 from applydesk.workspace import Workspace
-from applydesk.startup import LocalInstance, open_window
-from applydesk.lifecycle import close_window
+from applydesk.lifecycle import LocalInstance, close_window, open_window
 
 
 def main():

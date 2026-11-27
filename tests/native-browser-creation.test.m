@@ -1,4 +1,4 @@
-#import "../native-browser-window.h"
+#import "../native/native-browser.h"
 #include <unistd.h>
 
 static NSDictionary *nodes;
@@ -34,7 +34,7 @@ AXError AXUIElementCopyAttributeValue(AXUIElementRef element, CFStringRef key, C
     return *value ? kAXErrorSuccess : kAXErrorAttributeUnsupported;
 }
 
-#include "../native-browser-window.m"
+#include "../native/native-browser-window.m"
 
 // Duplicate geometry is deliberate: the identities, not their identical rectangles, distinguish old and new.
 static NSDictionary *cgWindow(NSUInteger identity, CGRect rect) {

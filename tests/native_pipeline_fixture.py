@@ -54,7 +54,7 @@ class NativeWindow:
         if method not in {"open", "native_observe", "native_action"}:
             raise AssertionError("Forbidden DOM or legacy browser method: " + method)
         if method == "open":
-            assert parameters["url"] == self.job["url"]
+            assert parameters == {"url": self.job["url"], "listing_only": True}
         elif method == "native_action":
             assert parameters["snapshot_id"] == self.page["snapshot_id"]
             self.act(parameters)
@@ -93,8 +93,12 @@ class NativeWindow:
 class NativePipelineFixture(ChatFixture):
     """Configure the real workspace, master runner and durable store around synthetic I/O."""
 
+    job_count = 5
+
     def setUp(self):
         super().setUp()
+        # Synthetic viewports settle synchronously after every action.
+        self.enterContext(patch("applydesk.native_page.time"))
         self.engine = self.w.orchestrator
         self.w.store.put("chatgpt", "accounts", {"active": "test", "accounts": [{"id": "test",
             "label": "Test", "client_id": "oaiapp_test", "subject": "subject", "connected": True}]})
@@ -103,13 +107,14 @@ class NativePipelineFixture(ChatFixture):
         profile["industries"] = [{"name": "Hardware", "years": "0"}]
         profile["preferences"]["levels"] = ["Entry"]
         self.w.save_profile(profile)
-        self.jobs = [self.listing(index) for index in range(5)]
+        self.jobs = [self.listing(index) for index in range(self.job_count)]
         message = self.engine.history.add("user", "Please submit five new-grad hardware applications anywhere using my unchanged resume.")
         self.engine.active = {"message": message}
         self.intent = {"action": "start", "run_id": "", "authorization_message_id": message["id"],
             "limit": 5, "locations": ["Anywhere"], "instruction": message["text"], "resume_id": "resume", "issues": []}
         self.windows, self.requests, self.roles, self.upload_calls = {}, [], [], []
         self.missing_receipt = None
+        self.browsers = []
 
     def listing(self, index):
         """Five unfamiliar public hosts share no adapter or known employer rules."""
@@ -123,18 +128,17 @@ class NativePipelineFixture(ChatFixture):
         job = self.w.store.add_job(url)
         return self.w.store.job(job["id"], company=company, title=title, public_source=source)
 
-    def browser(self, _engine, _root, **options):
-        """Opening an application must request the production agent-driven branch."""
-        assert options["agent_driven"] is True
-        identity = options["job_id"]
-        job = next(job for job in self.jobs if job["id"] == identity)
-        window = NativeWindow(self.w, job, self.jobs.index(job) % 2 == 1, identity != self.missing_receipt)
-        self.windows[identity] = window
+    def browser(self, _engine, *, job_id):
+        """Create a visible test window from the current saved listing."""
+        job = self.w.store.get("job", job_id)
+        window = NativeWindow(self.w, job, len(self.browsers) % 2 == 1, job_id != self.missing_receipt)
+        self.windows[job_id] = window
+        self.browsers.append(window)
         return window
 
     def upload(self, session, workspace, job, profile, page, decision):
         """Mock only the separately tested picker, retaining real selected-document bytes and hashes."""
-        assert decision["document_id"] == job["resume_id"] == "resume"
+        assert decision["document_id"] == job["resume_id"]
         assert decision["element_id"] == "upload" and page["native"] is True
         document = workspace.docs.get(decision["document_id"])
         source = workspace.docs.asset(document["source_path"])
@@ -160,8 +164,9 @@ class NativePipelineFixture(ChatFixture):
         elif prompt == ai_prompts.ANALYZE:
             result = self.analysis(data)
         elif prompt == SCOPE_PROMPT:
-            result = {"matches": True, "industry": "Hardware", "level": "Entry", "location": "Anywhere",
-                "issues": [], "quotes": {"industry": "hardware", "level": "Entry", "location": ""}}
+            result = {"matches": True, "industry": "Hardware", "level": "Entry", "location": self.intent["locations"][0],
+                "issues": [], "quotes": {"industry": "hardware", "level": "Entry",
+                                         "location": "" if self.intent["locations"] == ["Anywhere"] else "Boston"}}
         elif prompt == PAGE_PROMPT:
             result = self.decision(data)
         elif prompt == RECEIPT_PROMPT:
@@ -192,7 +197,7 @@ class NativePipelineFixture(ChatFixture):
                 "element_id": "name", "text": "Alex Test", "replace": True, "intent": "answer", "fact_ids": fact}]}
         if not data["uploaded"]:
             return {"action": "upload", "purpose": "Select the unchanged resume.",
-                    "element_id": "upload", "document_id": "resume", "kind": "resume"}
+                    "element_id": "upload", "document_id": next(doc["id"] for doc in data["documents"] if doc["kind"] == "resume"), "kind": "resume"}
         answer = {"quote": "Name: Alex Test", "fact_ids": fact}
         review = {"final_element_id": "send", "company_quote": job["company"], "title_quote": job["title"],
             "resume_quote": "Resume: original.pdf", "required_complete": True, "checked_all_steps": True,
@@ -200,12 +205,12 @@ class NativePipelineFixture(ChatFixture):
         review["answers" if name else "summaries"] = [{**answer, "element_id": "name", "value": "Alex Test"} if name else answer]
         return {"action": "review", "purpose": "Check all answers and the selected file.", "review": review}
 
-    def run_applications(self):
+    def run_applications(self, job_ids=None):
         """Leave all pipeline code real; replace only external model and native I/O boundaries."""
         with patch("applydesk.application_automation.ApplicationSession", side_effect=self.browser):
             with patch.object(self.engine.runner, "_request", side_effect=self.model):
                 with patch("applydesk.native_agent.upload", side_effect=self.upload):
-                    return self.engine.applications.start()
+                    return self.engine.applications.start(job_ids)
 
 
 class NativeReviewFixture:

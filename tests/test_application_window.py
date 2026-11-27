@@ -4,9 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from chat_helpers import ChatFixture
-from applydesk.application_session import ApplicationSession
-from applydesk.application_window import show_application, status
-from applydesk.browser_bridge import BrowserError, BrowserSession
+from applydesk.application_session import show_application, status
 from applydesk.orchestrator_http import orchestrator_action
 
 
@@ -23,31 +21,6 @@ class ApplicationWindowTests(ChatFixture):
         manager.browser, manager.workspace_id = self.browser, "fixture-browser"
         manager.jobs, manager.last_job_id = [self.job["id"]], self.job["id"]
 
-    def test_chrome_approval_requires_explicit_idle_opt_in(self):
-        """Only this user's boolean consent enables approval; active work cannot change it."""
-        self.assertIsNot(self.w.settings().get("chrome_auto_approval"), True)
-        self.w.orchestrator.active = None
-        result = orchestrator_action(self.w, "chrome-approval", {"enabled": True})
-        self.assertEqual(result, {"enabled": True})
-        self.assertIs(self.w.settings()["chrome_auto_approval"], True)
-        for data in [{}, {"enabled": "yes"}, {"enabled": True, "extra": True}]:
-            with self.assertRaises(ValueError):
-                orchestrator_action(self.w, "chrome-approval", data)
-        self.w.orchestrator.active = {"message": {"id": "running"}}
-        with self.assertRaisesRegex(ValueError, "Stop the agent"):
-            orchestrator_action(self.w, "chrome-approval", {"enabled": False})
-        self.w.orchestrator.active = None
-        orchestrator_action(self.w, "chrome-approval", {"enabled": False})
-        self.assertIs(self.w.settings()["chrome_auto_approval"], False)
-
-    def test_chrome_approval_cannot_extend_to_source_or_research_browsers(self):
-        """The permission stays scoped to an existing visible application workspace."""
-        for options in [{}, {"source": "linkedin"}, {"research": True}]:
-            with self.assertRaises(BrowserError):
-                BrowserSession(self.w.root, auto_approve_chrome=True, **options)
-        browser = BrowserSession(self.w.root, application_workspace=True, existing_chrome=True,
-                                 auto_approve_chrome=True)
-        self.assertIs(browser.options["autoApproveChrome"], True)
 
     def test_status_keeps_the_last_live_application_after_a_run_finishes(self):
         """Retained completed or blocked tabs remain inspectable without resuming work."""
@@ -106,13 +79,3 @@ class ApplicationWindowTests(ChatFixture):
         for value in invalid:
             with self.subTest(value=value), self.assertRaises(ValueError):
                 orchestrator_action(self.w, "show-application", {"bounds": value})
-
-    def test_pause_prevents_the_queued_show_command_from_resuming_work(self):
-        """The existing cancellation boundary applies even to presentation-only browser commands."""
-        engine = SimpleNamespace(check_active=Mock(side_effect=InterruptedError("Paused")))
-        browser = Mock()
-        with patch("applydesk.application_session.BrowserSession", return_value=browser):
-            session = ApplicationSession(engine, self.w.root)
-        with self.assertRaises(InterruptedError):
-            session.call("show")
-        browser.call.assert_not_called()

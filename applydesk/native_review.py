@@ -6,13 +6,13 @@ from copy import deepcopy
 from difflib import get_close_matches
 from urllib.parse import urlsplit
 
-from .application_answers import current_company_answer
+from .agent_context import current_company_answer
 from .intelligence import _evidence_errors, _facts
 from .native_evidence import BINDING, INPUT_ROLES, evidence_digest, page_text, quoted, review_context, validate_agreement, validate_consent
 from . import application_terms
-from .readiness import _version_issues
+from .native_evidence import version_issues
 from .public_source import matches_saved_requisition_form, reopened_account_draft
-from .recommendation_checks import same_workday_job
+from .recommendation_source import same_workday_job
 
 
 class NativeReviewError(ValueError):
@@ -31,7 +31,7 @@ def validate_review(workspace, job, profile, page, uploads, evidence, review):
     if not isinstance(review, dict) or not isinstance(evidence, list):
         raise ValueError("The final native application review is missing.")
     current = workspace.store.get("job", job["id"]) or {}
-    issues = _version_issues(job, current, profile)
+    issues = version_issues(job, current, profile)
     final = next((item for item in page.get("elements", []) if item.get("id") == review.get("final_element_id")), {})
     if not page.get("snapshot_id") or not page.get("native") or page.get("loading"):
         issues.append("Inspect the current visible application page before submitting.")

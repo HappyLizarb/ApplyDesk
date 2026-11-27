@@ -7,15 +7,13 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from chat_helpers import ChatFixture
-from recommendation_helpers import listing
-from test_public_applications import public_source
+from recommendation_helpers import public_source, saved_listing
 from applydesk.public_source import validate_public_analysis, validate_public_page, validate_public_source
 from applydesk.application_public_source import recently_screened_draft, native_form_entry
 from applydesk.storage import now
 from applydesk.applications import Applications
 from applydesk.orchestrator_tools import MasterTools, master_tools
-from applydesk.public_discovery import google_xray_query, require_public_listing
-from applydesk.recommendation_source import normalize_job
+from applydesk.discovery import canonical_url, google_xray_query, page_problem, require_public_listing
 
 
 class PublicSearchToolTests(unittest.TestCase):
@@ -70,7 +68,7 @@ class HistoricalPublicRoutingTests(ChatFixture):
 
     def setUp(self):
         super().setUp()
-        self.source = normalize_job("linkedin", listing())
+        self.source = saved_listing()
         job = self.w.store.add_job(self.source["source_url"])
         self.job = self.w.store.job(job["id"], company=self.source["company"], title=self.source["title"],
             recommendation_source=copy.deepcopy(self.source), native_application=True)
@@ -78,19 +76,21 @@ class HistoricalPublicRoutingTests(ChatFixture):
         self.browser = Mock()
         self.browser.call.return_value = self.page
         self.factory = Mock(return_value=self.browser)
-        self.app = Applications(self.w, agent_driven=True, session_factory=self.factory)
+        self.browser.manager.native = True
+        self.client = Mock()
+        self.client.ask.return_value = {"same_posting": True, "company": self.source["company"], "title": self.source["title"]}
+        self.app = Applications(self.w, client=lambda role: self.client, session_factory=self.factory)
 
     def describe(self):
-        """Any source-browser or credential-transfer call makes this production-path test fail."""
+        """Refresh the stored job using its observed employer destination and a synthetic native tab."""
         with patch("applydesk.application_public_source.public_job_url", side_effect=lambda url: url):
-            with patch.object(self.w.recommendations, "read_job", side_effect=AssertionError("No platform reader")):
-                return self.app._description(self.w.store.get("job", self.job["id"]))
+            return self.app._description(self.w.store.get("job", self.job["id"]))
 
     def test_old_job_reopens_observed_employer_without_platform_flags_or_history_changes(self):
         _, page = self.describe()
-        self.browser.call.assert_called_once_with("open", {"url": self.source["employer_url"]})
-        self.assertNotIn("application_source", self.factory.call_args.kwargs)
-        self.assertIs(self.factory.call_args.kwargs["agent_driven"], True)
+        self.browser.call.assert_called_once_with("open", {"url": self.source["employer_url"], "listing_only": True})
+        self.factory.assert_called_once_with(job_id=self.job["id"])
+        self.assertEqual(self.client.ask.call_args.args[1]["source"], self.source)
         current = self.w.store.get("job", self.job["id"])
         self.assertEqual(current["recommendation_source"], self.source)
         self.assertEqual(current["url"], self.source["source_url"])
@@ -113,6 +113,25 @@ class HistoricalPublicRoutingTests(ChatFixture):
                 self.describe()
             self.assertNotIn("public_source", self.w.store.get("job", self.job["id"]))
             self.assertEqual(self.w.store.get("job", self.job["id"])["recommendation_source"], self.source)
+
+    def test_new_mandatory_experience_stops_a_historical_job_before_form_input(self):
+        """Reread employer requirements before applying with an older saved recommendation."""
+        requirement = "Three years of professional SQL experience are required."
+        self.page["text"] += "\n" + requirement
+        review = {"company": self.source["company"], "title": self.source["title"],
+                  "country": "US", "category": "General", "details": self.page["text"],
+                  "required": [{"text": requirement, "met": False, "evidence_ids": []}], "preferred": [],
+                  "requirements_complete": True, "cover_letter_required": False, "process_complete": True,
+                  "identity_consistent": True, "employment_type_consistent": True,
+                  "process_restrictions": [], "consistency_issues": []}
+        self.client.ask.side_effect = [self.client.ask.return_value, review]
+        with patch("applydesk.application_public_source.public_job_url", side_effect=lambda url: url):
+            result = self.app.prepare(self.job["id"])
+        self.assertIn(requirement, self.client.ask.call_args.args[1]["page"]["text"])
+        self.assertIn(requirement, " ".join(result["exceptions"]))
+        self.assertIn(result["status"], {"needs_review", "skipped"})
+        self.assertEqual(self.w.store.all("submission_attempt"), [])
+        self.browser.call.assert_called_once_with("open", {"url": self.source["employer_url"], "listing_only": True})
 
     def test_disabled_platform_preferences_do_not_hide_historical_saved_jobs(self):
         self.w.store.put("recommendation_preference", "linkedin", {"enabled": False})
@@ -206,3 +225,24 @@ class PublicSourceTests(unittest.TestCase):
         for change in ({"company": "Another Company"}, {"title": "Senior Analyst"}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 validate_public_analysis(public_source(), {"company": "Example Co", "title": "Analyst", **change})
+
+
+URL = "https://careers.example.com/jobs/123/software-engineer"
+TEXT = ("Acme is hiring a Software Engineer in San Francisco, US. Remote work is available in the US. "
+        "You will build software with a collaborative engineering team. Required qualifications include "
+        "three years of production software experience, Python and clear written communication.")
+PAGE = {"url": URL, "source_url": URL, "title": "Software Engineer at Acme", "text": TEXT}
+
+
+class DiscoveryValidationTests(unittest.TestCase):
+    def test_canonical_aliases_keep_job_identifiers(self):
+        greenhouse = "https://boards.greenhouse.io/acme/jobs/123?gh_jid=123&gh_src=mail&utm_campaign=x#app"
+        self.assertEqual(canonical_url(greenhouse), "https://job-boards.greenhouse.io/acme/jobs/123")
+        self.assertEqual(canonical_url("https://jobs.lever.co/acme/abc/apply?source=linkedin"), "https://jobs.lever.co/acme/abc")
+        self.assertNotEqual(canonical_url(URL + "?job=1"), canonical_url(URL + "?job=2"))
+
+    def test_closed_and_challenge_pages_are_not_listings(self):
+        for phrase in ("This job is no longer available", "Verify you are human", "Job has expired"):
+            self.assertTrue(page_problem({**PAGE, "text": phrase + TEXT}))
+        self.assertTrue(page_problem({**PAGE, "text": "Short"}))
+        self.assertEqual(page_problem(PAGE), "")

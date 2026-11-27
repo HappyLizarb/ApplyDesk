@@ -1,6 +1,5 @@
 """Evidence-bound AI tasks with deterministic checks before any caller can act."""
 
-import json
 import re
 from collections import Counter
 
@@ -138,37 +137,3 @@ def validate_eligibility(analysis, profile) -> dict:
     immigration = check_immigration(profile, analysis.get("source_text", ""), analysis.get("country", ""), required if isinstance(required, list) else [])
     return {"eligible": not reasons and immigration["eligible"], "reasons": reasons + immigration["reasons"],
             "needs_input": immigration["needs_input"]}
-
-
-def _field_errors(profile, snapshot, expected):
-    """Compare actual values exactly; semantic equivalence cannot erase mismatches."""
-    fields = snapshot.get("fields", [])
-    counts = Counter(field.get("id") for field in fields if isinstance(field, dict)
-                     and isinstance(field.get("id"), str))
-    actual = {field["id"]: field for field in fields if isinstance(field, dict)
-              and isinstance(field.get("id"), str) and counts[field["id"]] == 1}
-    facts, issues = _facts(profile), []
-    for item in expected:
-        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
-            issues.append("An expected field has an invalid identity.")
-            continue
-        field_id = item["id"]
-        if field_id not in actual:
-            issues.append(f"Field {field_id} is missing or ambiguous on the live page.")
-        elif "value" not in item or "value" not in actual[field_id] or json.dumps(
-            actual[field_id]["value"], sort_keys=True
-        ) != json.dumps(item["value"], sort_keys=True):
-            issues.append(f"Field {field_id} does not match the intended value.")
-        issues.extend(f"Field {field_id}: {error}" for error in
-                      _evidence_errors(item.get("fact_ids"), facts))
-    return issues
-
-
-def audit_fields(profile, snapshot, expected) -> dict:
-    """Check live readbacks and confirmed evidence without another model request."""
-    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("fields"), list):
-        return {"passed": False, "issues": ["The live form snapshot is unavailable."]}
-    if not isinstance(expected, list) or not expected:
-        return {"passed": False, "issues": ["No expected field evidence was supplied."]}
-    issues = _field_errors(profile, snapshot, expected)
-    return {"passed": not issues, "issues": issues}

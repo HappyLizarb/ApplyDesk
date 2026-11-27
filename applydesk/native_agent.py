@@ -2,8 +2,8 @@
 
 from .account_scope import bound_signin_host, employer_key, is_registration_link, is_signin_switch
 from .workday_skill import adapt_context
-from .application_answers import with_application_source
-from .browser_bridge import BrowserError
+from .agent_context import with_application_source
+from .native_browser import BrowserError
 from .employer_accounts import EmployerAccounts
 from .native_agent_prompt import PAGE_PROMPT
 from .native_page import return_to_listing

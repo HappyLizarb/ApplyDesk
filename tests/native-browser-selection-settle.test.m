@@ -1,5 +1,4 @@
-#import "../native-browser-input.h"
-#import "../native-browser-window.h"
+#import "../native/native-browser.h"
 #import <Carbon/Carbon.h>
 #include <unistd.h>
 
@@ -75,7 +74,7 @@ static uint32_t fixtureJitter(uint32_t upper) { return 15000; }
 #define ADNativeAttribute fixtureAttribute
 #define AXUIElementCreateApplication fixtureApplication
 #define AXUIElementSetAttributeValue fixtureSetValue
-#include "../native-browser-input.m"
+#include "../native/native-browser-input.m"
 #undef AXUIElementSetAttributeValue
 #undef AXUIElementCreateApplication
 #undef ADNativeAttribute

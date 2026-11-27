@@ -4,14 +4,12 @@ import hashlib
 import re
 from datetime import datetime, timedelta, timezone
 
-from .discovery import page_problem
+from .discovery import page_problem, require_public_listing
 from .profile import public_job_url
 from .native_page import public_page
 from .native_evidence import quoted
-from .public_discovery import require_public_listing
 from .public_source import matches_saved_requisition_form, validate_public_page, validate_public_source
-from .recommendation_checks import employer_target, same_workday_application, validate_employer_page, validate_source
-from .recommendation_source import source_identity
+from .recommendation_source import employer_target, same_workday_application, source_identity, validate_source
 from .storage import now
 
 
@@ -71,16 +69,10 @@ def public_recommendation(app, job):
     source_identity(source["platform"], source["source_url"], source["job_id"])
     target = _employer_destination(source, saved)
     target = public_job_url(require_public_listing(target))
-    session = app._session({**job, "native_application": False})
+    session = app._session(job)
     page = public_page(session, target, listing_only=True)
     require_public_listing(page.get("url", ""))
-    identity = source
-    if page.get("native"):
-        identity = _native_identity(app, source, page)
-    elif saved:
-        validate_public_page(saved, page)
-    else:
-        validate_employer_page(source, page)
+    identity = _native_identity(app, source, page)
     text = page.get("text", "")
     capture = {"url": page["url"], "company": identity["company"], "title": identity["title"],
                "description": text, "description_sha256": hashlib.sha256(text.encode()).hexdigest(),

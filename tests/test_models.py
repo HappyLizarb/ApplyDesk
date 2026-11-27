@@ -7,76 +7,32 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from unittest.mock import Mock, patch
 
-from applydesk.model_catalog import list_models
-from applydesk.providers import MODEL_OPTIONS, ProviderClient, ProviderError, _NoRedirect, validate_settings
+from applydesk.model_catalog import API_PROVIDERS, list_models
+from applydesk.providers import ProviderError, _NoRedirect, validate_model_id
 
 
-def payload(provider, model, thinking="default"):
-    """Build a provider request without sending it."""
-    client = ProviderClient({"provider": provider, "model": model, "thinking": thinking}, "fictional-key")
-    return getattr(client, "_" + provider)("Return JSON", "{}", [])
-
-
-class ModelSettingsTests(unittest.TestCase):
-    """Presets get documented controls; custom names do not inherit those controls."""
-
-    def test_default_omits_reasoning_overrides_for_every_model(self):
-        for provider, models in MODEL_OPTIONS.items():
-            for model in [*models, "custom-future-model"]:
-                with self.subTest(provider=provider, model=model):
-                    _, _, body = payload(provider, model)
-                    self.assertNotIn("reasoning", body)
-                    self.assertNotIn("thinking", body)
-                    self.assertNotIn("output_config", body)
-                    self.assertNotIn("thinkingConfig", body.get("generationConfig", {}))
-
-    def test_old_saved_presets_keep_their_explicit_and_omitted_defaults(self):
-        defaults = {("openai", "gpt-5.4"): "none", ("openai", "gpt-5.4-mini"): "none",
-                    ("anthropic", "claude-sonnet-4-6"): "none", ("anthropic", "claude-haiku-4-5"): "none",
-                    ("google", "gemini-3.8-flash"): "low"}
-        for (provider, model), default in defaults.items():
-            settings = {"provider": provider, "model": model}
-            self.assertEqual(validate_settings(settings)["thinking"], default)
-            for thinking in (default, "low", "medium", "high"):
-                explicit = {**settings, "thinking": thinking}
-                self.assertEqual(validate_settings(explicit), explicit)
-
-    def test_new_presets_use_their_documented_parameter_names(self):
-        self.assertEqual(payload("openai", "gpt-6.1-sol", "max")[2]["reasoning"], {"effort": "max"})
-        for model in ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"):
-            body = payload("anthropic", model, "xhigh")[2]
-            self.assertEqual(body["output_config"], {"effort": "xhigh"})
-            self.assertNotIn("thinking", body)
-        sonnet = payload("anthropic", "claude-sonnet-4-6", "max")[2]
-        self.assertEqual(sonnet["thinking"], {"type": "adaptive"})
-        haiku = payload("anthropic", "claude-haiku-4-5", "medium")[2]
-        self.assertEqual(haiku["thinking"], {"type": "enabled", "budget_tokens": 4096})
-        config = payload("google", "gemini-3.6-flash", "minimal")[2]["generationConfig"]
-        self.assertEqual(config["thinkingConfig"], {"thinkingLevel": "minimal"})
-
-    def test_unknown_models_accept_only_default_and_preserve_the_id(self):
-        for provider in MODEL_OPTIONS:
-            settings = {"provider": provider, "model": "my-future-model"}
-            self.assertEqual(validate_settings(settings), {**settings, "thinking": "default"})
-            for thinking in ("none", "low", "high", "max", None, {}):
-                with self.subTest(provider=provider, thinking=thinking), self.assertRaises(ProviderError):
-                    validate_settings({**settings, "thinking": thinking})
-        for model in ("gpt-6.1-sol", "gpt-6-astra"):
-            with self.assertRaises(ProviderError):
-                payload("openai", model, "none")
+class ModelValidationTests(unittest.TestCase):
+    """Model and credential validation runs before any provider request."""
 
     def test_model_identifiers_cannot_change_request_destinations(self):
         invalid = ["", None, 12, "../model", "https://evil.test/model", "model?key=secret", "model#suffix",
                    "model/other", "models/../model", "model%2Fother", "model\nHeader", " model", "模型", "a" * 201]
-        for provider in MODEL_OPTIONS:
+        for provider in API_PROVIDERS:
             for model in invalid:
                 with self.subTest(provider=provider, model=model), self.assertRaises(ProviderError):
-                    validate_settings({"provider": provider, "model": model})
+                    validate_model_id(provider, model)
         with self.assertRaises(ProviderError):
-            payload("google", "model:delete")
-        self.assertEqual(payload("openai", "ft:gpt-example:org:custom")[2]["model"], "ft:gpt-example:org:custom")
-        url, _, _ = payload("google", "models/gemini-3.8-flash")
-        self.assertEqual(url, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent")
+            validate_model_id("google", "model:delete")
+        self.assertEqual(validate_model_id("openai", "ft:gpt-example:org:custom"), "ft:gpt-example:org:custom")
+        self.assertEqual(validate_model_id("google", "models/gemini-example"), "gemini-example")
+
+    def test_malformed_json_from_a_model_catalog_is_rejected(self):
+        """Catalog responses must be a single JSON object with unambiguous values."""
+        for payload in (b'```json {}```', b'{"data":[],"data":[]}', b'{"value":NaN}', b'[]'):
+            opener = Mock()
+            opener.open.return_value = io.BytesIO(payload)
+            with patch("applydesk.providers.request.build_opener", return_value=opener), self.assertRaises(ProviderError):
+                list_models("openai", "fictional-key")
 
     def test_invalid_providers_and_keys_fail_before_network(self):
         with patch("applydesk.providers.request.build_opener") as opener:

@@ -1,4 +1,4 @@
-#import "../native-browser.h"
+#import "../native/native-browser.h"
 
 // Visible page inputs cannot impersonate the native address bar or supply page identity.
 static void addressIdentity(void) {

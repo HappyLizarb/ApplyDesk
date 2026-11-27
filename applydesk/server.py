@@ -10,7 +10,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import PROGRAM_ROOT
-from .agent_http import AgentRoutes, publish_connection
 from .document_deletion import DocumentDeletion
 from .employer_accounts import EmployerAccounts
 from .orchestrator_http import orchestrator_action
@@ -28,11 +27,10 @@ class AppServer(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", port), Handler)
         self.origin = f"http://127.0.0.1:{self.server_port}"
         self.launch_url = self.origin + "/start?token=" + self.token
-        publish_connection(self)
         workspace.orchestrator.start()
 
 
-class Handler(AgentRoutes, BaseHTTPRequestHandler):
+class Handler(BaseHTTPRequestHandler):
     """Serve only app assets and explicit actions; never expose arbitrary local files."""
 
     def log_message(self, *_):
@@ -72,8 +70,6 @@ class Handler(AgentRoutes, BaseHTTPRequestHandler):
     def do_GET(self):
         """All document previews and state requests share the same local session gate."""
         parsed = urlparse(self.path)
-        if parsed.path.startswith("/agent/v1/"):
-            return self.agent_request(parsed, "GET")
         if parsed.path == "/start":
             token = parse_qs(parsed.query).get("token", [""])[0]
             if hmac.compare_digest(token, self.server.token) and self.headers.get("Host") == self.server.origin.removeprefix("http://"):
@@ -91,9 +87,6 @@ class Handler(AgentRoutes, BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         if parsed.path == "/api/chat/task":
             return self._json(self.server.workspace.chat.get(query.get("id", [""])[0]))
-        if parsed.path == "/api/chat/guide":
-            from .agent_context import guide
-            return self._json(guide())
         if parsed.path == "/api/state":
             return self._json(self.server.workspace.state())
         if parsed.path == "/api/document":
@@ -119,8 +112,6 @@ class Handler(AgentRoutes, BaseHTTPRequestHandler):
 
     def do_POST(self):
         """Reject cross-site writes even if a browser happens to retain the cookie."""
-        if urlparse(self.path).path.startswith("/agent/v1/"):
-            return self.agent_request(urlparse(self.path), "POST")
         if not self._authorized() or self.headers.get("Origin") != self.server.origin or self.headers.get("X-ApplyDesk") != "1":
             return self._json({"error": "Invalid local app session or request origin."}, 403)
         try:
@@ -137,7 +128,7 @@ class Handler(AgentRoutes, BaseHTTPRequestHandler):
                 return self._json(self.server.workspace.remove_jobs(data))
             if path == "/api/job/status":
                 return self._json(self.server.workspace.store.set_board_status(data))
-            control = path == "/api/shutdown" or path.startswith("/api/orchestrator/") or path == "/api/recommendations/cancel"
+            control = path == "/api/shutdown" or path.startswith("/api/orchestrator/")
             if not control and any(task["status"] == "running" for task in self.server.workspace.tasks.values()):
                 raise ValueError("A task is running. Wait before changing the workspace.")
             with self.server.workspace.lock:
@@ -153,8 +144,6 @@ class Handler(AgentRoutes, BaseHTTPRequestHandler):
         if path.startswith("/api/orchestrator/"):
             return orchestrator_action(w, path.removeprefix("/api/orchestrator/"), data)
         routes = {"/api/profile": lambda: w.save_profile(data),
-                  "/api/chat/enqueue": lambda: w.chat.enqueue(data),
-                  "/api/recommendations/cancel": lambda: w.recommendations.cancel(data),
                   "/api/job/add": lambda: w.add_job(data), "/api/jobs/remove": lambda: w.remove_jobs(data),
                   "/api/import": lambda: w.start("import", w.import_file, data),
                   "/api/resume/tag": lambda: w.resumes.tag(data),
@@ -169,8 +158,7 @@ class Handler(AgentRoutes, BaseHTTPRequestHandler):
         """End the server after this response has been returned."""
         engine = self.server.workspace.orchestrator
         engine.stop.set()
-        engine.cancelled.set()
-        engine.runner.cancel()
+        engine.interrupt()
         engine.wake.set()
         threading.Thread(target=self.server.shutdown, daemon=True).start()
         return {"closed": True}

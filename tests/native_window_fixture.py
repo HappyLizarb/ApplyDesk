@@ -1,7 +1,7 @@
 """An ordinary browser window simulated with stable native tab identities and no OS input."""
 
 from types import SimpleNamespace
-from applydesk.browser_bridge import BrowserError
+from applydesk.native_browser import BrowserError
 
 
 class NativeWindowFixture:

@@ -2,7 +2,9 @@
 
 import hashlib
 import json
-from pathlib import Path
+import re
+from datetime import date
+from urllib.parse import urlsplit
 
 from .profile import model_profile
 
@@ -17,6 +19,44 @@ def screening_profile(workspace, profile, resume_choice):
         selected = workspace.resumes.selected(resume_choice["id"], resume_choice["sha256"])
         context["resumes"] = [source_record(workspace, selected["id"])]
     return context
+
+
+def with_application_source(profile, job):
+    """Supply the local signing date and known discovery source only while applying."""
+    host = (urlsplit(job.get("url", "")).hostname or "").lower()
+    today = date.today()
+    facts = [item for item in profile.get("facts", []) if item.get("id") != "application.discovery_source"
+             and not item.get("id", "").startswith("application.signing_date.")]
+    facts.append({"id": f"application.signing_date.{today.isoformat()}", "kind": "application_date",
+                  "text": f"Today's local date for a signature or certification: {today:%Y-%m-%d} ({today:%m/%d/%Y}).",
+                  "confirmed": True})
+    for domain, source in (("linkedin.com", "LinkedIn"), ("joinhandshake.com", "Handshake")):
+        if host == domain or host.endswith("." + domain):
+            facts.append({"id": "application.discovery_source", "kind": "application_source", "text": source, "confirmed": True})
+            break
+    return {**profile, "facts": facts, "application_company": job.get("company", "")}
+
+
+def current_company_answer(profile):
+    """A confirmed current-employer preference overrides history without changing any job entry."""
+    preferred = []
+    for fact in profile.get("facts", []):
+        if not fact.get("confirmed") or fact.get("kind") not in {"application_answer", "preference", "professional_experience"}:
+            continue
+        match = re.fullmatch(r"(?:Use as current employer: (.+)|Current Employer/Current Company: (.+) only\.)", fact.get("text", ""))
+        if match:
+            company = (match.group(1) or match.group(2)).strip()
+            if company:
+                preferred.append((company, fact["id"]))
+    if preferred:
+        companies = list(dict.fromkeys(company for company, _ in preferred))
+        return (companies[0], [fact_id for _, fact_id in preferred]) if len(companies) == 1 else None
+    current = [(index, row) for index, row in enumerate(profile.get("experiences", []))
+               if str(row.get("end", "")).strip().casefold() == "present" and row.get("company")]
+    if not current:
+        return None
+    companies = list(dict.fromkeys(row["company"] for _, row in current))
+    return "; ".join(companies), [f"experiences.{index}" for index, _ in current]
 
 
 def digest(value):
@@ -138,9 +178,3 @@ def draft_changed(task, inputs, material, current, version):
     legacy = {**material, "expected_checks": {"document_reviewer": checks["layout"], "application_auditor": checks["facts"]}}
     previous = digest({"inputs": inputs, "material": legacy, "draft_revision": task["draft_revision"]})
     return any(review["version"] != previous for review in task.get("reviews", {}).values())
-
-
-def guide():
-    """The bundled skill is inspectable guidance, not an override of host instructions."""
-    return {"protocol": "applydesk.chat.v1", "draft_only": True,
-            "instructions": (Path(__file__).parent / "CHAT_SKILL.md").read_text()}

@@ -1,18 +1,16 @@
 """Read public web pages and copy observed job details into the local tracker."""
 
 import hashlib
-import tempfile
 import uuid
 from urllib.parse import urlencode, urlsplit
 
 from .agent_contract import string
 from .application_session import ApplicationSession
-from .discovery import canonical_url, page_problem
-from .native_page import incomplete_capture_message
+from .discovery import canonical_url, page_problem, require_public_listing
+from .native_page import incomplete_capture_message, public_page
 from .profile import public_job_url
-from .public_discovery import require_public_listing
 from .public_source import validate_alternate_listing
-from .recommendation_checks import same_workday_job
+from .recommendation_source import same_workday_job
 from .storage import now
 
 SEARCH_ENGINES = {"google": "https://www.google.com/search?", "bing": "https://www.bing.com/search?",
@@ -49,13 +47,11 @@ class WebResearch:
         """Read visible page sections in the retained Chrome research tab."""
         owner = self._binding()
         target = public_job_url(require_public_listing(string(url, 8000)))
-        with tempfile.TemporaryDirectory(prefix="applydesk-web-") as directory:
-            session = self.session_factory(self.engine, directory, headless=True, research=True)
-            try:
-                from .native_page import public_page
-                page = public_page(session, target)
-            finally:
-                session.close()
+        session = self.session_factory(self.engine, research=True)
+        try:
+            page = public_page(session, target)
+        finally:
+            session.close()
         if self._binding() != owner:
             raise InterruptedError("The chat changed while the page was loading.")
         return self._capture(page, owner)

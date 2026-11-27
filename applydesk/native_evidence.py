@@ -203,3 +203,21 @@ def native_point(page, point):
     if not 0 <= x < image.get("width", 0) or not 0 <= y < image.get("height", 0):
         raise ValueError("The screenshot target is outside the observed window.")
     return {"x": x / scale, "y": y / scale}
+
+
+def version_issues(job, current_job, profile):
+    """A concurrent profile or document edit invalidates the prepared application."""
+    issues = []
+    revision = profile.get("revision")
+    if not profile.get("confirmed") or revision is None:
+        issues.append("The current profile has not been confirmed.")
+    if job.get("profile_revision") != revision or current_job.get("profile_revision") != revision:
+        issues.append("The profile changed after this application was screened.")
+    for key in ("id", "url", "resume_id", "cover_id"):
+        if job.get(key) != current_job.get(key):
+            issues.append(f"The application {key.replace('_', ' ')} changed during preparation.")
+    if not current_job.get("resume_id"):
+        issues.append("No current resume version is selected.")
+    if current_job.get("status") == "submitted":
+        issues.append("This application is already marked submitted.")
+    return issues

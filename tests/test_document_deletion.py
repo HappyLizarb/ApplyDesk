@@ -7,10 +7,10 @@ from unittest.mock import Mock, patch
 
 from chat_helpers import ChatFixture
 from applydesk.document_deletion import DocumentDeletion
-from applydesk.document_tasks import DocumentTasks
+from applydesk.documents import DocumentTasks
 from applydesk.documents import DocumentService
 from applydesk.server import AppServer
-from test_documents import sample_docx
+from test_documents import saved_letter
 
 
 class DocumentDeletionTests(ChatFixture):
@@ -80,9 +80,8 @@ class DocumentDeletionTests(ChatFixture):
 
     def test_template_deletion_keeps_independently_saved_letters_readable(self):
         """A selected template is physically removed without deleting a different letter version."""
-        template = self.w.docs.import_file("Cover.docx", sample_docx(), "cover_template")
-        self.w.save_settings({"cover_template_id": template["id"]})
-        letter = self.w.docs.create(template["id"], {}, "Existing letter", job_id=self.job["id"])
+        template, letter = saved_letter(self.w.docs, self.job["id"])
+        self.w.store.put("settings", "main", {**self.w.settings(), "cover_template_id": template["id"]})
         self.deletion.delete({"document_id": template["id"]})
         self.assertEqual(self.w.settings()["cover_template_id"], "")
         self.assertFalse((self.w.docs.root / template["id"]).exists())
@@ -139,7 +138,7 @@ class DocumentDeletionTests(ChatFixture):
         def partial_cleanup(directory):
             (directory / "page.png").unlink()
             raise OSError("Cannot remove remaining file")
-        with patch("applydesk.document_cleanup.shutil.rmtree", side_effect=partial_cleanup):
+        with patch("applydesk.document_deletion.shutil.rmtree", side_effect=partial_cleanup):
             result = self.deletion.delete({"document_id": "resume"})
         staged = self.w.docs.root / ".deleting-resume"
         self.assertTrue(result["cleanup_pending"])
@@ -187,7 +186,7 @@ class DocumentDeletionTests(ChatFixture):
 
     def test_failed_default_template_write_keeps_its_files_and_selection(self):
         """A failed settings update must not destroy the selected template first."""
-        template = self.w.docs.import_file("Cover.docx", sample_docx(), "cover_template")
+        template, _ = saved_letter(self.w.docs, self.job["id"])
         self.w.store.put("settings", "main", {**self.w.settings(), "cover_template_id": template["id"]})
         with patch.object(self.w.store, "put", side_effect=OSError("Database write failed")):
             with self.assertRaises(OSError):
@@ -204,7 +203,7 @@ class DocumentDeletionTests(ChatFixture):
         connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
         ui = {"Cookie": "applydesk=" + server.token, "Origin": server.origin,
               "X-ApplyDesk": "1", "Content-Type": "application/json"}
-        agent = {"Authorization": "Bearer " + server.agent_token, "Content-Type": "application/json"}
+        agent = {"Authorization": "Bearer retired-draft-token", "Content-Type": "application/json"}
         try:
             for headers, expected in ((agent, 403), (ui, 200)):
                 connection.request("POST", "/api/document/delete", json.dumps({"document_id": "resume"}), headers)

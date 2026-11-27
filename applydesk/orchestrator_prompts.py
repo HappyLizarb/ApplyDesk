@@ -1,6 +1,6 @@
 """System instructions and result contracts for the single ApplyDesk agent."""
 
-from .matching_policy import IMMIGRATION_ELIGIBILITY, QUALIFICATIONS, ROLE_FAMILIES
+from .application_policy import IMMIGRATION_ELIGIBILITY, QUALIFICATIONS, ROLE_FAMILIES
 
 SELF_CHECK = """You are ApplyDesk’s single agent. Before finishing, check your work again against
 the user’s request and available evidence, correct mistakes, and report unresolved issues.

@@ -1,14 +1,11 @@
-"""Saved public listings use the same audited application pipeline as connected sources."""
+"""Saved public listings use the native application pipeline and durable submission accounting."""
 
-import hashlib
 import json
-from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
-from chat_helpers import ChatFixture
-import test_application_automation as automation
+from native_pipeline_fixture import NativePipelineFixture
+from recommendation_helpers import public_source, saved_listing
 from test_orchestrator import response
-from test_workflow import BrowserFixture, snapshot
 from applydesk import ai_prompts
 from applydesk.orchestrator_prompts import SELF_CHECK
 from applydesk.application_client import STEP_BOUNDARY
@@ -17,42 +14,34 @@ from applydesk.application_submission import attempt_key
 from applydesk.application_intent import INTENT_PROMPT
 
 
-def public_source(url="https://careers.example.test/opening?id=101"):
-    """Use a complete synthetic posting whose URL need not resemble a particular ATS."""
-    description = ("Example Co Analyst. Entry hardware role in Boston. Full-time new-grad position. "
-                   "Python required. Responsibilities include testing electronic hardware and documenting laboratory results.")
-    return {"url": url, "company": "Example Co", "title": "Analyst", "description": description,
-            "description_sha256": hashlib.sha256(description.encode()).hexdigest(),
-            "captured_at": "2026-11-12T01:00:00+00:00", "complete": True}
+class PublicApplicationFixture(NativePipelineFixture):
+    """Two jobs share a synthetic authorization for one application in Boston."""
 
-
-class PublicApplicationTests(ChatFixture):
-    """Reuse model fixtures while exercising actual source selection, mapping and submission accounting."""
-
-    listing = automation.AutomationTests.listing
-    model = automation.AutomationTests.model
+    job_count = 0
+    run_public = NativePipelineFixture.run_applications
 
     def setUp(self):
-        """The connected-model fixture remains, while every job platform is disabled."""
         super().setUp()
-        self.engine = self.w.orchestrator
-        self.w.store.put("chatgpt", "accounts", {"active": "test", "accounts": [{"id": "test", "label": "Test", "client_id": "oaiapp_test", "subject": "subject", "connected": True}]})
-        self.w.store.put("chatgpt_models", "test", [{"id": "test-model", "name": "Test", "thinking": []}])
-        profile = self.w.profile()
-        profile["industries"] = [{"name": "Hardware", "years": "0"}]
-        profile["preferences"]["levels"] = ["Entry"]
-        self.w.save_profile(profile)
         self.w.store.clear("job")
-        self.w.store.put("recommendation_preference", "handshake", {"enabled": False})
         self.jobs = [self.public_job("101"), self.public_job("102")]
-        self.roles, self.browsers, self.requests = [], [], []
-        self.fail_analysis, self.fail_receipt = False, False
-        message = self.engine.history.add("user", "Please send one hardware application in Boston.")
-        self.engine.active = {"message": message}
-        self.intent = {"action": "start", "run_id": "", "authorization_message_id": message["id"], "limit": 1,
-                       "locations": ["Boston"], "instruction": message["text"], "resume_id": "", "issues": []}
-        self.opened = []
+        self.fail_analysis = False
         self.page_change = lambda page: page
+        message = self.engine.active["message"]
+        message["text"] = "Please send one hardware application in Boston."
+        self.w.store.put("chat_message", message["id"], message)
+        self.intent.update(limit=1, locations=["Boston"], instruction=message["text"], resume_id="")
+
+    def browser(self, engine, *, job_id):
+        """Allow a test to simulate a changed public posting before screening."""
+        window = super().browser(engine, job_id=job_id)
+        window.page = self.page_change(window.page)
+        return window
+
+    def analysis(self, data):
+        result = super().analysis(data)
+        if self.fail_analysis:
+            result.update(identity_consistent=False, consistency_issues=["Unresolved employer identity."])
+        return result
 
     def public_job(self, identity):
         """Save source provenance exactly as a public-page import would."""
@@ -61,52 +50,35 @@ class PublicApplicationTests(ChatFixture):
         return self.w.store.job(job["id"], company=source["company"], title=source["title"],
                                 public_source=source, details=source["description"], details_origin="captured")
 
-    def browser(self, _engine, root, **options):
-        """A public browser has no platform cookie source and records each write independently."""
-        self.assertNotIn("application_source", options)
-        job = self.w.store.get("job", Path(root).name)
-        page = {**snapshot(), "url": job["url"], "text": job["public_source"]["description"]}
-        browser = BrowserFixture(self.page_change(page))
-        original = browser.call
-        def call(method, params=None):
-            if method == "open":
-                self.opened.append(params["url"])
-            if method == "submit":
-                browser.methods.append(method)
-                return {"confirmed": True, "attempt_id": params["attempt_id"], "receipt": "Your application was submitted"}
-            return original(method, params)
-        browser.call, browser.close = call, Mock()
-        self.browsers.append(browser)
-        return browser
 
-    def run_public(self, job_ids=None):
-        """The run consumes saved listings without invoking platform discovery or source readers."""
-        with patch.object(self.w.recommendations, "read_job", side_effect=AssertionError("Unexpected platform read")):
-            with patch("applydesk.application_automation.ApplicationSession", side_effect=self.browser):
-                with patch.object(self.engine.runner, "_request", side_effect=self.model), patch("applydesk.application_automation.Applications", side_effect=automation.legacy_application):
-                    return self.engine.applications.start(job_ids)
+class PublicApplicationTests(PublicApplicationFixture):
+    """Check admission, observed public URLs and original source continuity."""
 
     def test_public_run_needs_no_platform_connection_and_keeps_tracker_order(self):
         run = self.run_public()
         self.assertEqual(run["status"], "complete")
         self.assertEqual(run["searches"], [])
         self.assertEqual(run["attempted_count"], 1)
-        self.assertEqual(run["results"][0], {"job_id": self.jobs[0]["id"], "status": "submitted",
-                                           "receipt": {"confirmed": True, "attempt_id": self.w.store.all("submission_attempt")[0]["id"],
-                                                       "receipt": "Your application was submitted"}})
-        self.assertEqual(self.opened, [self.jobs[0]["url"]])
+        result = run["results"][0]
+        self.assertEqual((result["job_id"], result["status"]), (self.jobs[0]["id"], "submitted"))
+        self.assertTrue(result["receipt"]["confirmed"])
+        self.assertEqual(result["receipt"]["attempt_id"], self.w.store.all("submission_attempt")[0]["id"])
+        self.assertEqual(result["receipt"]["method"], "native_visible_confirmation")
+        self.assertEqual([window.job["url"] for window in self.browsers], [self.jobs[0]["url"]])
         self.assertEqual(self.w.store.get("job", self.jobs[1]["id"])["status"], "new")
         self.assertEqual(set(self.roles), {"master"})
 
     def test_public_candidates_and_enabled_native_captures_share_saved_order(self):
-        native = self.listing("103")
+        source = saved_listing()
+        native = self.w.store.add_job(source["source_url"])
+        self.w.store.job(native["id"], recommendation_source=source)
         candidates = self.engine.applications._candidates([])
         self.assertEqual([job["id"] for job in candidates], [job["id"] for job in self.jobs])
-        candidates = self.engine.applications._candidates(["handshake"])
+        candidates = self.engine.applications._candidates(["linkedin"])
         self.assertEqual([job["id"] for job in candidates], [job["id"] for job in [*self.jobs, native]])
         self.w.store.remove_jobs([self.jobs[0]["id"]])
         self.w.store.put("submission_attempt", attempt_key(self.jobs[1]), {"status": "submission_unknown"})
-        self.assertEqual([job["id"] for job in self.engine.applications._candidates(["handshake"])], [native["id"]])
+        self.assertEqual([job["id"] for job in self.engine.applications._candidates(["linkedin"])], [native["id"]])
 
     def test_corrupt_capture_never_opens_or_fills_that_job(self):
         source = {**self.jobs[0]["public_source"], "description": "Changed source"}
@@ -115,7 +87,7 @@ class PublicApplicationTests(ChatFixture):
         run = self.run_public()
         results = {item["job_id"]: item["status"] for item in run["results"]}
         self.assertEqual(results[self.jobs[0]["id"]], "needs_review")
-        self.assertNotIn(self.jobs[0]["url"], self.opened)
+        self.assertNotIn(self.jobs[0]["url"], [window.job["url"] for window in self.browsers])
         self.assertEqual(results[self.jobs[1]["id"]], "submitted")
 
     def test_changed_public_url_stops_before_personal_fields(self):
@@ -123,22 +95,22 @@ class PublicApplicationTests(ChatFixture):
         run = self.run_public()
         self.assertEqual(run["attempted_count"], 0)
         self.assertTrue(all(result["status"] == "needs_review" for result in run["results"]))
-        self.assertTrue(all("fill" not in browser.methods for browser in self.browsers))
+        self.assertTrue(all(not browser.name for browser in self.browsers))
 
     def test_fresh_page_must_keep_captured_employer_identity(self):
         self.page_change = lambda page: {**page, "title": "Example Corp Analyst", "text": page["text"].replace("Example Co", "Example Corp")}
         run = self.run_public()
         self.assertEqual(run["attempted_count"], 0)
-        self.assertTrue(all("fill" not in browser.methods for browser in self.browsers))
+        self.assertTrue(all(not browser.name for browser in self.browsers))
 
-    def test_public_capture_on_a_platform_host_uses_its_observed_page(self):
+    def test_platform_login_source_cannot_be_opened_as_a_public_job(self):
         job = self.jobs[0]
         source = public_source("https://www.linkedin.com/jobs/view/101")
         self.jobs[0] = self.w.store.job(job["id"], url=source["url"], public_source=source)
         self.w.store.remove_jobs([self.jobs[1]["id"]])
         run = self.run_public()
-        self.assertEqual(run["results"][0]["status"], "submitted")
-        self.assertEqual(self.opened, [source["url"]])
+        self.assertEqual(run["results"][0]["status"], "needs_review")
+        self.assertEqual(self.browsers, [])
 
     def test_public_application_instructions_are_checked_before_form_filling(self):
         quote = "Apply by email to the employer's recruiting team."
@@ -154,7 +126,7 @@ class PublicApplicationTests(ChatFixture):
         self.model = model
         run = self.run_public()
         self.assertEqual(run["attempted_count"], 0)
-        self.assertTrue(all("fill" not in browser.methods for browser in self.browsers))
+        self.assertTrue(all(not browser.name for browser in self.browsers))
         self.assertTrue(all(any("email" in issue for issue in result["issues"]) for result in run["results"]))
 
     def test_empty_tracker_can_search_save_and_start_within_the_same_human_turn(self):
@@ -195,8 +167,8 @@ class PublicApplicationTests(ChatFixture):
         self.assertEqual((second["id"], second["attempted_count"], second["limit"]), (first["id"], 2, 5))
         self.assertEqual([item["job_id"] for item in second["results"]], [self.jobs[0]["id"], saved["id"]])
         self.assertEqual(len(self.w.store.all("application_run")), 1)
-        self.assertEqual(sum(item["instructions"] == SELF_CHECK + INTENT_PROMPT for item in self.requests), 1)
-        self.assertEqual(sum(browser.methods.count("submit") for browser in self.browsers), 2)
+        self.assertEqual(sum(prompt == INTENT_PROMPT for prompt, _ in self.requests), 1)
+        self.assertEqual(sum(browser.clicks for browser in self.browsers), 2)
         self.assertEqual(self.run_public(), second)
 
     def test_same_turn_batches_do_not_retry_previous_failed_jobs(self):

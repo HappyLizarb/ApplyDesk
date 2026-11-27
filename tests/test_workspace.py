@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import Mock, patch
 from urllib.parse import urlparse
 
-from applydesk.document_tasks import DocumentTasks
+from applydesk.documents import DocumentTasks
 from applydesk.profile import empty_profile, model_profile
 from applydesk.server import AppServer
 from applydesk.workspace import Workspace
@@ -162,6 +162,31 @@ class HttpBoundaryTests(unittest.TestCase):
             return response.status, dict(response.getheaders()), content
         finally:
             connection.close()
+
+    def test_instructions_require_the_chat_session(self):
+        """A retired bridge credential cannot read tasks or send instructions."""
+        self.assertFalse((self.workspace.root / "agent.connection.json").exists())
+        headers = {"Authorization": "Bearer retired-draft-token"}
+        for path in ("/agent/v1/enqueue", "/api/orchestrator/send"):
+            self.assertEqual(self.request("POST", path, {"message": "Test"}, False, headers)[0], 403)
+        for path in ("/api/chat/enqueue", "/api/orchestrator/retry", "/agent/v1/draft"):
+            self.assertEqual(self.request("POST", path, {})[0], 400)
+        self.assertEqual(self.request("GET", "/agent/v1/tasks")[0], 404)
+
+    def test_timer_only_resumes_existing_chat_work(self):
+        """The authenticated timer cannot carry a separate instruction."""
+        path = "/api/orchestrator/auto-start"
+        data = {"enabled": True, "interval": 5, "unit": "hours"}
+        self.assertEqual(self.request("POST", path, data, authenticated=False)[0], 403)
+        self.assertEqual(self.request("POST", path, data, headers={"Origin": "https://elsewhere.test"})[0], 403)
+        self.assertEqual(self.request("POST", path, {**data, "message": "Apply now"})[0], 400)
+        status, _, body = self.request("POST", path, data)
+        self.assertEqual(status, 200)
+        saved = json.loads(body)
+        self.assertEqual({key: saved[key] for key in data}, data)
+        self.assertIsNotNone(saved["next_run_at"])
+        self.assertFalse(saved["pending"])
+        self.assertIsNone(self.workspace.orchestrator.active)
 
     def test_launcher_token_and_private_state_gate(self):
         # A session begins only through the capability-bearing launcher URL.

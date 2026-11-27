@@ -2,15 +2,17 @@
 
 import base64
 import hashlib
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from applydesk.applications import Applications
-from applydesk.application_steps import choose_attachment
-from applydesk.document_tasks import DocumentTasks
+from applydesk.document_deletion import DocumentDeletion
+from applydesk.documents import DocumentTasks
+from applydesk.native_application_io import _document
 from applydesk.workspace import Workspace
+from chat_helpers import ChatFixture
 from test_documents import sample_docx, sample_pdf
 from test_workspace import FakeSecrets
 
@@ -101,15 +103,13 @@ class ResumeTests(unittest.TestCase):
         for filename, content in (("Original.pdf", sample_pdf()), ("Original.docx", sample_docx())):
             with self.subTest(filename=filename):
                 document = self.upload(filename, content)
-                path, digest = choose_attachment(self.w, document, {"accept": ""})
+                path, _, digest = _document(self.w, {"resume_id": document["id"]}, {},
+                                            {"kind": "resume", "document_id": document["id"]})
                 self.assertEqual(path.suffix, Path(filename).suffix)
                 self.assertEqual(path.read_bytes(), content)
                 self.assertEqual(digest, hashlib.sha256(content).hexdigest())
                 self.assertTrue(document["blocks"])
                 self.assertNotIn("template_id", document)
-                wrong = ".docx" if path.suffix == ".pdf" else ".pdf"
-                with self.assertRaisesRegex(ValueError, "does not accept"):
-                    choose_attachment(self.w, document, {"accept": wrong})
 
     def test_changed_original_is_rejected(self):
         document = self.upload()
@@ -145,10 +145,88 @@ class ResumeTests(unittest.TestCase):
         document = self.upload()
         tasks = DocumentTasks(self.w)
         with patch.object(self.w, "client", side_effect=AssertionError("Unexpected model call")):
-            with patch.object(self.w.docs, "get_template", side_effect=AssertionError("Unexpected template")):
-                result = tasks.require_review(document["id"])
+            result = tasks.require_review(document["id"])
         self.assertTrue(result["passed"])
         self.assertEqual(result["method"], "file_integrity")
         self.w.docs.asset(document["image_paths"][0]).write_bytes(b"")
         with self.assertRaisesRegex(ValueError, "previews are missing"):
             tasks.require_review(document["id"])
+
+
+class RunResumeTests(ChatFixture):
+    """Use local synthetic files; no provider or employer receives a test document."""
+
+    def setUp(self):
+        super().setUp()
+        profile = self.w.profile()
+        profile["industries"] = [{"name": "Hardware", "years": "0"}]
+        self.w.save_profile(profile)
+        self.chosen = self.document("chosen", "resume")
+        self.w.resumes.add(self.chosen["id"])
+        self.choice = {"id": self.chosen["id"], "sha256": self.chosen["source_sha256"]}
+
+    def test_explicit_untagged_upload_wins_and_attaches_original_bytes(self):
+        """A named resume does not silently turn into General or the industry-tagged file."""
+        self.w.resumes.tag({"document_id": self.resume["id"], "category": "Hardware"})
+        app = Applications(self.w, resume_choice=self.choice)
+        with patch.object(app.documents, "require_review") as review:
+            app._resume(self.job, {"category": "Hardware"})
+        review.assert_called_once_with(self.chosen["id"])
+        selected = self.w.store.get("job", self.job["id"])["resume_id"]
+        self.assertEqual(selected, self.chosen["id"])
+        path, _, digest = _document(self.w, {"resume_id": selected}, {}, {"kind": "resume", "document_id": selected})
+        self.assertEqual(path.read_bytes(), b"synthetic PDF source")
+        self.assertEqual(digest, self.choice["sha256"])
+
+    def test_unspecified_choice_keeps_general_fallback(self):
+        """Existing category selection still applies when chat did not name an upload."""
+        app = Applications(self.w)
+        with patch.object(app.documents, "require_review"):
+            app._resume(self.job, {"category": "Hardware"})
+        self.assertEqual(self.w.store.get("job", self.job["id"])["resume_id"], self.resume["id"])
+
+    def test_changed_source_bytes_stop_before_attachment_selection(self):
+        """Tampered files cannot pass simply because the requested document ID still exists."""
+        self.w.docs.asset(self.chosen["source_path"]).write_bytes(b"changed source")
+        app = Applications(self.w, resume_choice=self.choice)
+        with patch.object(app.documents, "require_review") as review:
+            with self.assertRaisesRegex(ValueError, "changed"):
+                app._resume(self.job, {"category": "Hardware"})
+        review.assert_not_called()
+        self.assertIsNone(self.w.store.get("job", self.job["id"])["resume_id"])
+
+    def test_updated_manifest_does_not_replace_the_run_hash(self):
+        """A newly valid document version must still match the separately pinned run digest."""
+        source = self.w.docs.asset(self.chosen["source_path"])
+        source.write_bytes(b"new version")
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        self.w.docs._save({**self.chosen, "source_sha256": digest, "sha256": digest})
+        self.assertTrue(self.w.docs.verify(self.chosen["id"]))
+        with self.assertRaisesRegex(ValueError, "since this run"):
+            self.w.resumes.selected(self.chosen["id"], self.choice["sha256"])
+
+    def test_replaced_library_upload_does_not_fall_back_or_delete_history(self):
+        """Category replacement keeps historical copies while blocking an old run selection."""
+        self.w.resumes.tag({"document_id": self.chosen["id"], "category": "Hardware"})
+        historical = self.w.store.add_job("https://example.test/jobs/history")
+        self.w.store.job(historical["id"], resume_id=self.chosen["id"], status="submitted")
+        self.w.resumes.tag({"document_id": self.resume["id"], "category": "Hardware"})
+        with self.assertRaisesRegex(ValueError, "no longer available"):
+            self.w.resumes.selected(self.chosen["id"], self.choice["sha256"])
+        self.assertTrue(self.w.docs.verify(self.chosen["id"]))
+        self.assertEqual(self.w.store.get("job", historical["id"])["resume_id"], self.chosen["id"])
+
+    def test_deleted_upload_preserves_outcome_but_removes_local_bytes(self):
+        """Deleting a chosen upload cannot make a new run silently use General instead."""
+        historical = self.w.store.add_job("https://example.test/jobs/history")
+        self.w.store.job(historical["id"], resume_id=self.chosen["id"], status="submitted")
+        result = DocumentDeletion(self.w).delete({"document_id": self.chosen["id"]})
+        self.assertFalse(result["application_copies_kept"])
+        app = Applications(self.w, resume_choice=self.choice)
+        with patch.object(app.documents, "require_review") as review:
+            with self.assertRaisesRegex(ValueError, "no longer available"):
+                app._resume(self.job, {"category": "Hardware"})
+        review.assert_not_called()
+        self.assertFalse((self.w.docs.root / self.chosen["id"]).exists())
+        self.assertIsNone(self.w.store.get("job", historical["id"])["resume_id"])
+        self.assertEqual(self.w.store.get("job", historical["id"])["status"], "submitted")

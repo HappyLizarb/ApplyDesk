@@ -10,7 +10,7 @@ from chat_helpers import ChatFixture
 from native_window_fixture import NativeWindowFixture
 from applydesk.native_application_browser import NativeApplicationBrowser
 from applydesk.applications import Applications
-from applydesk.browser_bridge import BrowserError
+from applydesk.native_browser import BrowserError
 from applydesk.server import AppServer
 
 
@@ -49,7 +49,7 @@ class ApplicationBrowserLifecycleTests(ChatFixture):
         self.other_job = self.w.store.add_job("https://other.example.test/job")
         self.second = app._session(self.other_job)
         self.second.call("open", {"url": self.other_job["url"]})
-        self.browser = self.first.browser
+        self.browser = self.first.manager.browser
         self.manager = self.w.application_browser
 
     def fill(self, session):

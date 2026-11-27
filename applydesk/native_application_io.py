@@ -5,7 +5,7 @@ import re
 import time
 
 from .account_scope import NativeInputRequired, employer_key, native_account_scope as _account_scope
-from .browser_bridge import BrowserError
+from .native_browser import BrowserError
 from .employer_accounts import EmployerAccounts
 
 

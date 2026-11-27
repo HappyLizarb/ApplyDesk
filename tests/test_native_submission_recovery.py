@@ -1,11 +1,13 @@
 """Only a native rejection before input can release or retry a reserved application click."""
 
+import tempfile
 import unittest
-from unittest.mock import patch
-
+from applydesk.application_submission import attempt_key, finish_attempt, submit_ready
+from applydesk.native_browser import BrowserError
+from applydesk.storage import Store
 from native_pipeline_fixture import NativeReviewFixture
-from applydesk.application_submission import attempt_key, submit_ready
-from applydesk.browser_bridge import BrowserError
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 class NativeSubmissionRecoveryTests(unittest.TestCase):
@@ -63,7 +65,7 @@ class NativeSubmissionRecoveryTests(unittest.TestCase):
         self.assertEqual(self.form.store.get("job", self.form.job["id"])["status"], "needs_review")
 
     def test_error_checking_receipt_after_dispatch_keeps_slot_and_blocks_replay(self):
-        with patch("applydesk.native_submission._receipt", side_effect=self.stale), self.assertRaises(BrowserError):
+        with patch("applydesk.application_submission._receipt", side_effect=self.stale), self.assertRaises(BrowserError):
             self.run_form([self.form.page, self.form.page])
         self.assertEqual(self.form.store.all("submission_attempt")[0]["status"], "submission_unknown")
         self.assertEqual(self.form.store.all("unissued_submission"), [])
@@ -89,7 +91,7 @@ class NativeSubmissionRecoveryTests(unittest.TestCase):
             client.return_value.ask.return_value = result
             self.assertEqual(self.run_form([page, after])["status"], "submission_unknown")
         self.assertEqual(self.form.store.all("submission_attempt")[0]["receipt"]["field_rejection"]["error"], error)
-        from applydesk.native_form_validation import rejected_field
+        from applydesk.application_submission import rejected_field
         for changed in ({"url": "https://other.test/"}, {"active_tab_id": "other"}, {"loading": True},
                         {"elements": [checkbox]}, {"snapshot_id": page["snapshot_id"]}):
             self.assertIsNone(rejected_field(page, {**after, **changed}, result, "final"))
@@ -123,3 +125,18 @@ class NativeSubmissionReceiptTests(NativeReviewFixture, unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "changed after review"):
             submit_ready(engine, self.job, run, lambda: None)
         self.assertEqual(self.store.all("submission_attempt"), [])
+
+
+class VerificationTests(unittest.TestCase):
+    def test_verification_is_not_a_submission_or_an_erased_attempt(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = Store(root)
+            self.addCleanup(store.close)
+            job = store.add_job('https://employer.example/job/123')
+            attempt = {"id": "attempt-1", "job_id": job["id"], "status": "submitting"}
+            receipt = {"confirmed": False, "verification_required": True, "issue": "An email code is required.", "receipt": ""}
+            result = finish_attempt(SimpleNamespace(store=store), job, attempt, 'verification_required', receipt)
+            self.assertEqual(result['status'], 'needs_review')
+            self.assertEqual(store.get('job', job['id'])['progress'], 'An email code is required.')
+            self.assertEqual(store.get('submission_attempt', attempt_key(job))['id'], 'attempt-1')
+            self.assertEqual(store.get('submission_attempt', attempt_key(job))['status'], 'verification_required')

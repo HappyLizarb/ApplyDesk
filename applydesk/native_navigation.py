@@ -4,13 +4,13 @@ import re
 import time
 from urllib.parse import urlsplit
 
-from .browser_bridge import BrowserError
+from .native_browser import BrowserError
 from .discovery import canonical_url
 from .native_application_io import _dialog_controls, _picker
 from .native_window_recovery import acquire_window, click_browser_tab, restore_visible_owner
 from .native_tab_workspace import open_public_tab, retire_spare_tab
 from .public_source import matches_saved_requisition_form, saved_form_tab
-from .recommendation_checks import same_workday_application, same_workday_job
+from .recommendation_source import same_workday_application, same_workday_job
 
 
 def adopt_clicked_tab(manager, job_id, action, before, after):

@@ -1,4 +1,4 @@
-#import "../native-browser-capture.h"
+#import "../native/native-browser.h"
 #include <assert.h>
 #include <math.h>
 

@@ -1,4 +1,4 @@
-#import "../native-browser-window.h"
+#import "../native/native-browser.h"
 
 // Geometry and focus flags come from the actual visible Chrome autocomplete capture on November 17.
 static NSMutableDictionary *observedFieldHit(void) {

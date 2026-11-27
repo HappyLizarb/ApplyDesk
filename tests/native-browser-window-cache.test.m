@@ -1,4 +1,4 @@
-#import "../native-browser-window.h"
+#import "../native/native-browser.h"
 
 static NSMutableDictionary *fixtures;
 static NSArray *listedWindows;
@@ -32,7 +32,7 @@ AXError AXUIElementCopyAttributeValue(AXUIElementRef element, CFStringRef name, 
     return *value ? kAXErrorSuccess : kAXErrorAttributeUnsupported;
 }
 
-#include "../native-browser-window.m"
+#include "../native/native-browser-window.m"
 
 // Twenty distinct native-window identities reproduce the avoidable per-character enumeration load.
 static ADNativeBrowserState *fixtureState(void) {

@@ -1,64 +1,25 @@
-"""Durable submission attempts prevent retries after timeouts, crashes, or missing receipts."""
+"""Durably reserve and record native submissions, including interrupted attempts."""
 
 import hashlib
 import re
-
-from .application_terms import unresolved_declarations
+import time
 import uuid
 
-from .readiness import verify_readiness
+from .agent_context import with_application_source
+from .native_browser import BrowserError
+from .native_agent_prompt import RECEIPT_PROMPT
+from .native_evidence import evidence_digest, page_text, public_page, quoted
+from .native_review import review_surface, validate_review
 from .storage import now
 
 NATIVE_VERIFICATION = ("Complete email verification on the employer’s original application page in Chrome. "
                        "Enter the latest code there and look for the employer’s submission confirmation.")
-
-DECLARATION = re.compile(r"\b(i (agree|accept|certify|attest|authorize|acknowledge|consent)|by (submitting|applying|clicking|continuing|proceeding|sending).{0,240}(agree|accept|certify|attest|authorize|acknowledge|consent)|terms of (service|use)|electronic signature)\b", re.I | re.S)
-
 
 def attempt_key(job):
     """Platform job identity is stable across imported URLs and separate unattended runs."""
     source = job.get("recommendation_source") or {}
     identity = f"{source['platform']}:{source['job_id']}" if source.get("job_id") else job["url"].split("#")[0]
     return hashlib.sha256(identity.encode()).hexdigest()
-
-
-def submit_ready(engine, job, run, checkpoint, retry_attempt=None):
-    """Reserve a slot before the one irreversible click; no response means an uncertain outcome."""
-    if job.get("native_review") is not None:
-        from .native_submission import submit_native_ready
-        return submit_native_ready(engine, job, run, checkpoint, retry_attempt)
-    if job.get("agent_browser_review") is not None:
-        from .agent_browser_submission import submit_agent_ready
-        return submit_agent_ready(engine, job, run, checkpoint, retry_attempt)
-    return _submit_legacy(engine, job, run, checkpoint, retry_attempt)
-
-
-def _submit_legacy(engine, job, run, checkpoint, retry_attempt):
-    """Preserve audited draft compatibility while production applications use native input."""
-    workspace = engine.w
-    session = workspace.sessions[job["id"]]
-    checkpoint()
-    snapshot = session.call("snapshot")
-    if snapshot["snapshot_id"] != job.get("last_snapshot"):
-        raise ValueError("The application changed after its final field audit. Nothing was submitted.")
-    if unresolved_declarations(snapshot.get("declaration_text", snapshot.get("text", "")), DECLARATION):
-        raise ValueError("The application contains a declaration or agreement requiring your review.")
-    snapshot["audit"] = job["final_audit"]
-    readiness = verify_readiness(job, workspace.store.get("job", job["id"]), workspace.profile(), snapshot, job["attachments"])
-    if not readiness["ready"]:
-        raise ValueError("; ".join(readiness["issues"]))
-    button = next(button for button in snapshot["buttons"] if button["action"] == "final_or_ambiguous")
-    attempt = renew_verification_attempt(engine, job, run, retry_attempt, checkpoint) if retry_attempt else reserve_attempt(engine, job, run, checkpoint)
-    try:
-        receipt = session.call("submit", {"snapshot_id": snapshot["snapshot_id"], "field_id": button["field_id"],
-                                          "attempt_id": attempt["id"], "company": job["company"], "title": job["title"],
-                                          "retry_verification": retry_attempt is not None})
-        confirmed = receipt.get("confirmed") is True and receipt.get("attempt_id") == attempt["id"] and bool(receipt.get("receipt"))
-        status = "submitted" if confirmed else "verification_required" if receipt.get("verification_required") else "submission_unknown"
-        return finish_attempt(workspace, job, attempt, status, receipt)
-    except BaseException:
-        finish_attempt(workspace, job, attempt, "submission_unknown", {})
-        raise
 
 
 def reserve_attempt(engine, job, run, checkpoint):
@@ -101,19 +62,118 @@ def finish_attempt(workspace, job, attempt, status, receipt):
     return result
 
 
-def renew_verification_attempt(engine, job, run, attempt, checkpoint):
-    """An explicitly requested refill reuses only an employer-rejected verification attempt."""
-    workspace = engine.w
-    with workspace.lock, workspace.store.lock:
+RECEIVED = re.compile(r"\b(?:application (?:was |has been )?(?:received|submitted)|already applied|thank you for applying|received your application)\b", re.I)
+
+
+def rejected_field(before, after, result, final_id):
+    """Identify a field diagnostic without treating it as proof of non-delivery."""
+    name = result.get("quote")
+    if result.get("status") != "field_error" or not isinstance(name, str) or not re.fullmatch(
+            r"(?:Error:\s*)?(?:select at least one (?:value|option)|this field is required|please (?:select|enter) a value)[.!]?", name, re.I):
+        return None
+    binding = ("pid", "window_id", "active_tab_id", "generation", "url")
+    if (any(before.get(key) is None or before[key] != after.get(key) for key in binding)
+            or not before["url"].startswith("https://") or not after.get("snapshot_id")
+            or before.get("snapshot_id") == after["snapshot_id"] or after.get("native_modal") or after.get("loading")
+            or RECEIVED.search(page_text(after)) or quoted(name, page_text(before))):
+        return None
+    elements = [item for item in after.get("elements", []) if item.get("web_content", True)]
+    errors = [item for item in elements if item.get("role") in {"AXStaticText", "AXHeading"}
+              and name in (item.get("label"), item.get("value"))]
+    field = next((item for item in elements if item.get("id") == result.get("field_id") and item.get("enabled")
+                  and item.get("role") in {"AXCheckBox", "AXComboBox", "AXPopUpButton", "AXTextField"}
+                  and item.get("value") in (None, "", False, 0) and item.get("required")), None)
+    final = any(item.get("id") == final_id and item.get("enabled") and item.get("role") in {"AXButton", "AXLink"} for item in elements)
+    if field and errors and final:
+        return {"error": name, "field": str(field.get("label", ""))[:160], "url": before["url"],
+                "snapshot_id": after["snapshot_id"]}
+    return None
+
+
+class ReviewChangedBeforeClick(ValueError):
+    """The native helper rejected the final action before sending any mouse event."""
+
+
+def _click_reviewed(session, page, audit, attempt, checkpoint):
+    """Retry only a proven pre-dispatch rejection on the same, still-identical reviewed form."""
+    original = review_surface(page)
+    for index in range(3):
         checkpoint()
-        saved = workspace.store.get("submission_attempt", attempt_key(job))
-        if not saved or saved["id"] != attempt["id"] or saved["run_id"] != run["id"]:
-            raise ValueError("The original verification attempt changed.")
-        receipt = saved.get("receipt", {})
-        if saved["status"] != "verification_required" or receipt.get("confirmed") or receipt.get("issue") != "Incorrect security code":
-            raise ValueError("Refill requires a confirmed code rejection; uncertain submissions cannot be retried.")
-        saved.setdefault("verification_history", []).append(receipt)
-        saved.update(status="submitting", snapshot_id=job["last_snapshot"], profile_revision=run["profile_revision"], receipt={})
-        workspace.store.put("submission_attempt", attempt_key(job), saved)
-        workspace.store.job(job["id"], status="submitting", progress="Sending the refilled application after email-code rejection…")
-        return saved
+        try:
+            return session.call("native_action", {"snapshot_id": page["snapshot_id"], "action": "click",
+                "element_id": audit["final_element_id"], "final_permit": attempt["id"]})
+        except BrowserError as error:
+            if getattr(error, "code", None) == "click_obstructed_before_dispatch":
+                raise ReviewChangedBeforeClick("The Submit button was covered before the click. Dismiss any "
+                                              "obstructing notice and scroll the button fully into view.") from None
+            if getattr(error, "code", None) != "stale_observation":
+                raise
+        if index < 2 and all(page.get(k) is not None for k in ("pid", "window_id", "active_tab_id", "generation")):
+            fresh = session.call("native_observe")
+            if not fresh.get("native_modal") and original == review_surface(fresh):
+                page = fresh
+                continue
+        raise ReviewChangedBeforeClick("The review page changed before Chrome sent the click. Review the updated form.")
+
+
+def submit_ready(engine, job, run, checkpoint):
+    """Recheck the exact reviewed view before granting the one irreversible click."""
+    workspace, session = engine.w, engine.w.sessions[job["id"]]
+    checkpoint()
+    page = session.call("native_observe")
+    if page.get("snapshot_id") != job.get("last_snapshot"):
+        raise ValueError("The visible application changed after review. Nothing was submitted.")
+    profile = with_application_source(workspace.profile(), job)
+    audit = validate_review(workspace, job, profile, page, job.get("attachments", []),
+                            job.get("native_evidence", []), job["native_review"])
+    current = workspace.store.get("job", job["id"]) or {}
+    if any(item.get("final_audit", {}).get("review_digest") != audit["review_digest"] for item in (job, current)):
+        raise ValueError("The saved application review changed. Review the visible form again.")
+    attempt = reserve_attempt(engine, job, run, checkpoint)
+    try:
+        try:
+            result = _click_reviewed(session, page, audit, attempt, checkpoint)
+        except ReviewChangedBeforeClick as error:
+            workspace.store.release_unissued(job["id"], attempt_key(job), attempt["id"], str(error))
+            return {"job_id": job["id"], "status": "needs_review", "click_not_sent": True, "issues": [str(error)]}
+        receipt = _receipt(engine, session, job, attempt, page, result, checkpoint)
+        status = "submitted" if receipt["confirmed"] else "verification_required" if receipt.get("verification_required") else "submission_unknown"
+        return finish_attempt(workspace, job, attempt, status, receipt)
+    except BaseException:
+        finish_attempt(workspace, job, attempt, "submission_unknown", {})
+        raise
+
+
+def _receipt(engine, session, job, attempt, before, page, checkpoint):
+    """The same configured agent reads the result; no second submit is permitted."""
+    from .application_client import ApplicationClient
+    client = ApplicationClient(engine, "application", job["id"])
+    result = {}
+    for _ in range(4):
+        checkpoint()
+        image = page.get("screenshot")
+        result = client.ask(RECEIPT_PROMPT, {"company": job["company"], "title": job["title"],
+                            "before": public_page(before), "after": public_page(page)}, images=[image] if image else None)
+        quote = result.get("quote")
+        proof = rejected_field(before, page, result, job["native_review"]["final_element_id"])
+        if proof:
+            return {"confirmed": False, "field_rejection": proof, "attempt_id": attempt["id"],
+                    "receipt": quote, "url": page["url"], "issue": "The employer displayed a validation error after Submit. Check the employer receipt before retrying."}
+        observed = quoted(quote, page_text(page)) or bool(image and result.get("evidence_source") == "screenshot" and isinstance(quote, str) and quote.strip())
+        fresh = page.get("snapshot_id") != before.get("snapshot_id") and not quoted(quote, page_text(before))
+        if result.get("status") == "submitted" and observed and fresh:
+            return {"confirmed": True, "attempt_id": attempt["id"], "receipt": quote,
+                    "url": page.get("url"), "snapshot_id": page["snapshot_id"], "method": "native_visible_confirmation",
+                    "image_digest": evidence_digest(image) if image else None}
+        if result.get("status") == "inspect_image" and not image:
+            page = session.call("native_observe", {"screenshot": True})
+            continue
+        if result.get("status") != "pending":
+            return {"confirmed": False, "attempt_id": attempt["id"], "receipt": quote if observed else "",
+                    "verification_required": result.get("status") == "verification_required" and observed,
+                    "issue": str(result.get("reason", "The employer did not confirm this submission.")), "url": page.get("url")}
+        time.sleep(1)
+        checkpoint()
+        page = session.call("native_observe")
+    return {"confirmed": False, "attempt_id": attempt["id"], "receipt": "",
+            "issue": "The employer has not yet confirmed this submission.", "url": page.get("url")}

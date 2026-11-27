@@ -4,15 +4,14 @@ import threading
 import time
 import uuid
 
-from .application_window import validate_bounds
-from .browser_bridge import BrowserError
-from .native_browser import NativeBrowser
+from .application_session import validate_bounds
+from .native_browser import BrowserError, NativeBrowser
 from .native_tab_workspace import check_current_job, forget_tab, resume_account_tab, track_action_tab
 from .native_window_recovery import acquire_window, click_browser_tab
 from .native_navigation import (_password_suggestion_close, adopt_clicked_tab, check_missing_window, clear_upload_picker, open_job_tab,
                                 restore_job_tab, resume_visible_draft, return_from_notice, track_upload_picker, wait_for_tab)
 from .profile import public_job_url
-from .public_discovery import require_public_listing
+from .discovery import require_public_listing
 
 
 class NativeApplicationBrowser:

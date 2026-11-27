@@ -8,8 +8,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from applydesk.browser_bridge import BrowserError
-from applydesk.native_browser import NativeBrowser, command_timeout
+from applydesk.native_browser import BrowserError, NativeBrowser, command_timeout
 
 
 class NativeBrowserBridgeTests(unittest.TestCase):

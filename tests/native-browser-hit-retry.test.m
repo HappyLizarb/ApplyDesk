@@ -1,4 +1,4 @@
-#import "../native-browser.h"
+#import "../native/native-browser.h"
 #include <unistd.h>
 
 static NSUInteger probeCount, failures;

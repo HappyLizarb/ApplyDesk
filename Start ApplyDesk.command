@@ -1,11 +1,18 @@
-#!/bin/zsh
-set -euo pipefail
-applydesk_entry="${0:A:h}/run.py"
-cd -- "${TMPDIR:-/tmp}"
-applydesk_python="${APPLYDESK_PYTHON:-$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3}"
-if [[ ! -x "$applydesk_python" ]]; then
-  print "The bundled Python runtime is missing. See README.md for setup instructions."
-  read "?Press Return to close."
-  exit 1
+#!/bin/zsh -f
+set -eu
+program="${0:A:h}"
+resources="${program:h}"
+if [[ -f "$resources/../Info.plist" && -x "$resources/Runtime/python/bin/python3" ]]; then
+  interpreter="$resources/Runtime/python/bin/python3"
+  export APPLYDESK_SOFFICE="$resources/Runtime/LibreOffice.app/Contents/MacOS/soffice"
+  export APPLYDESK_PDFTOPPM="$resources/pdf-preview"
+  export APPLYDESK_LAUNCHER="$resources/../MacOS/ApplyDesk"
+else
+  interpreter="${APPLYDESK_PYTHON:-$program/.venv/bin/python3}"
+  if [[ ! -x "$interpreter" ]]; then
+    print "Set up the Python environment as described in README.md."
+    exit 1
+  fi
 fi
-exec "$applydesk_python" -B "$applydesk_entry" "$@"
+cd -- "${TMPDIR:-/tmp}"
+exec "$interpreter" -E -s -B "$program/run.py" "$@"

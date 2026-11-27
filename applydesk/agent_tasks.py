@@ -2,9 +2,8 @@
 
 import uuid
 
-from .agent_context import guide, inputs_for, task_context
+from .agent_context import inputs_for, task_context
 from .agent_contract import application_draft, object_fields, profile_draft, string, strings
-from .profile import public_job_url
 from .storage import now
 
 
@@ -104,19 +103,6 @@ class AgentTasks:
             self.w.store.job(task["target_id"], status="needs_review", exceptions=issues,
                              progress="Needs input: " + issues[0])
         return {"task_id": task["id"], "status": task["status"], "issues": issues}
-
-    def capture(self, data):
-        """Save a read-only page capture as unverified source material, never eligibility."""
-        object_fields(data, ["url", "company", "title", "details"])
-        url = public_job_url(string(data["url"], 2000))
-        company, title = string(data["company"], 500), string(data["title"], 500)
-        details = string(data["details"], 200000)
-        existing = next((job for job in self.w.store.all("job") if job["url"] == url), None)
-        if existing and (existing.get("removed_at") or existing["status"] == "submitted"):
-            raise ValueError("Removed and submitted applications cannot be replaced by an agent capture.")
-        job = existing or self.w.store.add_job(url)
-        return self.w.store.job(job["id"], company=company, title=title, details=details, details_origin="captured",
-                                capture_verification="agent_reported", status="draft", progress="Chat capture; user review required.")
 
     def _execution(self, data, identity, role, context):
         """Only app-owned completed runs can establish local execution provenance."""

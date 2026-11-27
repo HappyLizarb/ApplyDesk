@@ -69,7 +69,7 @@ class RemovalTests(unittest.TestCase):
         # Stale controls must not launch a browser for a hidden application.
         job = self.jobs[0]
         self.w.remove_jobs({"ids": [job["id"]]})
-        with patch("applydesk.applications.BrowserSession") as browser:
+        with patch("applydesk.applications.ApplicationSession") as browser:
             with self.assertRaises(ValueError):
                 Applications(self.w).prepare(job["id"])
         browser.assert_not_called()

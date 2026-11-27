@@ -3,7 +3,7 @@
 import unittest
 from unittest.mock import patch
 
-from applydesk.connection_models import catalog_models
+from applydesk.model_catalog import catalog_models
 from applydesk.model_catalog import list_models
 from applydesk.providers import ProviderError
 from applydesk.xai_agent import parse_response, request_body

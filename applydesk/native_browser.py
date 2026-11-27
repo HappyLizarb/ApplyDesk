@@ -8,12 +8,15 @@ import subprocess
 import threading
 import uuid
 
-from .browser_bridge import BrowserError
 from .lifecycle import CHROME
 
 METHODS = {"status", "use_existing", "attach", "observe", "action", "show", "stop", "close"}
 MAX_RESPONSE = 32 * 1024 * 1024
 OBSERVATION_TIMEOUT = 60
+
+
+class BrowserError(RuntimeError):
+    """A rejected action or unavailable browser session."""
 
 
 class NativeBrowser:

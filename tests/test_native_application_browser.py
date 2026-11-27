@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from applydesk.browser_bridge import BrowserError
+from applydesk.native_browser import BrowserError
 from applydesk.native_application_browser import NativeApplicationBrowser, normalize_observation
 from applydesk.native_evidence import public_page
 from native_window_fixture import NativeWindowFixture

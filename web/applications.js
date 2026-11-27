@@ -1,6 +1,6 @@
 import {state,h,icon,labels,api,refresh,task,busy,toast,modal,taskStrip} from './ui.js';
-import {openEditor} from './editor.js';
-import {requestChat,openChatTask} from './chat.js';
+import {openEditor} from './documents.js';
+import {composeInstruction} from './assistant.js';
 import {findJobs,discoverySummary,showSearchReport} from './discovery.js';
 import {compensationLabel,descriptionItems} from './job-details.js';
 
@@ -151,12 +151,15 @@ export function jobDetails(id) {
   if(!job)return;
   const issues=[...new Set([...(job.exceptions||[]),...(job.recommendation_source?.issues||[])])].map(issue=>`<div class="notice warning">${h(issue)}</div>`).join('');
   const body=`<div class="modal-body"><div class="actions">${statusControl(job)}<a href="${h(job.url)}" target="_blank" rel="noreferrer">Job description ↗</a></div>${issues}<p class="muted small">${h(job.progress||'Not prepared yet. No employer form has been changed.')}</p><div class="details-grid"><div><h3>Company</h3>${h(job.company||'Not assessed')}</div><div><h3>Documents</h3>${job.resume_id?`<button class="inline-link" data-doc="${h(job.resume_id)}" data-job="${h(id)}">View resume</button>`:'No resume selected'}<br>${job.cover_id?`<button class="inline-link" data-doc="${h(job.cover_id)}" data-job="${h(id)}">View saved letter</button>`:h(job.cover_state==='not_required'?'/ · not required':job.cover_state==='required'?'Cover letter required · continue manually':'Cover letter: not checked')}</div><div class="wide"><h3>Compensation</h3><div class="job-details" data-compensation>${h(compensationLabel(job.compensation))||'<span class="muted">Not stated</span>'}</div></div></div>${descriptionSections(job)}<section class="detail-section"><h3>Activity</h3><ol class="timeline">${job.history.slice(-8).map(item=>`<li>${h(item.message)}</li>`).join('')||'<li>No preparation activity yet.</li>'}</ol></section><p class="muted small">Ask in chat to submit applications; application count and target locations are optional.</p></div>`;
-  const footer=`<button id="prepare-job" class="primary" ${job.status==='submitted'||['submitted','skipped'].includes(job.manual_status)?'disabled':''}>Prepare draft in chat</button>`;
+  const draft=(state.data.chat_tasks||[]).find(task=>task.kind==='application'&&task.target_id===id);
+  const footer=`${draft?'<button id="view-draft">View draft</button>':''}<button id="prepare-job" class="primary" ${job.status==='submitted'||['submitted','skipped'].includes(job.manual_status)?'disabled':''}>Prepare draft in chat</button>`;
   const dialog=modal(job.title,body,footer,'job-detail-dialog');
   bindRows(dialog);
-  dialog.querySelector('#prepare-job').onclick=event=>busy(event.target,async()=>{
-    const queued=await requestChat('application',id);dialog.close();await openChatTask(queued.id);
-  });
+  dialog.querySelector('#view-draft')?.addEventListener('click',()=>{dialog.close();openChatTask(draft.id);});
+  dialog.querySelector('#prepare-job').onclick=()=>{
+    dialog.close();
+    composeInstruction(`Prepare a draft for ${job.title||'this job'} (${job.url}).`);
+  };
 }
 
 // One confirmed employer account is shared across roles, with exact sign-in boundaries.
@@ -166,4 +169,28 @@ function accountDialog(id) {
   const origin=job.account_origin||(destination?new URL(destination).origin:'');
   const dialog=modal('Employer account',`<form><div class="modal-body"><label>Account email or username<input name="account" value="${h(job.account||state.data.profile.identity.email)}" autocomplete="off" required></label><label class="detail-section">Exact sign-in website origin<input name="origin" type="url" value="${h(origin)}" required></label><p class="field-help">Example: https://careers.company.com. Credentials will not be reused on a different origin.</p><label class="detail-section">Password<input name="password" type="password" autocomplete="new-password" placeholder="${job.has_password?'Saved in Keychain · leave blank to keep':'Enter the existing account password'}"></label><p class="muted small">Use this existing account for all roles at ${h(job.company||'this employer')}. Passwords stay in macOS Keychain.</p></div><div class="modal-foot"><button class="primary">Save for this employer</button></div></form>`);
   dialog.querySelector('form').onsubmit=event=>{event.preventDefault();busy(event.submitter,async()=>{const form=event.target;await api('job/account',{id,account:form.account.value,account_origin:form.origin.value,password:form.password.value});form.password.value='';await refresh();dialog.close();toast('Account saved.');});};
+}
+
+// Show draft content and local issues without implying submission approval.
+async function openChatTask(id) {
+  try {
+    const context=await api('chat/task?id='+encodeURIComponent(id)),task=context.task;
+    const statuses={queued:'Queued for chat',draft_ready:'Draft prepared',needs_input:'Needs input',stale:'Inputs changed'};
+    const issues=task.issues||[];
+    const documents=context.review.documents.map(doc=>`<button data-chat-document="${h(doc.id)}">${h(doc.title||doc.filename)}</button>`).join('');
+    const body=`<div class="modal-body"><span class="badge">${h(statuses[task.status])}</span><p class="muted small">Prepared by your agent. Check the draft before using it.</p>${issues.map(issue=>`<p class="notice warning">${h(issue)}</p>`).join('')}${draftContents(task)}${documents?`<h3>Documents</h3><div class="actions">${documents}</div>`:''}${['needs_input','stale'].includes(task.status)?'<button id=retry-chat-task>Retry task</button>':''}${task.kind==='profile'&&task.result?'<a href="#profile" id="review-profile-link">Review extracted facts in Profile</a>':''}</div>`;
+    const dialog=modal(task.title,body);
+    dialog.querySelector('#retry-chat-task')?.addEventListener('click',()=>{dialog.close();composeInstruction('Retry the draft task '+id+'.');});
+    dialog.querySelectorAll('[data-chat-document]').forEach(button=>button.onclick=()=>{dialog.close();openEditor(button.dataset.chatDocument);});
+    dialog.querySelector('#review-profile-link')?.addEventListener('click',()=>dialog.close());
+  } catch(error){toast(error.message,true);}
+}
+
+// The task record shows evidence and proposed answers without presenting approval.
+function draftContents(task) {
+  const result=task.result;
+  if(!result)return `<p>${task.instruction?h(task.instruction):'Waiting for the agent to prepare a draft.'}</p>`;
+  const requirements=result.analysis?.required||[];
+  const answers=result.answers||[];
+  return `${requirements.length?`<h3>Required qualifications</h3><ul>${requirements.map(item=>`<li>${h(item.text)}</li>`).join('')}</ul>`:''}${answers.length?`<h3>Proposed answers</h3>${answers.map(item=>`<p><strong>${h(item.question)}</strong><br>${h(item.answer)}</p>`).join('')}`:''}${(result.notes||[]).map(note=>`<p>${h(note)}</p>`).join('')}`;
 }

@@ -1,4 +1,4 @@
-#import "../native-browser-input.h"
+#import "../native/native-browser.h"
 
 // Pure fixture observations never inspect Chrome or generate native input.
 static NSMutableDictionary *observation(NSString *snapshot) {

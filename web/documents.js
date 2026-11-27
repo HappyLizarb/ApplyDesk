@@ -1,6 +1,4 @@
 import {state,h,icon,asset,api,refresh,busy,toast,modal,upload,taskStrip} from './ui.js';
-import {openEditor} from './editor.js';
-import {deleteDocument} from './document-deletion.js';
 
 // Uploaded resumes remain unchanged; their tags select the active application attachment.
 export function renderDocuments(root) {
@@ -76,4 +74,32 @@ async function tagResume(select,root) {
 function uploadRow(record) {
   const names={profile:'Profile',transcript:'Transcript',resume:'Resume',cover_template:'Saved template',resume_template:'Saved template'};
   return `<div class="file-row"><div class="file-info"><strong>${h(record.filename||record.title)}</strong><span>${h(names[record.kind]||'Document')}</span></div><div class="actions"><button data-document="${h(record.id)}">Preview</button><button class="quiet danger" data-delete-document="${h(record.id)}" aria-label="Delete ${h(record.filename||record.title)}">Delete</button></div></div>`;
+}
+
+// Saved documents remain available for preview and download without customization tools.
+export async function openEditor(id) {
+  let document;
+  try {document=await api('document?id='+encodeURIComponent(id));}catch(error){return toast(error.message,true);}
+  const uploaded=document.kind!=='document',title=document.title||document.filename;
+  const body=`<div class="modal-body template-single"><iframe class="editor-preview" title="${uploaded?'Uploaded resume preview':'Saved document preview'}" src="${asset(document.pdf_path)}"></iframe></div>`;
+  const files=uploaded?[[document.source_path,document.filename,'Download original']]:[
+    [document.pdf_path,title+'.pdf','Download PDF'],[document.docx_path,title+'.docx','Download DOCX']];
+  const footer=files.filter(([path])=>path).map(([path,name,label])=>`<a href="${asset(path)}" download="${h(name)}">${label}</a>`).join(' · ');
+  const dialog=modal(title,body,footer+'<button class="quiet danger" id="delete-preview-file">Delete file</button>','editor-dialog');
+  dialog.querySelector('#delete-preview-file').onclick=()=>deleteDocument(id,()=>window.dispatchEvent(new HashChangeEvent('hashchange')));
+}
+
+// A shared explicit action removes the selected file while preserving application history.
+export async function deleteDocument(identity,afterDelete) {
+  let record=[...(state.data.uploads||[]),...(state.data.resumes||[]),...(state.data.profile_imports||[]),...(state.data.documents||[])].find(item=>item.id===identity);
+  try {record??=await api('document?id='+encodeURIComponent(identity));}
+  catch(error){toast(error.message,true);return;}
+  const dialog=modal('Delete file',`<div class="modal-body"><p>Delete <strong>${h(record.filename||record.title)}</strong>?</p><p class="muted small">The stored file and previews will be removed. Work using the file will stop. Application history and saved profile facts will stay; affected drafts will need input.</p></div>`,
+    '<button id="delete-document-cancel">Cancel</button><button id="delete-document-confirm" class="danger">Delete</button>');
+  dialog.querySelector('#delete-document-cancel').onclick=()=>dialog.close();
+  dialog.querySelector('#delete-document-confirm').onclick=event=>busy(event.target,async()=>{
+    const result=await api('document/delete',{document_id:identity});
+    await refresh();dialog.close();afterDelete?.();
+    toast(result.cleanup_pending?'File removed. Disk cleanup will finish when ApplyDesk restarts.':'File deleted.');
+  });
 }

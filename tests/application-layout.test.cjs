@@ -3,8 +3,7 @@ const test = require('node:test');
 
 // Exercise the real view and service interface without launching disposable Chrome profiles.
 test('only Show moves the workspace, and closing it restores the prior bounds', async () => {
-  const {initializeApplicationWindow, updateApplicationWindow} = await import('../web/application-window.js');
-  const {workspaceLayout} = await import('../web/application-layout.js');
+  const {initializeApplicationWindow, updateApplicationWindow, workspaceLayout} = await import('../web/application-window.js');
   const view = {screenX: 55, screenY: 70, outerWidth: 850, outerHeight: 700};
   const original = {...view}, moves = [], requests = [];
   global.window = Object.assign(view, {

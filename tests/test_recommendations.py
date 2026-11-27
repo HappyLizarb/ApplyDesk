@@ -1,34 +1,30 @@
-"""Recommendation workers use synthetic browser responses, never accounts or providers."""
+"""Historical platform records remain readable when new applications use the native browser."""
 
-import copy
+from http.client import HTTPConnection
+import json
 from pathlib import Path
 import tempfile
 import threading
-import time
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
-from applydesk.recommendation_source import normalize_job
+from applydesk.recommendation_source import employer_target, process_issues, validate_source
+from applydesk.server import AppServer
 from applydesk.workspace import Workspace
-from recommendation_helpers import listing, response
+from recommendation_helpers import saved_listing
 
 
 class RecommendationTests(unittest.TestCase):
     def setUp(self):
-        # Startup and recommendation operations must not touch Keychain or a model.
-        self.temp = tempfile.TemporaryDirectory(prefix="applydesk-recommendations-test-")
+        """Use an isolated workspace and fail if historical records cause a secret lookup."""
+        self.temp = tempfile.TemporaryDirectory()
         self.secrets = Mock()
-        self.secrets.get.side_effect = AssertionError("No secret reads during recommendation imports")
+        self.secrets.get.side_effect = AssertionError("No secret reads during historical report handling")
         self.w = Workspace(Path(self.temp.name), secrets=self.secrets)
-        self.w.client = Mock(side_effect=AssertionError("No model calls during recommendation imports"))
-        self.session = Mock()
-        self.session.call.side_effect = lambda method, params=None: response(jobs=[listing()])
-        self.browser = patch("applydesk.recommendations.BrowserSession", return_value=self.session).start()
 
     def tearDown(self):
-        # Cancellation is exercised before SQLite and the local temporary directory close.
+        """Close SQLite before discarding the temporary workspace."""
         self.w.close()
-        patch.stopall()
         self.temp.cleanup()
 
     def test_restart_marks_inflight_report_interrupted_without_browser(self):
@@ -37,53 +33,6 @@ class RecommendationTests(unittest.TestCase):
         self.w.close()
         self.w = Workspace(Path(self.temp.name), secrets=self.secrets)
         self.assertEqual(self.w.state()["recommendations"]["linkedin"]["status"], "interrupted")
-        self.assertEqual(self.w.recommendations.active, {})
-        self.browser.assert_not_called()
-
-    def test_read_job_recovers_unknown_metadata_and_accepts_changed_description(self):
-        # Incomplete provenance can be refreshed, but successful source reads must be complete.
-        prior = normalize_job("linkedin", listing(title="", company="", text="", complete=False))
-        original = copy.deepcopy(prior)
-        self.session.call.return_value = response(job=listing(text="Updated required Python and testing experience. " * 6))
-        self.session.call.side_effect = None
-        fresh = self.w.recommendations.read_job(prior)
-        self.assertTrue(fresh["complete"])
-        self.assertNotEqual(fresh["description_sha256"], prior["description_sha256"])
-        self.assertEqual(prior, original)
-        self.session.call.assert_called_once_with("source_job", {"url": prior["source_url"], "id": "123"})
-        self.browser.assert_called_once_with(self.w.root / "sources/linkedin", source="linkedin", headless=False)
-        self.session.close.assert_called_once()
-
-    def test_read_job_rejects_changed_known_identity_or_incomplete_fresh_read(self):
-        # Same numeric ID cannot silently change known company/title or bypass completeness.
-        prior = normalize_job("linkedin", listing())
-        for changes in ({"company": "Different Company"}, {"title": "Different Role"}, {"complete": False}, {"id": "456", "url": "https://www.linkedin.com/jobs/view/456/"}):
-            self.session.call.side_effect = None
-            self.session.call.return_value = response(job=listing(**changes))
-            with self.subTest(changes=changes), self.assertRaises(ValueError):
-                self.w.recommendations.read_job(prior)
-            self.assertEqual(self.w.recommendations.active, {})
-        self.assertEqual(self.session.close.call_count, 4)
-
-    def test_tampered_capture_fails_before_browser_or_provider(self):
-        # A digest alone cannot bind source metadata; the canonical prefix must still match.
-        prior = normalize_job("linkedin", listing())
-        for changes in ({"description_sha256": "bad"}, {"captured_at": "2099-01-01T00:00:00+00:00"},
-                        {"captured_at": "2026-01-01"}, {"company": "Changed Company"}, {"job_id": "456"}):
-            with self.subTest(changes=changes), self.assertRaises(ValueError):
-                self.w.recommendations.read_job({**prior, **changes})
-        self.browser.assert_not_called()
-        self.w.client.assert_not_called()
-
-    def test_invalid_employer_links_stay_incomplete_without_navigation(self):
-        # Broken or private destinations are retained as issues, never navigation targets.
-        for url in ({"url": "malformed"}, "http://127.0.0.1/jobs/123", "https://app.joinhandshake.com/job-search/123"):
-            with self.subTest(url=url):
-                source = normalize_job("linkedin", listing(employer_url=url))
-                self.assertFalse(source["complete"])
-                self.assertEqual(source["employer_url"], "")
-                self.assertTrue(source["issues"])
-        self.browser.assert_not_called()
 
     def test_historic_false_zero_is_displayed_as_capture_error_without_rewriting_records(self):
         """Only contradictory blocked zero messages change in memory; saved reports remain untouched."""
@@ -97,11 +46,10 @@ class RecommendationTests(unittest.TestCase):
             saved = {"status": status, "message": message, "issues": ["Earlier issue"]}
             self.w.store.put("recommendation", "linkedin", saved)
             self.assertEqual(self.w.recommendations.state()["linkedin"], saved)
-        self.browser.assert_not_called()
 
     def test_restart_marks_legacy_incomplete_rows_for_review_without_reading_source(self):
         # Previously imported placeholders need a clear status even before Refresh is used.
-        source = normalize_job("linkedin", listing(text="", complete=False))
+        source = saved_listing(text="", complete=False)
         job = self.w.store.add_job(source["source_url"])
         original = self.w.store.job(job["id"], recommendation_source=source)
         self.w.close()
@@ -109,33 +57,125 @@ class RecommendationTests(unittest.TestCase):
         migrated = self.w.store.get("job", job["id"])
         self.assertEqual(migrated["status"], "needs_review")
         self.assertEqual(migrated["recommendation_source"], original["recommendation_source"])
-        self.browser.assert_not_called()
         self.secrets.get.assert_not_called()
 
-    def test_quit_interrupts_a_listing_read_before_waiting_for_the_chat_worker(self):
-        """A pending browser read must not hold Quit until the external site times out."""
-        entered, cancelled = threading.Event(), threading.Event()
-        session = Mock()
-        session.cancel.side_effect = cancelled.set
-        def pending_read(method, params):
-            entered.set()
-            cancelled.wait(2)
-            return {"source": "linkedin", "status": "blocked"}
-        session.call.side_effect = pending_read
-        def read_listing():
-            with self.assertRaises(ValueError):
-                self.w.recommendations.read_job(normalize_job("linkedin", listing()))
-        with patch("applydesk.recommendations.BrowserSession", return_value=session):
-            worker = threading.Thread(target=read_listing)
-            self.w.orchestrator.thread = worker
-            worker.start()
-            self.assertTrue(entered.wait(1))
-            started = time.monotonic()
-            self.w.orchestrator.close()
-        self.assertTrue(cancelled.is_set())
-        self.assertFalse(worker.is_alive())
-        self.assertLess(time.monotonic() - started, 1)
+    def test_defaults_ignore_historic_reports_and_nonboolean_records(self):
+        # A prior successful import cannot silently opt either platform into refreshes.
+        self.w.store.put("recommendation", "linkedin", {"status": "complete", "added_count": 5})
+        self.w.store.put("recommendation_preference", "handshake", {"enabled": 1})
+        expected = {"handshake": {"enabled": False}, "linkedin": {"enabled": False}}
+        self.assertEqual(self.w.state()["recommendation_preferences"], expected)
+        self.secrets.get.assert_not_called()
 
 
-if __name__ == "__main__":
-    unittest.main()
+class PreferenceRouteTests(unittest.TestCase):
+    def setUp(self):
+        # The only real network traffic in these tests is the app's loopback HTTP API.
+        self.temp = tempfile.TemporaryDirectory(prefix="applydesk-preference-route-")
+        self.w = Workspace(Path(self.temp.name), secrets=Mock())
+        self.server = AppServer(self.w)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        # Stop request handlers before closing their SQLite workspace.
+        self.server.shutdown()
+        self.thread.join(timeout=2)
+        self.server.server_close()
+        self.w.close()
+        self.temp.cleanup()
+
+    def post(self, data, headers=None):
+        # Call the actual route so the busy exception cannot skip origin/session checks.
+        request_headers = {"Cookie": "applydesk=" + self.server.token, "Origin": self.server.origin,
+                           "X-ApplyDesk": "1", "Content-Type": "application/json", **(headers or {})}
+        connection = HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
+        try:
+            connection.request("POST", "/api/recommendations/preference", json.dumps(data), request_headers)
+            response = connection.getresponse()
+            return response.status, json.loads(response.read())
+        finally:
+            connection.close()
+
+    def test_retired_route_cannot_change_saved_preferences(self):
+        # Historical preferences survive, but old UI requests cannot enable platform sessions.
+        data = {"platform": "handshake", "enabled": True}
+        self.assertEqual(self.post(data)[0], 400)
+        self.assertEqual(self.w.state()["recommendation_preferences"]["handshake"], {"enabled": False})
+        self.assertEqual(self.w.tasks, {})
+
+    def test_retired_route_stays_disabled_during_work_and_requires_authorization(self):
+        # Removed controls cannot mutate a workspace through an old or unauthorized request.
+        self.w.tasks["test"] = {"id": "test", "status": "running"}
+        data = {"platform": "handshake", "enabled": False}
+        self.assertEqual(self.post(data)[0], 400)
+        self.assertEqual(self.post({**data, "enabled": True})[0], 400)
+        self.assertEqual(self.post({**data, "enabled": 0})[0], 400)
+        for headers in ({"Origin": "https://attacker.example"}, {"Cookie": ""}, {"X-ApplyDesk": ""}):
+            with self.subTest(headers=headers):
+                self.assertEqual(self.post(data, headers)[0], 403)
+
+
+def analysis():
+    """Only this complete, supported baseline may reach an independent audit."""
+    return {"company": "Example Labs", "title": "Software Engineer", "requirements_complete": True,
+            "required": [{"text": "Python required", "evidence_ids": ["skills.0"], "met": True}],
+            "process_complete": True, "identity_consistent": True, "employment_type_consistent": True,
+            "consistency_issues": [], "process_restrictions": [], "passed": True, "issues": []}
+
+
+class RecommendationChecksTests(unittest.TestCase):
+    """Check integrity and eligibility of stored captures before preparing an application."""
+
+    def test_incomplete_capture_and_modified_bytes_fail(self):
+        for changes in ({"complete": False}, {"description": "Replacement job"}, {"issues": ["Show more is collapsed"]}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                validate_source({**saved_listing(), **changes})
+
+    def test_bad_platform_source_cannot_claim_a_valid_capture(self):
+        for url in ("https://evil.test/jobs/12345", "https://linkedin.com.evil.test/jobs/12345", "http://linkedin.com/jobs/12345"):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                validate_source({**saved_listing(), "source_url": url})
+
+    def test_unknown_process_and_contradictory_type_cannot_pass(self):
+        self.assertEqual(process_issues(analysis(), saved_listing()), [])
+        for key in ("process_complete", "identity_consistent", "employment_type_consistent", "process_restrictions", "consistency_issues"):
+            result = analysis()
+            result.pop(key)
+            with self.subTest(key=key):
+                self.assertTrue(process_issues(result, saved_listing()))
+        result = {**analysis(), "employment_type_consistent": False,
+                  "consistency_issues": ["The description is a permanent role but the card says internship."]}
+        self.assertTrue(process_issues(result, saved_listing()))
+
+    def test_verified_listing_can_reach_form_before_account_setup(self):
+        """A pending sign-in does not disqualify a role; explicit posting restrictions still apply."""
+        review = {**analysis(), "process_complete": False}
+        self.assertEqual(process_issues(review, saved_listing(), check_on_form=True), [])
+        self.assertTrue(process_issues({**review, "identity_consistent": False}, saved_listing(), check_on_form=True))
+        broken = {**review, "process_restrictions": [{"kind": "unknown"}]}
+        self.assertTrue(process_issues(broken, saved_listing(), check_on_form=True))
+
+    def test_application_cap_and_availability_always_require_manual_evidence(self):
+        rules = [("application_limit", "Apply to at most two roles across our affiliates."),
+                 ("availability_statement", "State your availability dates on your resume."),
+                 ("other", "Complete the prerequisite assessment before applying.")]
+        for kind, quote in rules:
+            result = analysis()
+            result["process_restrictions"] = [{"kind": kind, "text": quote, "quote": quote, "met": True, "count": 0}]
+            captured = saved_listing(text="Fixture role. " + quote)
+            with self.subTest(kind=kind):
+                self.assertTrue(any("Manual verification" in issue for issue in process_issues(result, captured)))
+
+    def test_observed_application_limit_blocks_without_a_second_agent(self):
+        """Process restrictions remain enforced locally after the single extraction."""
+        quote = "Apply to at most two roles across all affiliates."
+        captured = saved_listing(text="Fixture role. " + quote)
+        result = analysis()
+        result["process_restrictions"] = [{"kind": "application_limit", "text": quote, "quote": quote}]
+        self.assertTrue(any("Manual verification" in issue for issue in process_issues(result, captured)))
+
+    def test_missing_or_platform_employer_link_pauses(self):
+        for target in (None, "", "https://www.linkedin.com/jobs/view/12345", "http://employer.example.test/jobs/12345"):
+            with self.subTest(target=target), self.assertRaises(ValueError):
+                employer_target({**saved_listing(), "employer_url": target})

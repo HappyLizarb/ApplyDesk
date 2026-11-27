@@ -32,17 +32,6 @@ class MemorySecrets:
         self.values[key] = value
 
 
-def authentication_page(action="login", realm="https://jobs.example.test/team/"):
-    """Represent one employer's separate native authentication endpoint."""
-    endpoint = realm + ("register" if action == "create_account" else "login")
-    metadata = {"form_id": "auth", "form_action": endpoint, "form_method": "POST"}
-    fields = [{**metadata, "field_id": "email", "label": "Email", "type": "email"},
-              {**metadata, "field_id": "password", "label": "Password", "type": "password"}]
-    button = {**metadata, "field_id": "submit-auth", "type": "submit", "auth_form": True, "action": action}
-    return {"snapshot_id": "auth-page", "url": endpoint, "text": "Circuit Example applicant account",
-            "fields": fields, "buttons": [button]}
-
-
 class EmployerAccountFixture(unittest.TestCase):
     """Provide isolated employer records, a keychain and login forms for account tests."""
 

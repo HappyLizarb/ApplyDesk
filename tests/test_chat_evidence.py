@@ -6,8 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from applydesk.chat_evidence import PROMPT, record_chat_evidence
-from applydesk.application_answers import with_application_source
-from applydesk.mapping import answer_field
+from applydesk.agent_context import with_application_source
 from applydesk.intelligence import validate_eligibility
 from applydesk.profile import model_profile
 from chat_helpers import ChatFixture
@@ -52,10 +51,8 @@ class ChatEvidenceTests(ChatFixture):
         self.record()
         saved = self.w.profile()
         fact = next(row for row in saved["facts"] if row["text"] == self.claim["text"])
-        field = {"field_id": "shift", "type": "text", "label": "Which shift do you prefer?"}
-        self.assertEqual(answer_field(field, with_application_source(saved, {"company": "Example Labs"}), "US"),
-                         {"field_id": "shift", "value": "Evening", "fact_ids": [fact["id"]]})
-        self.assertIsNone(answer_field(field, with_application_source(saved, {"company": "Sample Labs"}), "US"))
+        self.assertTrue(fact["confirmed"])
+        self.assertIn(fact, with_application_source(saved, {"company": "Example Labs"})["facts"])
 
     def test_prior_confirmation_gets_durable_ids_in_draft_context(self):
         revision = self.w.profile()["revision"]

@@ -1,4 +1,4 @@
-#import "../native-browser-input.h"
+#import "../native/native-browser.h"
 
 // Fixtures represent only observed controls; no credentials or native events are read or posted.
 static NSDictionary *chooser(NSDictionary *button, NSArray *fields) {

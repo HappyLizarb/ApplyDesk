@@ -1,5 +1,4 @@
-#import "../native-browser.h"
-#import "../native-browser-input.h"
+#import "../native/native-browser.h"
 #import <Carbon/Carbon.h>
 #include <unistd.h>
 

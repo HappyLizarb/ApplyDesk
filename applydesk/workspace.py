@@ -2,11 +2,8 @@
 
 import base64
 import threading
-import shlex
-import sys
 from pathlib import Path
 
-from . import PROGRAM_ROOT
 from .documents import DocumentService
 from .employer_accounts import EmployerAccounts
 from .keychain import Keychain
@@ -14,7 +11,7 @@ from .profile import PROFILE_SCHEMA_VERSION, empty_profile, model_profile, profi
 from .agent_tasks import AgentTasks
 from .native_application_browser import NativeApplicationBrowser
 from .orchestrator import Orchestrator
-from .recommendations import Recommendations
+from .recommendation_source import Recommendations
 from .resumes import ResumeLibrary
 from .storage import Store, now
 
@@ -56,7 +53,6 @@ class Workspace:
         return {"profile": self.profile(), "profile_schema": PROFILE_SCHEMA_VERSION,
                 "settings": {"cover_template_id": self.settings().get("cover_template_id", "")},
                 "chat_tasks": self.chat.list(), "draft_only": False, "submission_requires_chat_limit": False, "orchestrator": self.orchestrator.state(),
-                "chat_command": shlex.join([sys.executable, str(PROGRAM_ROOT / "agent.py")]),
                 "profile_imports": [{key: record.get(key) for key in ("id", "filename", "needs_manual_entry")}
                                     for record in self.docs.manifest.copy().values() if record["kind"] == "profile"],
                 "discovery": self.store.get("discovery", "main", {}),
@@ -72,21 +68,6 @@ class Workspace:
     def client(self, role):
         """Provider access is disabled; this experiment uses only the user's chat."""
         raise ValueError("Provider calls are disabled. Continue the draft in your connected chat.")
-
-    def save_settings(self, data):
-        """Only the cover-template preference remains editable; old credentials stay unused."""
-        if set(data) != {"cover_template_id"}:
-            raise ValueError("Agent settings are no longer available in chat-only mode.")
-        template_id = data["cover_template_id"]
-        if not isinstance(template_id, str):
-            raise ValueError("Choose a cover letter template.")
-        if template_id:
-            template = self.docs.get_template(template_id)
-            if template["kind"] != "cover_template" or not template["confirmed"]:
-                raise ValueError("Choose a confirmed cover letter template.")
-        current = {**self.settings(), "cover_template_id": template_id}
-        self.store.put("settings", "main", current)
-        return {"cover_template_id": template_id}
 
     def save_profile(self, data):
         """Changing facts invalidates pending readiness until eligibility is checked again."""
@@ -160,7 +141,6 @@ class Workspace:
     def close(self):
         """Close controlled browser sessions without changing application statuses."""
         self.orchestrator.close()
-        self.recommendations.close()
         for session in self.sessions.values():
             if getattr(self.application_browser, "native", False) and getattr(session, "manager", None) is self.application_browser:
                 session.park()

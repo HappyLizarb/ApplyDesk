@@ -1,44 +1,32 @@
-"""Cancellation checks surround every application browser operation, including slow page loads."""
+"""Own application browser sessions and expose their visible window to the local UI."""
 
 import queue
 import threading
-
-from .browser_bridge import BrowserSession
 
 
 class ApplicationSession:
     """Bind one job to the shared browser while checking every application operation."""
 
-    def __init__(self, engine, root, *, job_id=None, **options):
+    def __init__(self, engine, *, job_id=None, research=False):
+        """Register a research tab or attach to the saved job in the shared native window."""
         self.engine = engine
-        self.agent_driven = options.pop("agent_driven", False)
-        self.job_id, self.application_source = job_id, options.get("application_source")
-        manager = getattr(getattr(engine, "w", None), "application_browser", None)
-        research = options.pop("research", False) and getattr(manager, "native", False)
-        self.manager = manager if job_id or research else None
-        if research:
-            self.job_id = manager.register_research()
-            engine.w.sessions[self.job_id] = self
+        self.manager = engine.w.application_browser
         self.research = research
-        self.owned_browser = None if self.manager else BrowserSession(root, **options)
-
-    @property
-    def browser(self):
-        """Cancellation and status always target the manager's current browser generation."""
-        return self.manager.browser if self.manager else self.owned_browser
+        self.job_id = self.manager.register_research() if research else job_id
+        if not self.job_id:
+            raise ValueError("An application session requires a saved job.")
+        if research:
+            engine.w.sessions[self.job_id] = self
 
     def call(self, method, params=None):
         """A late browser result cannot continue a cancelled application workflow."""
-        if method == "open" and self.agent_driven:
-            params = {**(params or {}), "agent_driven": True}
-        if method == "show" and self.manager:
+        if method == "show":
             return self.manager.call(self.job_id, method, params)
         self.engine.check_active()
         results = queue.Queue()
         def execute():
             try:
-                result = (self.manager.call(self.job_id, method, params, self.application_source, self.engine.check_active)
-                          if self.manager else self.browser.call(method, params))
+                result = self.manager.call(self.job_id, method, params, checkpoint=self.engine.check_active)
                 results.put((True, result))
             except Exception as exc:
                 results.put((False, exc))
@@ -47,9 +35,7 @@ class ApplicationSession:
             try:
                 self.engine.check_active()
             except InterruptedError:
-                target = self.manager or self.browser
-                if target:
-                    target.interrupt()
+                self.manager.interrupt()
                 raise
             try:
                 success, result = results.get(timeout=.1)
@@ -62,23 +48,54 @@ class ApplicationSession:
 
     def park(self):
         """Keep the last form visible after completion or a job-specific blocker."""
-        if self.manager:
-            self.manager.park(self.job_id)
-        elif self.browser:
-            self.browser.interrupt()
+        self.manager.park(self.job_id)
 
     def cancel(self):
         """Explicit Stop revokes browser writes without waiting for an in-flight call."""
-        target = self.manager or self.browser
-        if target:
-            target.interrupt()
+        self.manager.interrupt()
 
     def close(self):
         """Retain the reusable research tab; deletion closes only an explicitly selected job tab."""
         if self.research:
             self.park()
-        elif self.manager:
-            self.manager.close_job(self.job_id)
         else:
-            self.browser.close()
+            self.manager.close_job(self.job_id)
 
+
+def active_browser(workspace):
+    """Retained tabs stay inspectable after completion or Stop without restoring application authority."""
+    manager = workspace.application_browser
+    job_id = manager.last_job_id
+    session = workspace.sessions.get(job_id)
+    if not manager.live() or not job_id or not session:
+        raise ValueError("There is no application window open yet. It appears when the agent opens an application.")
+    return job_id, session
+
+
+def status(workspace):
+    """Expose availability and job identity without revealing browser internals or credentials."""
+    try:
+        job_id, _ = active_browser(workspace)
+    except ValueError:
+        return {"available": False, "job_id": None}
+    return {"available": True, "job_id": job_id, "workspace_id": workspace.application_browser.workspace_id}
+
+
+def show_application(workspace, bounds=None):
+    """Queue a presentation-only action so the HTTP lock cannot delay Stop during navigation."""
+    _, session = active_browser(workspace)
+    task = workspace.tasks.get("show-application", {})
+    if task.get("status") == "running":
+        return {"task": "show-application"}
+    return workspace.start("show-application", session.call, "show", {"bounds": bounds} if bounds else {})
+
+
+def validate_bounds(bounds):
+    """Only bounded integer window geometry is accepted; it never supplies URLs or browser actions."""
+    if not isinstance(bounds, dict) or set(bounds) != {"left", "top", "width", "height"}:
+        raise ValueError("Window bounds need left, top, width and height.")
+    for key, value in bounds.items():
+        low, high = (-32768, 32768) if key in {"left", "top"} else (320, 16384)
+        if type(value) is not int or not low <= value <= high:
+            raise ValueError("Window bounds must use valid integer positions and dimensions.")
+    return bounds

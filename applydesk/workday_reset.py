@@ -124,7 +124,7 @@ def request_reset_email(engine, job_id):
             raise ValueError("The saved employer account and Workday tenant could not be verified.")
         if account.get("reset_email"):
             return account["reset_email"]
-        session = ApplicationSession(engine, engine.w.root, job_id=job_id)
+        session = ApplicationSession(engine, job_id=job_id)
         try:
             return _dispatch(engine, session, account)
         finally:

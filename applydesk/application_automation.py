@@ -9,7 +9,7 @@ from .application_client import ApplicationClient
 from .application_intent import resolve_intent
 from .application_policy import SCOPE_PROMPT, search_scope, validate_scope
 from .application_session import ApplicationSession
-from .application_submission import attempt_key, submit_ready
+from .application_submission import attempt_key, finish_attempt, submit_ready
 from .applications import Applications
 from .chatgpt_transport import AccountError
 from .storage import now
@@ -28,7 +28,6 @@ class ApplicationAutomation:
         for attempt in self.w.store.all("submission_attempt"):
             if attempt["status"] == "submitting":
                 job = self.w.store.get("job", attempt["job_id"])
-                from .application_submission import finish_attempt
                 finish_attempt(self.w, job, attempt, "submission_unknown", {})
 
     def start(self, job_ids=None):
@@ -182,7 +181,7 @@ class ApplicationAutomation:
         client = functools.partial(ApplicationClient, self.engine, job_id=job["id"])
         scope = functools.partial(self._scope, client)
         choice = {"id": self.run["resume_id"], "sha256": self.run["resume_sha256"]} if self.run.get("resume_id") else None
-        application = Applications(self.w, client, self.check_active, scope, functools.partial(ApplicationSession, self.engine), resume_choice=choice, agent_driven=True)
+        application = Applications(self.w, client, self.check_active, scope, functools.partial(ApplicationSession, self.engine), resume_choice=choice)
         try:
             ready = application.prepare(job["id"])
             if ready["status"] != "ready":

@@ -9,12 +9,12 @@ from applydesk.chatgpt_transport import AccountError
 from applydesk.orchestrator_prompts import SELF_CHECK
 from applydesk.application_client import STEP_BOUNDARY
 from applydesk.providers import ProviderError
-from applydesk.tool_progress import ToolProgress
+from applydesk.orchestrator_tools import ToolProgress
 
 
 class AutoStartApplicationTests(unittest.TestCase):
     def setUp(self):
-        self.case = public_applications.PublicApplicationTests()
+        self.case = public_applications.PublicApplicationFixture()
         self.case.setUp()
         self.addCleanup(self.case.tearDown)
 
@@ -62,7 +62,7 @@ class AutoStartApplicationTests(unittest.TestCase):
         run = case.run_public()
         self.assertEqual((len(analyses), run["attempted_count"], run["submitted_count"]), (2, 1, 1))
         self.assertEqual(analyses[0], analyses[1])
-        self.assertEqual(sum(browser.methods.count("submit") for browser in case.browsers), 1)
+        self.assertEqual(sum(browser.clicks for browser in case.browsers), 1)
 
     def test_retry_continues_interrupted_run_without_a_new_grant_or_duplicate(self):
         case = self.case
@@ -89,7 +89,7 @@ class AutoStartApplicationTests(unittest.TestCase):
         self.assertEqual((resumed["id"], resumed["message_id"]), (first["id"], message["id"]))
         self.assertEqual((resumed["limit"], resumed["attempted_count"], resumed["submitted_count"]), (2, 2, 2))
         self.assertEqual(len(case.w.store.all("application_run")), 1)
-        self.assertEqual(sum(browser.methods.count("submit") for browser in case.browsers), 2)
+        self.assertEqual(sum(browser.clicks for browser in case.browsers), 2)
         self.assertEqual(case.run_public()["attempted_count"], 2)
 
     def test_timer_does_not_resume_a_non_limit_interrupted_application_run(self):

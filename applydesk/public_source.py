@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from .discovery import canonical_url, page_problem
 from .native_page import incomplete_capture_message
-from .recommendation_checks import normalized, same_workday_application, same_workday_job, validate_source
+from .recommendation_source import normalized, same_workday_application, same_workday_job, validate_source
 
 
 def validate_public_source(source):

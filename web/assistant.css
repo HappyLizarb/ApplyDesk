@@ -96,3 +96,15 @@ main[data-view="settings"] .panel-heading{align-items:center;flex-wrap:wrap}
   .agent-menu-trigger{gap:6px;font-size:12px}
   .agent-menu-popover{right:0;width:min(296px,100%);padding:12px 14px}
 }
+
+/* The timer shares the account toolbar without taking space from the typed prompt. */
+.composer-tools{display:flex;align-items:center;gap:4px;flex:none;margin-right:auto}
+.composer-tools .composer-account-link{margin:0}
+.composer-timer-button{width:36px;height:36px;flex:none;padding:0;border:0;color:var(--muted)}
+.composer-timer-button:hover,.composer-timer-button.active{color:var(--text)}
+.composer-timer-button .icon{width:18px;height:18px}
+.auto-start-dialog{width:min(400px,calc(100vw - 32px))}
+.auto-start-fields{display:grid;gap:20px}
+.auto-start-fields p{margin:0}
+.auto-start-interval{display:grid;grid-template-columns:1fr minmax(60px,80px) minmax(90px,120px);align-items:center;gap:10px}
+.auto-start-interval input,.auto-start-interval select{margin:0;min-width:0}

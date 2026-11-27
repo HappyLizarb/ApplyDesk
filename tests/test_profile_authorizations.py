@@ -8,7 +8,6 @@ from unittest.mock import Mock
 from applydesk.agent_context import inputs_for
 from applydesk.agent_contract import profile_draft
 from applydesk.intelligence import extract_profile
-from applydesk.mapping import answer_field
 from applydesk.profile import empty_profile, model_profile, profile_with_defaults, validate_profile
 
 
@@ -36,7 +35,6 @@ class AuthorizationDetailTests(unittest.TestCase):
                                     resumes=Mock(categories=Mock(return_value=["General"]), list=Mock(return_value=[])))
         context = inputs_for(workspace, {"kind": "application", "target_id": "example"})
         self.assertEqual(context["profile"]["authorizations"], source["authorizations"])
-        self.assertIsNone(answer_field({"field_id": "a", "label": "Are you authorized to work in the US?"}, saved, "US"))
 
     def test_status_options_do_not_grant_legal_permission(self):
         """Sponsorship and immigration labels never replace an explicit legal authorization fact."""
@@ -97,5 +95,58 @@ class AuthorizationDetailTests(unittest.TestCase):
                 validate_profile(source, empty_profile())
 
 
-if __name__ == "__main__":
-    unittest.main()
+class VoluntaryDisclosureTests(unittest.TestCase):
+    def profile(self):
+        """Synthetic applicant explicitly supplies three disclosures, leaving ethnicity unanswered."""
+        draft = empty_profile()
+        draft['identity'].update(legal_name='Test Person', email='test@example.invalid')
+        draft['confirmed'] = True
+        draft['preferences'].update(race='Asian', veteran='no', disability='no')
+        return validate_profile(draft, empty_profile())
+
+    def test_roundtrip_keeps_explicit_answers_and_no_ethnicity_inference(self):
+        profile = self.profile()
+        saved = validate_profile(profile, profile)
+        self.assertEqual(saved['preferences']['race'], 'Asian')
+        self.assertEqual(saved['preferences']['hispanic'], 'unknown')
+        facts = {fact['id']: fact for fact in saved['facts']}
+        self.assertEqual(facts['preferences.race']['kind'], 'disclosure')
+        screened = model_profile(saved)
+        for key in ('race', 'hispanic', 'veteran', 'disability', 'gender'):
+            self.assertNotIn(key, screened['preferences'])
+        self.assertFalse(any(fact['kind'] == 'disclosure' for fact in screened['facts']))
+
+    def test_military_service_requires_its_own_answer_and_stays_out_of_screening(self):
+        profile = self.profile()
+        self.assertEqual(profile['preferences']['veteran_service'], 'unknown')
+        profile['preferences']['veteran_service'] = 'no'
+        saved = validate_profile(profile, profile)
+        self.assertNotIn('veteran_service', model_profile(saved)['preferences'])
+        del profile['preferences']['veteran_service']
+        self.assertEqual(validate_profile(profile, saved)['preferences']['veteran_service'], 'no')
+        profile['preferences']['veteran_service'] = 'yes'
+        updated = validate_profile(profile, saved)
+        self.assertEqual(updated['preferences']['veteran_service'], 'yes')
+        self.assertNotIn('veteran_service', model_profile(updated)['preferences'])
+
+    def test_old_profiles_and_invalid_structured_race(self):
+        old = self.profile()
+        del old['preferences']['race']
+        del old['preferences']['hispanic']
+        self.assertEqual(profile_with_defaults(old)['preferences']['race'], '')
+        old['preferences']['race'] = {'inferred': 'Asian'}
+        with self.assertRaisesRegex(ValueError, 'plain text'):
+            validate_profile(old, old)
+
+    def test_gender_roundtrip_is_explicit_and_excluded_from_screening(self):
+        profile = self.profile()
+        self.assertEqual(profile['preferences']['gender'], '')
+        profile['preferences']['gender'] = 'Male'
+        saved = validate_profile(profile, profile)
+        self.assertEqual(saved['preferences']['gender'], 'Male')
+        self.assertIn({'id': 'preferences.gender', 'kind': 'disclosure', 'text': 'Male', 'confirmed': True}, saved['facts'])
+        self.assertNotIn('gender', model_profile(saved)['preferences'])
+        self.assertFalse(any(fact['id'] == 'preferences.gender' for fact in model_profile(saved)['facts']))
+        saved['preferences']['gender'] = {'inferred': 'Male'}
+        with self.assertRaisesRegex(ValueError, 'plain text'):
+            validate_profile(saved, saved)

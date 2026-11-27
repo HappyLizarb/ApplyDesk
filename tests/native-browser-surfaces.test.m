@@ -1,4 +1,4 @@
-#import "../native-browser-window.h"
+#import "../native/native-browser.h"
 
 static NSMutableDictionary *nodes;
 static NSArray *windowRecords;
@@ -31,7 +31,7 @@ static CFArrayRef fixtureWindows(CGWindowListOption options, CGWindowID identity
 }
 
 #define CGWindowListCopyWindowInfo fixtureWindows
-#include "../native-browser-surfaces.m"
+#include "../native/native-browser-surfaces.m"
 #undef CGWindowListCopyWindowInfo
 
 // CG metadata uses the same serialization as the OS while all identities stay fixture-local.

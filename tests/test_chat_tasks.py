@@ -4,7 +4,7 @@ import copy
 from unittest.mock import patch
 
 from chat_helpers import ChatFixture
-from test_documents import sample_docx
+from test_documents import saved_letter
 from applydesk.workspace import Workspace
 from test_workspace import FakeSecrets
 from applydesk.agent_contract import profile_draft
@@ -195,21 +195,13 @@ class ChatTaskTests(ChatFixture):
         payload["result"]["cover_requirement"] = {"state": "required", "quote": "Cover letter required",
             "source_text": "Cover letter required", "source_url": "https://example.test/apply"}
         with patch("applydesk.agent_contract.public_job_url", side_effect=lambda url: url):
-            with patch.object(self.w.docs, "create", side_effect=AssertionError("Unexpected letter generation")):
-                with self.assertRaisesRegex(ValueError, "requires a cover letter"):
-                    self.w.chat.submit(payload)
+            with self.assertRaisesRegex(ValueError, "requires a cover letter"):
+                self.w.chat.submit(payload)
         self.assertEqual(self.w.docs.get("resume"), self.resume)
         self.assertIsNone(self.w.store.get("job", self.job["id"]).get("cover_id"))
 
-    def test_capture_respects_removed_records_and_blocks_survive_restart(self):
-        """Copied evidence is marked as reported and cannot restore excluded applications."""
-        capture = {"url": self.job["url"], "company": "Example", "title": "Engineer", "details": "Required: Python."}
-        with patch("applydesk.agent_tasks.public_job_url", side_effect=lambda url: url):
-            self.assertEqual(self.w.chat.capture(capture)["capture_verification"], "agent_reported")
-            self.w.store.remove_jobs([self.job["id"]])
-            with self.assertRaises(ValueError):
-                self.w.chat.capture(capture)
-        self.w.store.job(self.job["id"], removed_at=None)
+    def test_blocked_tasks_survive_restart(self):
+        """A blocked task and its evidence survive a workspace restart."""
         self.w.chat.block({"task_id": self.task["id"], "version": self.w.chat.get(self.task["id"])["version"], "issues": ["Need more evidence"]})
         self.w.close()
         self.w = Workspace(self.w.root, secrets=FakeSecrets())
@@ -220,8 +212,6 @@ class ChatTaskTests(ChatFixture):
         self.w.secrets.set("api:openai", "saved-before-experiment")
         with self.assertRaises(ValueError):
             self.w.client("application")
-        with self.assertRaises(ValueError):
-            self.w.save_settings({"roles": {}, "api_keys": {"openai": "replacement"}})
         self.assertEqual(self.w.secrets.get("api:openai"), "saved-before-experiment")
         self.assertEqual(set(self.w.state()["settings"]), {"cover_template_id"})
 
@@ -243,8 +233,7 @@ class ChatTaskTests(ChatFixture):
 
     def test_legacy_letter_edit_task_is_readable_but_cannot_restart(self):
         """Saved files survive; queued legacy customization does not trigger a model request."""
-        template = self.w.docs.import_file("Letter.docx", sample_docx(), "cover_template")
-        original = self.w.docs.create(template["id"], {}, "Original letter", job_id=self.job["id"])
+        _, original = saved_letter(self.w.docs, self.job["id"])
         task = {"id": "legacy-letter-edit", "kind": "document", "target_id": original["id"], "instruction": "Old edit",
                 "status": "queued", "draft_revision": 0, "reviews": {}, "document_ids": [], "result": None}
         self.w.store.put("chat_task", task["id"], task)

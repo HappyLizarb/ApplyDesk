@@ -42,7 +42,7 @@ class ResearchRoutingTests(ChatFixture):
 
     def test_progress_resumes_when_a_tool_result_changes(self):
         """Repeated polling can continue when it brings new information."""
-        from applydesk.tool_progress import ToolProgress
+        from applydesk.orchestrator_tools import ToolProgress
         values = iter([{"status": "waiting"}] * 3 + [{"status": "complete", "jobs": ["one"]}])
         progress = ToolProgress(lambda _: next(values))
         for _ in range(4):
@@ -52,7 +52,7 @@ class ResearchRoutingTests(ChatFixture):
 
     def test_explicit_refresh_is_available_when_a_page_has_changed(self):
         """The agent can request fresh content instead of being restricted to cached reads."""
-        from applydesk.tool_progress import ToolProgress
+        from applydesk.orchestrator_tools import ToolProgress
         values = iter([{"text": "old"}, {"text": "new"}])
         progress = ToolProgress(lambda _: next(values))
         first = progress.execute({"name": "read_page", "arguments": '{"url":"https://example.test/jobs"}'})

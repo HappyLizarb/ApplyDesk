@@ -2,6 +2,9 @@
 
 import copy
 import json
+import os
+import subprocess
+import threading
 import time
 from unittest.mock import patch
 
@@ -62,9 +65,12 @@ class OrchestratorTests(ChatFixture):
         self.assertEqual(prompt, DRAFTER)
         return response(json.dumps({"blocked": ["Missing application answer"]} if self.fail_draft else {"result": self.payload()["result"]}))
 
-    def test_automatic_queue_uses_one_agent_and_keeps_job_draft(self):
+    @patch("applydesk.orchestrator.sys.platform", "darwin")
+    @patch("applydesk.orchestrator.subprocess.Popen")
+    def test_automatic_queue_uses_one_agent_and_keeps_job_draft(self, launch):
         """Connected idle app processes the queue without a Codex process or user chat turn."""
         original = self.w.profile()
+        launch.assert_not_called()
         with patch.object(self.engine.runner, "_request", side_effect=self.model):
             self.engine.start()
             deadline = time.monotonic() + 5
@@ -72,6 +78,8 @@ class OrchestratorTests(ChatFixture):
                 if self.w.chat.get(self.task["id"])["task"]["status"] == "draft_ready" and self.engine.active is None:
                     break
                 time.sleep(.02)
+            launch.assert_called_once_with(["/usr/bin/caffeinate", "-i", "-w", str(os.getpid())], stdin=subprocess.DEVNULL)
+            launch.return_value.wait.assert_called_once()
             self.engine.control({"paused": True})
         task = self.w.chat.get(self.task["id"])["task"]
         self.assertEqual(task["status"], "draft_ready")
@@ -157,17 +165,44 @@ class OrchestratorTests(ChatFixture):
         self.assertEqual(history[0]["status"], "complete")
         self.assertEqual(self.w.chat.get(self.task["id"])["task"]["status"], "draft_ready")
 
-    def test_provider_failure_pauses_automatic_routing_instead_of_retry_loop(self):
+    @patch("applydesk.orchestrator.sys.platform", "darwin")
+    @patch("applydesk.orchestrator.subprocess.Popen")
+    def test_provider_failure_pauses_automatic_routing_instead_of_retry_loop(self, launch):
         """Usage errors remain visible and require explicit resume, without paid fallback."""
         with patch.object(self.engine.runner, "_request", side_effect=AccountError(429)) as request:
             self.engine.start()
             deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and not self.engine.paused:
+            while time.monotonic() < deadline and (not self.engine.paused or self.engine.active):
                 time.sleep(.02)
             self.assertTrue(self.engine.paused)
             self.assertEqual(request.call_count, 1)
+            launch.return_value.kill.assert_called_once()
+            launch.return_value.wait.assert_called_once()
         self.assertIn("usage limit", self.engine.error)
         self.assertEqual(self.w.chat.get(self.task["id"])["task"]["status"], "queued")
+
+    @patch("applydesk.orchestrator.sys.platform", "darwin")
+    @patch("applydesk.orchestrator.subprocess.Popen")
+    def test_pause_releases_sleep_assertion_while_provider_is_still_blocked(self, launch):
+        """The Mac may sleep immediately after a pause, even with unfinished external I/O."""
+        entered, finish = threading.Event(), threading.Event()
+        def blocked_request(_payload, _cancelled, _emit):
+            entered.set()
+            finish.wait(5)
+            return response("Interrupted planning.")
+        with patch.object(self.engine.runner, "_request", side_effect=blocked_request):
+            self.engine.start()
+            self.engine.wake.set()
+            try:
+                self.assertTrue(entered.wait(5))
+                launch.assert_called_once()
+                launch.return_value.kill.assert_not_called()
+                self.engine.control({"paused": True})
+                launch.return_value.wait.assert_called_once()
+            finally:
+                finish.set()
+                self.engine.close()
+        launch.return_value.kill.assert_called_once()
 
     def test_summary_retry_never_repeats_an_executed_tool(self):
         """Recover one transient summary failure after a completed tool and discard its partial text."""

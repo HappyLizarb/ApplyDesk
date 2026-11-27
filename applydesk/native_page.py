@@ -4,7 +4,7 @@ import time
 import re
 from urllib.parse import urlsplit
 
-from .browser_bridge import BrowserError
+from .native_browser import BrowserError
 from .discovery import canonical_url
 from .workday_skill import tenant_key
 
@@ -200,7 +200,7 @@ def public_page(session, url, *, listing_only=False):
                 and re.fullmatch(r"/[^/]+/[\da-fA-F]{8}(?:-[\da-fA-F]{4}){3}-[\da-fA-F]{12}/(?:apply|application)/?", parsed.path)):
             url = canonical_url(url)
     options = {"url": url}
-    if listing_only and getattr(getattr(session, "manager", None), "native", None) is True:
+    if listing_only:
         options["listing_only"] = True
     page = session.call("open", options)
     try:

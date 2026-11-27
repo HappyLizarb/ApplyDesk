@@ -4,7 +4,7 @@ import re
 import time
 
 from .account_scope import employer_key, https_origin
-from .browser_bridge import BrowserError
+from .native_browser import BrowserError
 from .discovery import canonical_url
 from .native_window_recovery import click_browser_tab
 

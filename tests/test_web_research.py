@@ -15,8 +15,7 @@ from applydesk.chat_history import ChatHistory
 from applydesk.orchestrator_tools import MasterTools, master_tools
 from applydesk.storage import Store
 from applydesk.web_research import WebResearch
-from applydesk.recommendation_source import normalize_job
-from recommendation_helpers import listing
+from recommendation_helpers import saved_listing
 
 TEXT = """Site navigation
 Example Press
@@ -97,7 +96,7 @@ class WebResearchTests(unittest.TestCase):
         self.assertIn("3: Production Editor", result["text"])
         self.assertEqual(result["links"], [{"text": "Details", "url": "https://another.example.test/opaque/42"}])
         self.assertNotIn("fictional-secret", json.dumps(result))
-        self.assertEqual(self.factory.call_args.kwargs, {"headless": True, "research": True})
+        self.factory.assert_called_once_with(self.engine, research=True)
         self.browser.close.assert_called_once()
 
     def test_save_copies_complete_description_and_parses_tracker_fields(self):
@@ -179,12 +178,11 @@ class WebResearchTests(unittest.TestCase):
 
     def test_agent_links_verified_alternate_to_pending_import_only(self):
         """Keep the tracker ID across public sources, and reject a wrong tenant, requisition or draft."""
-        item = listing(company="Example Press", title="Production Editor", employer_url="",
-                       text=TEXT + "\nJob requisition JR000001")
-        saved = normalize_job("linkedin", item)
+        text = TEXT + "\nJob requisition JR000001"
+        saved = saved_listing(company="Example Press", title="Production Editor", employer_url="", text=text)
         job = self.store.add_job(saved["source_url"])
         self.store.job(job["id"], recommendation_source=saved, status="needs_review")
-        self.page["text"] = item["text"]
+        self.page["text"] = text
         target = "https://ep.wd5.myworkdayjobs.com/Careers/job/Example-City/Production-Editor_JR000001"
         tools = MasterTools(self.engine, Mock())
         tools.web = self.web

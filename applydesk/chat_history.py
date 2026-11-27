@@ -24,6 +24,15 @@ class ChatHistory:
         self.w.store.put("chat_message", message["id"], message)
         return message
 
+    def begin_turn(self, message):
+        """Mark the request in progress and create its visible, streamable assistant reply."""
+        if message:
+            message["status"] = "running"
+            self.w.store.put("chat_message", message["id"], message)
+        assistant = self.add("assistant", "", "running", request_id=message["id"] if message else None)
+        self.live = assistant.copy()
+        return assistant
+
     def finish(self, message, text, status="complete"):
         """Persist the final visible result exactly once; partial text never becomes a result."""
         with self.w.lock:

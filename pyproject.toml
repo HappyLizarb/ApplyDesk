@@ -4,10 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "applydesk-local"
-version = "0.1.0"
+version = "1.0.1"
 description = "ApplyDesk's local macOS application service"
 requires-python = ">=3.11"
-dynamic = ["dependencies"]
+dependencies = [
+    "lxml>=6.1.1",
+    "pdfplumber==0.11.9",
+    "cryptography",
+]
+
+[project.optional-dependencies]
+test = ["python-docx==1.2.0", "reportlab==4.4.9"]
 
 [project.scripts]
 applydesk = "applydesk_desktop.run:main"
@@ -19,9 +26,6 @@ include-package-data = false
 [tool.setuptools.package-dir]
 applydesk_desktop = "."
 
-[tool.setuptools.dynamic]
-dependencies = {file = ["requirements.txt"]}
-
 [tool.setuptools.package-data]
-applydesk = ["CHAT_SKILL.md", "skills/workday-apply/SKILL.md"]
-applydesk_desktop = ["web/*.html", "web/*.css", "web/*.js", "web/*.txt", "browser/*.cjs"]
+applydesk = ["skills/workday-apply/SKILL.md"]
+applydesk_desktop = ["web/*.html", "web/*.css", "web/*.js", "web/*.txt", "native/chrome-window-inventory.cjs"]

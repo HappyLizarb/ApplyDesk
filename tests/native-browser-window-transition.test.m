@@ -1,4 +1,4 @@
-#import "../native-browser-window.h"
+#import "../native/native-browser.h"
 #import <objc/runtime.h>
 #include <unistd.h>
 
@@ -64,7 +64,7 @@ static int fakeSleep(useconds_t duration) {
 #define CGWindowListCopyWindowInfo fakeWindows
 #define AXIsProcessTrusted fakeTrust
 #define usleep fakeSleep
-#include "../native-browser-window.m"
+#include "../native/native-browser-window.m"
 #undef usleep
 #undef AXIsProcessTrusted
 #undef CGWindowListCopyWindowInfo

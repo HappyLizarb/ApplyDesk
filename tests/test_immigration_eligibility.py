@@ -2,10 +2,8 @@
 
 import unittest
 
-from applydesk.immigration_eligibility import authorization_context, check_immigration
+from applydesk.immigration_eligibility import authorization_context, check_immigration, eligibility_quotes
 from applydesk.intelligence import validate_eligibility
-from applydesk.mapping import answer_field
-from test_mapping import field
 
 
 def profile(status="f1_opt", restrictions="", authorized="authorized_no_sponsor"):
@@ -16,6 +14,10 @@ def profile(status="f1_opt", restrictions="", authorized="authorized_no_sponsor"
 
 
 class ImmigrationEligibilityTests(unittest.TestCase):
+    def test_employer_license_notice_does_not_remove_personal_eligibility_rules(self):
+        source = 'In some instances, if applicable, U.S. export control laws require that Infineon obtain a U.S. government export license prior to releasing technologies to certain persons.\nUS citizenship required.'
+        self.assertEqual(eligibility_quotes(source), ['US citizenship required.'])
+
     def test_citizen_only_conflict_needs_an_exact_employer_requirement(self):
         quote = "Applicants must be U.S. citizens."
         result = check_immigration(profile(), quote, "US")
@@ -108,12 +110,6 @@ class ImmigrationEligibilityTests(unittest.TestCase):
         applicant["confirmed"] = False
         self.assertEqual(authorization_context(applicant), [])
         self.assertTrue(check_immigration(applicant, "US citizenship required.", "US")["needs_input"])
-
-    def test_future_and_conditional_form_answers_are_not_inferred(self):
-        for label in ("Will you require sponsorship?", "Do you now or in the future require sponsorship?",
-                      "Are you authorized to work in the United States?"):
-            self.assertIsNone(answer_field(field(label=label), profile(), "US"))
-        self.assertIsNotNone(answer_field(field(label="Do you require sponsorship?"), profile(), "US"))
 
 
 if __name__ == "__main__":

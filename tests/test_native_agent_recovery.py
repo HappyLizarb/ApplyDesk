@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from applydesk.browser_bridge import BrowserError
+from applydesk.native_browser import BrowserError
 from applydesk.native_agent import NativeAgent
 from applydesk.native_application_io import NativeInputRequired, _enter_credentials
 from applydesk.native_review import review_corrections, review_surface

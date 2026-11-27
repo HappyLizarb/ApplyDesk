@@ -1,101 +1,22 @@
-"""Unattended runs use fictional profiles, distinct model executions, and counted browser writes."""
+"""Run authorization, changed documents and durable submission accounting on synthetic native windows."""
 
-import copy
 import hashlib
-import json
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
-from chat_helpers import ChatFixture
-from test_orchestrator import response
-from test_workflow import BrowserFixture, snapshot
+from test_public_applications import PublicApplicationFixture
 from applydesk import ai_prompts
-from applydesk.orchestrator_prompts import SELF_CHECK
-from applydesk.application_client import STEP_BOUNDARY
 from applydesk.application_policy import SCOPE_PROMPT
 from applydesk.application_intent import INTENT_PROMPT
 from applydesk.application_submission import attempt_key
-from agent_browser_helpers import legacy_application
+from applydesk.chatgpt_transport import AccountError
 
 
-class AutomationTests(ChatFixture):
-    def setUp(self):
-        """Create a confirmed applicant, a connected account, and two observed native listings."""
-        super().setUp()
-        self.engine = self.w.orchestrator
-        self.w.store.put("chatgpt", "accounts", {"active": "test", "accounts": [{"id": "test", "label": "Test", "client_id": "oaiapp_test", "subject": "subject", "connected": True}]})
-        self.w.store.put("chatgpt_models", "test", [{"id": "test-model", "name": "Test", "thinking": []}])
-        profile = self.w.profile()
-        profile["industries"] = [{"name": "Hardware", "years": "0"}]
-        profile["preferences"]["levels"] = ["Entry"]
-        self.w.save_profile(profile)
-        self.w.store.put("recommendation_preference", "handshake", {"enabled": True})
-        self.jobs = [self.listing("101"), self.listing("102")]
-        self.roles, self.browsers, self.requests = [], [], []
-        self.fail_analysis, self.fail_receipt = False, False
-        message = self.engine.history.add("user", "Please send one hardware application in Boston.")
-        self.engine.active = {"message": message}
-        self.intent = {"action": "start", "run_id": "", "authorization_message_id": message["id"], "limit": 1,
-                       "locations": ["Boston"], "instruction": message["text"], "resume_id": "", "issues": []}
-
-    def listing(self, identity):
-        """Stable listing IDs and source hashes prevent repeated or replaced captures."""
-        description = "Example Co Analyst. Entry hardware role in Boston. Full-time new-grad position. Python required."
-        source = {"platform": "handshake", "job_id": identity, "source_url": "https://app.joinhandshake.com/job-search/" + identity,
-                  "company": "Example Co", "title": "Analyst", "description": description, "complete": True, "issues": [],
-                  "captured_at": "2026-10-29T01:00:00+00:00", "description_sha256": hashlib.sha256(description.encode()).hexdigest(), "employer_url": ""}
-        job = self.w.store.add_job(source["source_url"])
-        return self.w.store.job(job["id"], recommendation_source=source, details=description, company="Example Co", title="Analyst")
-
-    def browser(self, _engine, _root, **_options):
-        """The submission counter observes controller actions rather than its reported success."""
-        page = snapshot()
-        index = len(self.browsers)
-        page.update(url=self.jobs[index]["url"], application_source="handshake")
-        browser = BrowserFixture(page)
-        if getattr(self, "change_profile", False):
-            browser.after_fill = lambda: self.w.save_profile(self.w.profile())
-        original = browser.call
-        def call(method, params=None):
-            if method == "submit":
-                browser.methods.append(method)
-                return {"confirmed": not self.fail_receipt, "attempt_id": params["attempt_id"], "receipt": "Your application was submitted" if not self.fail_receipt else ""}
-            return original(method, params)
-        browser.call, browser.close = call, Mock()
-        self.browsers.append(browser)
-        return browser
-
-    def model(self, payload, _cancelled, _emit):
-        """Task-specific responses use one configured agent without repeated reviewer calls."""
-        self.assertTrue(payload["instructions"].startswith(SELF_CHECK))
-        prompt = payload["instructions"].removeprefix(SELF_CHECK).removeprefix(STEP_BOUNDARY)
-        self.roles.append(self.engine.runner.current["role"])
-        self.requests.append(copy.deepcopy(payload))
-        if prompt == INTENT_PROMPT:
-            result = self.intent
-        elif prompt == SCOPE_PROMPT:
-            result = {"matches": True, "industry": "Hardware", "level": "Entry", "location": self.intent["locations"][0], "issues": [],
-                      "quotes": {"industry": "hardware", "level": "Entry", "location": "" if self.intent["locations"] == ["Anywhere"] else "Boston"}}
-        elif prompt == ai_prompts.ANALYZE:
-            result = {"company": "Example Co", "title": "Analyst", "details": "Summary", "country": "US", "category": "Hardware", "preferred": [],
-                      "cover_letter_required": False, "requirements_complete": True, "required": [{"text": "Python required.", "met": True, "evidence_ids": ["skills.0"]}],
-                      "passed": True, "issues": [], "process_complete": not self.fail_analysis, "identity_consistent": True, "employment_type_consistent": True,
-                      "consistency_issues": [], "process_restrictions": []}
-        else:
-            raise AssertionError("Unexpected extra model request")
-        return response(json.dumps(result))
-
-    def run_applications(self):
-        """Exercise the retained deterministic path; generic production coverage has its own fixture."""
-        with patch.object(self.w.recommendations, "read_job", side_effect=lambda source, **_options: copy.deepcopy(source)):
-            with patch("applydesk.application_automation.ApplicationSession", side_effect=self.browser):
-                with patch.object(self.engine.runner, "_request", side_effect=self.model), patch("applydesk.application_automation.Applications", side_effect=legacy_application):
-                    return self.engine.applications.start(getattr(self, "selected_ids", None))
-
+class AutomationTests(PublicApplicationFixture):
     def test_selected_job_is_processed_first_without_expanding_budget(self):
         """Selecting one saved target opens just that listing and still submits at most once."""
         self.selected_ids = [self.jobs[1]["id"]]
         self.jobs.reverse()
-        run = self.run_applications()
+        run = self.run_applications(self.selected_ids)
         self.assertEqual([result["job_id"] for result in run["results"]], self.selected_ids)
         self.assertEqual(run["submitted_count"], 1)
         self.assertEqual(self.w.store.get("job", self.jobs[1]["id"])["status"], "new")
@@ -105,11 +26,9 @@ class AutomationTests(ChatFixture):
         run = self.run_applications()
         self.assertEqual(run["status"], "complete")
         self.assertEqual(run["results"][0]["status"], "submitted")
-        self.assertEqual(sum(browser.methods.count("submit") for browser in self.browsers), 1)
+        self.assertEqual(sum(browser.clicks for browser in self.browsers), 1)
         self.assertEqual(set(self.roles), {"master"})
-        self.assertEqual(len(self.requests), 5)
-        analysis_request = next(item for item in self.requests if item["instructions"] == SELF_CHECK + STEP_BOUNDARY + ai_prompts.ANALYZE)
-        content = json.loads(analysis_request["input"][0]["content"][0]["text"])
+        content = self.input_for(ai_prompts.ANALYZE)
         self.assertEqual(content["current_user_request"], self.engine.active["message"]["text"])
         self.assertEqual(self.w.store.get("job", self.jobs[0]["id"])["resume_id"], "resume")
         self.assertEqual(self.w.store.get("job", self.jobs[1]["id"])["status"], "new")
@@ -164,11 +83,11 @@ class AutomationTests(ChatFixture):
         run = self.run_applications()
         self.assertEqual(len(run["results"]), 2)
         self.assertFalse(self.w.store.all("submission_attempt"))
-        self.assertTrue(all("fill" not in browser.methods and "submit" not in browser.methods for browser in self.browsers))
+        self.assertTrue(all(not browser.name and not browser.clicks for browser in self.browsers))
 
     def test_uncertain_result_consumes_budget_and_is_excluded_from_later_runs(self):
         """A missing receipt does not become success or trigger a second irreversible click."""
-        self.fail_receipt = True
+        self.missing_receipt = self.jobs[0]["id"]
         run = self.run_applications()
         self.assertEqual(run["results"][0]["status"], "submission_unknown")
         self.assertEqual(len(self.browsers), 1)
@@ -206,9 +125,7 @@ class AutomationTests(ChatFixture):
 
     def input_for(self, prompt):
         """Read actual independent model input rather than relying on the returned plan."""
-        request = next(item for item in self.requests if item["instructions"].removeprefix(SELF_CHECK).removeprefix(STEP_BOUNDARY) == prompt)
-        content = request["input"][0]["content"]
-        return json.loads(content if isinstance(content, str) else content[0]["text"])
+        return next(data for name, data in self.requests if name == prompt)
 
     def test_profile_confirmation_uses_prior_instructions_and_unrestricted_location(self):
         """A short follow-up carries the original role, cap, and location into the scope check."""
@@ -247,7 +164,7 @@ class AutomationTests(ChatFixture):
         self.assertEqual(resumed["attempted_count"], 2)
         self.assertEqual(resumed["profile_revision"], self.w.profile()["revision"])
         self.assertEqual(len(self.w.store.all("application_run")), 1)
-        self.assertEqual(sum(browser.methods.count("submit") for browser in self.browsers), 2)
+        self.assertEqual(sum(browser.clicks for browser in self.browsers), 2)
 
     def test_followup_cannot_reset_an_exhausted_allowance(self):
         """Continuing a completed run does not authorize another batch of the same size."""
@@ -271,16 +188,20 @@ class AutomationTests(ChatFixture):
         self.assertEqual(resumed["id"], first["id"])
         self.assertEqual((resumed["limit"], resumed["attempted_count"]), (2, 2))
         self.assertEqual(len(self.w.store.all("application_run")), 1)
-        self.assertEqual(sum(browser.methods.count("submit") for browser in self.browsers), 2)
+        self.assertEqual(sum(browser.clicks for browser in self.browsers), 2)
 
     def test_profile_edit_during_filling_stops_the_whole_run(self):
         """The final click cannot use facts from before a concurrent profile edit."""
-        self.change_profile = True
-        with self.assertRaises(InterruptedError):
+        upload = self.upload
+        def change_profile(*args):
+            result = upload(*args)
+            self.w.save_profile(self.w.profile())
+            return result
+        with patch.object(self, "upload", side_effect=change_profile), self.assertRaises(InterruptedError):
             self.run_applications()
         self.assertFalse(self.w.store.all("submission_attempt"))
         self.assertEqual(self.w.store.all("application_run")[0]["status"], "interrupted")
-        self.assertTrue(all("submit" not in browser.methods for browser in self.browsers))
+        self.assertTrue(all(not browser.clicks for browser in self.browsers))
 
     def test_startup_preserves_crashed_attempt_as_uncertain(self):
         """A process restart cannot resume a click whose outcome may have reached the employer."""
@@ -292,3 +213,29 @@ class AutomationTests(ChatFixture):
         self.assertEqual(self.w.store.get("submission_attempt", attempt_key(job))["status"], "submission_unknown")
         self.assertEqual(self.w.store.get("application_run", "run")["status"], "interrupted")
         self.assertNotIn(job["id"], [item["id"] for item in recovered._candidates(["handshake"])])
+
+    def test_transient_failure_resumes_only_unprocessed_jobs(self):
+        """A later tool call resumes its original allowance without a second submission."""
+        self.intent['limit'] = 2
+        original = self.engine.applications._job
+        def fail_second(job):
+            if job['id'] == self.jobs[1]['id']:
+                raise AccountError(503)
+            return original(job)
+        with patch.object(self.engine.applications, '_job', side_effect=fail_second):
+            with self.assertRaises(AccountError):
+                self.run_applications()
+        resumed = self.run_applications()
+        self.assertEqual(resumed['submitted_count'], 2)
+        self.assertEqual(len(self.w.store.all('application_run')), 1)
+        self.assertEqual(sum(browser.clicks for browser in self.browsers), 2)
+
+    def test_changed_profile_still_blocks_transport_resume(self):
+        """Retry permission never bypasses a changed applicant profile."""
+        with patch.object(self.engine.applications, '_job', side_effect=AccountError(503)):
+            with self.assertRaises(AccountError):
+                self.run_applications()
+        self.w.save_profile(self.w.profile())
+        with self.assertRaisesRegex(InterruptedError, 'Profile changed'):
+            self.run_applications()
+        self.assertFalse(self.w.store.all('submission_attempt'))

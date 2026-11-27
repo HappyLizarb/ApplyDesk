@@ -1,4 +1,4 @@
-#import "../native-browser-window.h"
+#import "../native/native-browser.h"
 
 // Metadata reflects the actual Chrome New Tab strip captured on November 17, without page content.
 static NSMutableDictionary *observedTabHit(void) {

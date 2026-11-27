@@ -1,4 +1,4 @@
-"""Immutable local document versions with template and preview provenance."""
+"""Store uploaded originals, render previews, and verify saved documents."""
 
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -9,9 +9,8 @@ import shutil
 import threading
 import uuid
 
-from .document_import import read_docx, read_pdf, reconstruct_pdf, replace_docx, validate_upload
-from .document_render import render_docx, render_pdf
-from .document_cleanup import recover_deletions, remove_unused
+from .document_import import read_docx, read_pdf, render_docx, render_pdf, validate_upload
+from .document_deletion import recover_deletions, remove_unused
 
 
 class DocumentService:
@@ -48,7 +47,7 @@ class DocumentService:
 
     def import_file(self, filename: str, data: bytes, kind: str) -> dict:
         # Original filenames are display metadata; UUIDs select every disk location.
-        if kind not in {"profile", "resume", "resume_template", "cover_template", "transcript"}:
+        if kind not in {"profile", "resume", "transcript"}:
             raise ValueError("Unknown document import kind.")
         extension = validate_upload(filename, data)
         identity = uuid.uuid4().hex
@@ -78,111 +77,25 @@ class DocumentService:
                       sha256=hashlib.sha256(self.asset(record["pdf_path"]).read_bytes()).hexdigest())
 
     def _prepare_import(self, record, source):
-        # Templates get both source and editable previews for the fidelity decision.
-        is_template = record["kind"].endswith("_template")
+        """Extract readable text and render previews without modifying the uploaded source."""
         if source.suffix == ".docx":
-            record.update(read_docx(source), needs_manual_entry=False)
+            record.update(read_docx(source), needs_manual_entry=False, docx_path=record["source_path"])
             pdf, images = render_docx(source, source.parent / "preview")
-            record.update(docx_path=str(source.relative_to(self.root)), confirmed=True,
-                          needs_fidelity_confirmation=False)
         else:
-            extracted = read_pdf(source)
-            record.update(text=extracted["text"], needs_manual_entry=extracted["needs_manual_entry"])
-            images = render_pdf(source, source.parent / "source-preview")
+            record.update(read_pdf(source))
             pdf = source
-            if is_template:
-                record["source_image_paths"] = [str(path.relative_to(self.root)) for path in images]
-                editable = source.parent / "editable.docx"
-                reconstruct_pdf(source, editable)
-                record.update(read_docx(editable), docx_path=str(editable.relative_to(self.root)))
-                pdf, images = render_docx(editable, source.parent / "preview")
-            record.update(confirmed=not is_template, needs_fidelity_confirmation=is_template)
-        record["warnings"] = self._warnings(record)
+            images = render_pdf(source, source.parent / "source-preview")
+        record["confirmed"] = True
+        record["needs_fidelity_confirmation"] = False
+        record["warnings"] = (["No extractable text was found. OCR is not included; enter profile facts manually."]
+                              if record["needs_manual_entry"] else [])
         self._paths(record, pdf, images)
-        if is_template:
-            record["template_docx_sha256"] = hashlib.sha256(self.asset(record["docx_path"]).read_bytes()).hexdigest()
-
-    def _warnings(self, record):
-        # Surface limitations before a template can be trusted or uploaded.
-        warnings = []
-        if record.get("needs_fidelity_confirmation"):
-            warnings.append("PDF layout was reconstructed. Compare every page with the original before confirming.")
-        if any(block.get("mixed_runs") for block in record.get("blocks", [])):
-            warnings.append("New text inherits formatting from its source span. Review mixed bold, tabs, and line breaks after editing.")
-        if any(not block.get("editable", True) for block in record.get("blocks", [])):
-            warnings.append("Word fields, linked paragraphs, and tracked changes are protected. Edit these in the source DOCX before importing.")
-        if record.get("needs_manual_entry"):
-            warnings.append("No extractable text was found. OCR is not included; enter profile facts manually.")
-        return warnings
-
-    def confirm_template(self, identity):
-        # Confirmation applies to this exact imported source and reconstruction.
-        record = self.get_template(identity)
-        self._verify_template(record)
-        record.update(confirmed=True, needs_fidelity_confirmation=False)
-        return self._save(record)
-
-    def get_template(self, identity, *, include_removed=False):
-        # Reject document IDs where callers expect a design source.
-        record = self.get(identity)
-        if not record["kind"].endswith("_template"):
-            raise ValueError("Choose an imported resume or cover letter template.")
-        if record.get("removed_from_library_at") and not include_removed:
-            raise ValueError("This template was deleted from Documents. Import a template before creating another letter.")
-        return record
 
     def list_templates(self):
         # Return isolated metadata so a caller cannot silently change provenance.
         with self.lock:
             return deepcopy([record for record in self.manifest.values()
                              if record["kind"].endswith("_template") and not record.get("removed_from_library_at")])
-
-    def create(self, template_id, edits, title, category="", job_id=None):
-        # Reusable categories and job copies share templates but never mutable files.
-        template = self.get_template(template_id)
-        self._verify_template(template)
-        if not template.get("confirmed"):
-            raise ValueError("Confirm the reconstructed PDF template before creating documents.")
-        return self._version(template, template, edits, title, category, job_id)
-
-    def edit(self, document_id, edits):
-        # Editing always starts from the chosen version and leaves old uploads intact.
-        self.verify(document_id)
-        previous = self.get(document_id)
-        if previous["kind"] != "document":
-            raise ValueError("Only a generated document can be versioned.")
-        template = self.get_template(previous["template_id"], include_removed=True)
-        self._verify_template(template)
-        return self._version(template, previous, edits, previous["title"],
-                             previous.get("category", ""), previous.get("job_id"))
-
-    def copy_for_job(self, document_id, job_id):
-        # Copy verified bytes so a job edit never mutates a reusable category master.
-        if not isinstance(job_id, str) or not job_id:
-            raise ValueError("Choose a job for this document copy.")
-        self.verify(document_id)
-        previous = self.get(document_id)
-        identity = uuid.uuid4().hex
-        directory = self.root / identity
-        directory.mkdir(mode=0o700)
-        record = deepcopy(previous)
-        try:
-            paths = [previous["docx_path"], previous["pdf_path"], *previous["image_paths"]]
-            for path in paths:
-                source = self.asset(path)
-                target = directory / source.relative_to(self.root / document_id)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source, target)
-            record.update(id=identity, parent_id=document_id, job_id=job_id,
-                          created_at=datetime.now(timezone.utc).isoformat(),
-                          docx_path=previous["docx_path"].replace(document_id, identity, 1))
-            pdf = directory / Path(previous["pdf_path"]).relative_to(document_id)
-            images = [directory / Path(path).relative_to(document_id) for path in previous["image_paths"]]
-            self._paths(record, pdf, images)
-            return self._save(record)
-        except Exception:
-            shutil.rmtree(directory, ignore_errors=True)
-            raise
 
     def verify(self, document_id):
         # Rehash immediately before upload; a stored verdict cannot approve changed bytes.
@@ -197,7 +110,7 @@ class DocumentService:
         for path_key, hash_key in (("pdf_path", "sha256"), ("docx_path", "docx_sha256")):
             actual = hashlib.sha256(self.asset(record[path_key]).read_bytes()).hexdigest()
             if actual != record[hash_key]:
-                raise ValueError("The saved document changed outside the editor. Generate a new version before uploading.")
+                raise ValueError("The saved document changed on disk. Restore the original file before using this attachment.")
         return True
 
     def _verify_template(self, record):
@@ -205,33 +118,7 @@ class DocumentService:
         for path_key, hash_key in (("source_path", "source_sha256"), ("docx_path", "template_docx_sha256")):
             actual = hashlib.sha256(self.asset(record[path_key]).read_bytes()).hexdigest()
             if actual != record[hash_key]:
-                raise ValueError("The template changed outside the app. Import it again before use.")
-
-    def _version(self, template, previous, edits, title, category, job_id):
-        # Rendering and hashing complete before the immutable record becomes visible.
-        if not isinstance(edits, dict) or not isinstance(title, str) or not title.strip():
-            raise ValueError("Provide document text edits and a title.")
-        identity = uuid.uuid4().hex
-        directory = self.root / identity
-        directory.mkdir(mode=0o700)
-        destination = directory / "document.docx"
-        try:
-            replace_docx(self.asset(previous["docx_path"]), destination, edits)
-            pdf, images = render_docx(destination, directory / "preview")
-            record = {"id": identity, "kind": "document", "template_id": template["id"],
-                      "title": title.strip(), "category": category, "job_id": job_id,
-                      "document_type": template["kind"].removesuffix("_template"),
-                      "parent_id": previous["id"] if previous["kind"] == "document" else None,
-                      "created_at": datetime.now(timezone.utc).isoformat(), "format_review": "pending",
-                      "docx_path": str(destination.relative_to(self.root)), **read_docx(destination),
-                      "sha256": hashlib.sha256(pdf.read_bytes()).hexdigest(),
-                      "docx_sha256": hashlib.sha256(destination.read_bytes()).hexdigest()}
-            self._paths(record, pdf, images)
-            record["warnings"] = self._warnings(record)
-            return self._save(record)
-        except Exception:
-            shutil.rmtree(directory, ignore_errors=True)
-            raise
+                raise ValueError("The archived template changed on disk. Restore the original file to verify this document.")
 
     def get(self, identity):
         # IDs resolve only through the manifest, not arbitrary user-supplied paths.
@@ -257,3 +144,30 @@ class DocumentService:
         if not candidate.is_relative_to(self.root) or not candidate.is_file():
             raise ValueError("Document asset not found.")
         return candidate
+
+
+class DocumentTasks:
+    """Verify saved files without generation, customization, or provider calls."""
+
+    def __init__(self, workspace):
+        self.w = workspace
+
+    def review(self, document_id):
+        """Verify stored bytes and available previews locally, without claiming a visual audit."""
+        document = self.w.docs.get(document_id)
+        self.w.docs.verify(document_id)
+        paths = document.get("image_paths", [])
+        issues = []
+        if not paths or any(not self.w.docs.asset(path).read_bytes() for path in paths):
+            issues.append("Document page previews are missing.")
+        review = {"document_id": document_id, "passed": not issues, "issues": issues,
+                  "method": "file_integrity", "profile_revision": self.w.profile()["revision"]}
+        self.w.store.put("document_review", document_id, review)
+        return review
+
+    def require_review(self, document_id):
+        """Changed bytes or missing previews block an upload without another agent pass."""
+        review = self.review(document_id)
+        if not review["passed"]:
+            raise ValueError("Document requires correction: " + "; ".join(review["issues"]))
+        return review

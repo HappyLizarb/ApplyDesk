@@ -39,12 +39,12 @@ class CatalogWorkspaceTests(WorkspaceFixture, unittest.TestCase):
         self.assertEqual(self.workspace.settings(), previous)
         self.assertNotIn("model_catalog", self.workspace.state())
 
-    def test_document_preference_preserves_unused_legacy_settings(self):
+    def test_reading_document_preference_preserves_unused_legacy_settings(self):
         # Removing the UI does not silently delete the user's old configuration or secrets.
         original = self.workspace.settings()
         original["keys"] = {"openai": True}
         self.workspace.store.put("settings", "main", original)
-        self.assertEqual(self.workspace.save_settings({"cover_template_id": ""}), {"cover_template_id": ""})
+        self.assertEqual(self.workspace.state()["settings"], {"cover_template_id": ""})
         self.assertEqual(self.workspace.settings(), original)
         self.secrets.get.assert_not_called()
         self.secrets.set.assert_not_called()
@@ -114,16 +114,6 @@ class CatalogRouteTests(WorkspaceFixture, unittest.TestCase):
         data = {"platform": "linkedin", "limit": 5}
         self.assertEqual(self.post("/api/recommendations/begin", data)[0], 400)
         self.assertEqual(self.workspace.tasks, {})
-
-    def test_recommendation_cancel_works_during_an_agent_task(self):
-        # Cancellation bypasses only the busy gate, never session authorization.
-        self.workspace.tasks["test"] = {"id": "test", "status": "running"}
-        data = {"platform": "handshake", "run_id": "current-run"}
-        with patch.object(self.workspace.recommendations, "cancel", return_value={"cancelled": True}) as cancel:
-            self.assertEqual(self.post("/api/recommendations/cancel", data), (200, {"cancelled": True}))
-            self.assertEqual(self.post("/api/recommendations/cancel", data, {"Origin": "https://elsewhere.example"})[0], 403)
-            self.assertEqual(self.post("/api/shutdown", {})[0], 200)
-            cancel.assert_called_once_with(data)
 
     def test_both_routes_require_exact_local_session_host_and_origin(self):
         # Cookie possession alone must not authorize cross-site or alternate-host work.

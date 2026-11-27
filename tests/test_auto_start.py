@@ -9,7 +9,7 @@ from test_orchestrator import response
 from applydesk.chatgpt_transport import AccountError
 from applydesk.orchestrator import Orchestrator
 from applydesk.providers import ProviderError
-from applydesk.tool_progress import ToolProgress
+from applydesk.orchestrator_tools import ToolProgress
 
 
 class AutoStartTests(ChatFixture):

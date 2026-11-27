@@ -8,8 +8,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from applydesk.application_session import ApplicationSession
-from applydesk.application_window import status
+from applydesk.application_session import ApplicationSession, status
 from applydesk.native_application_browser import NativeApplicationBrowser
 from applydesk.native_page import capture_page
 from applydesk.storage import Store
@@ -122,7 +121,6 @@ class NativeResearchIntegrationTests(unittest.TestCase):
         self.factory = patch("applydesk.native_application_browser.NativeBrowser", side_effect=NativeWindowFixture).start()
         patch("applydesk.native_application_browser.public_job_url", side_effect=lambda url: url).start()
         patch("applydesk.web_research.public_job_url", side_effect=lambda url: url).start()
-        patch("applydesk.application_session.BrowserSession", side_effect=AssertionError("No DOM browser allowed")).start()
         patch.object(NativeApplicationBrowser, "_settle", lambda manager, generation: manager._wire("observe", {}, generation)).start()
         patch("applydesk.native_page.time.sleep").start()
         self.addCleanup(patch.stopall)
@@ -145,8 +143,8 @@ class NativeResearchIntegrationTests(unittest.TestCase):
 
     def test_cancel_reaches_manager_before_any_browser_exists(self):
         """A queued research open is revoked even during first-helper startup."""
-        session = ApplicationSession(self.engine, self.temp.name, research=True)
-        self.assertIsNone(session.browser)
+        session = ApplicationSession(self.engine, research=True)
+        self.assertIsNone(session.manager.browser)
         session.cancel()
         self.assertEqual(self.w.application_browser.generation, 1)
 

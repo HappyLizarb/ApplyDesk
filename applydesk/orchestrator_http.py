@@ -2,17 +2,15 @@
 
 from .agent_contract import object_fields, string
 from .providers import _validate_key
-from .connection_models import CONNECTION_SOURCES, validate_provider
-from .application_window import show_application, validate_bounds, save_chrome_approval
+from .model_catalog import CONNECTION_SOURCES, validate_provider
+from .application_session import show_application, validate_bounds
 
 
 def orchestrator_action(workspace, action, data):
-    """The UI session is required; external draft tokens cannot reach these controls."""
+    """Only an authenticated ApplyDesk window may send a chat message or change controls."""
     engine = workspace.orchestrator
     if action == "auto-start":
         return engine.auto_start.save(data)
-    if action == "chrome-approval":
-        return save_chrome_approval(workspace, data)
     if action == "show-application":
         object_fields(data, [], ["bounds"])
         bounds = validate_bounds(data["bounds"]) if "bounds" in data else None
@@ -26,7 +24,7 @@ def orchestrator_action(workspace, action, data):
             raise ValueError("Stop the agent before changing its settings.")
         save = engine.settings.save_role if action == "role-settings" else engine.settings.save
         return save(data)
-    actions = {"send": engine.send, "control": engine.control, "retry": engine.retry, "reset": engine.reset}
+    actions = {"send": engine.send, "control": engine.control, "reset": engine.reset}
     if action not in actions:
         raise ValueError("Unknown chat control.")
     return actions[action](data)

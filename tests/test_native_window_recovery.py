@@ -5,7 +5,7 @@ from itertools import count
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from applydesk.browser_bridge import BrowserError
+from applydesk.native_browser import BrowserError
 from applydesk.native_application_browser import NativeApplicationBrowser
 from applydesk.native_window_recovery import acquire_window, confirmed_empty
 from native_window_fixture import NativeWindowFixture

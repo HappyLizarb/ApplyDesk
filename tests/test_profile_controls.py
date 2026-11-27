@@ -1,9 +1,14 @@
 """Profile field round trips and conservative application answers use fictional records."""
 
+import copy
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock
 
-from applydesk.mapping import answer_field, plan_fields
-from applydesk.profile import empty_profile, validate_profile
+from applydesk.agent_contract import profile_draft
+from applydesk.intelligence import extract_profile
+from applydesk.profile import empty_profile, profile_with_defaults, validate_profile
+from applydesk.workspace import Workspace
 
 
 class ProfileControlTests(unittest.TestCase):
@@ -19,22 +24,18 @@ class ProfileControlTests(unittest.TestCase):
         """A combined phone answer requires both the code and the local-number facts."""
         self.raw['identity'].update(street_address='123 Example Street', phone_country_code='+44', phone='20 7946 0000')
         saved = validate_profile(self.raw, empty_profile())
-        address = answer_field({'field_id': 'address', 'label': 'Street address'}, saved, 'GB')
-        self.assertEqual(address['value'], '123 Example Street')
-        self.assertEqual(address['fact_ids'], ['identity.street_address'])
-        phone = answer_field({'field_id': 'phone', 'label': 'Phone'}, saved, 'GB')
-        self.assertEqual(phone['value'], '+44 20 7946 0000')
-        self.assertEqual(phone['fact_ids'], ['identity.phone', 'identity.phone_country_code'])
+        facts = {row['id']: row['text'] for row in saved['facts']}
+        self.assertEqual(facts['identity.street_address'], '123 Example Street')
+        self.assertEqual(facts['identity.phone_country_code'], '+44')
+        self.assertEqual(facts['identity.phone'], '20 7946 0000')
 
     def test_github_website_round_trips_and_answers_its_matching_field(self):
         """GitHub retains its own type instead of replacing a personal portfolio link."""
         self.raw['websites'] = [{'type': 'GitHub', 'url': 'https://github.com/example'},
                                 {'type': 'Portfolio', 'url': 'https://example.test'}]
         saved = validate_profile(self.raw, empty_profile())
-        answer = answer_field({'field_id': 'github', 'label': 'GitHub URL'}, saved, 'US')
         self.assertEqual(saved['websites'], self.raw['websites'])
-        self.assertEqual(answer['value'], 'https://github.com/example')
-        self.assertEqual(answer['fact_ids'], ['websites.0'])
+        self.assertTrue(any(fact['id'] == 'websites.0' for fact in saved['facts']))
 
     def test_legacy_phone_never_gets_an_inferred_code(self):
         """National and already-international legacy strings remain lossless."""
@@ -67,9 +68,7 @@ class ProfileControlTests(unittest.TestCase):
             self.raw['authorizations'] = [{'country': 'US', 'sponsorship_required': sponsor}]
             saved = validate_profile(self.raw, empty_profile())
             self.assertEqual(saved['authorizations'][0]['status'], 'unknown')
-            self.assertIsNone(answer_field({'field_id': 'a', 'label': 'Are you authorized to work in the US?'}, saved, 'US'))
-            answer = answer_field({'field_id': 's', 'label': 'Do you require sponsorship?'}, saved, 'US')
-            self.assertEqual(answer['value'], sponsor)
+            self.assertEqual(saved['authorizations'][0]['sponsorship_required'], sponsor)
 
     def test_existing_authorization_is_preserved(self):
         """Old permission records retain their meaning when sponsorship changes separately."""
@@ -86,15 +85,76 @@ class ProfileControlTests(unittest.TestCase):
         self.raw['authorizations'] = [{'country': 'US', 'status': 'not_authorized'}]
         saved = validate_profile(self.raw, empty_profile())
         self.assertEqual(saved['authorizations'][0]['sponsorship_required'], '')
-        self.assertIsNone(answer_field({'field_id': 's', 'label': 'Do you require sponsorship?'}, saved, 'US'))
 
-    def test_separate_form_calling_code_avoids_repeating_the_prefix(self):
-        """A form with its own dialing-code box receives the national number separately."""
-        self.raw['identity'].update(phone_country_code='+44', phone='20 7946 0000')
-        saved = validate_profile(self.raw, empty_profile())
-        fields = [{'field_id': 'code', 'label': 'Calling code', 'form_id': 'one'},
-                  {'field_id': 'number', 'label': 'Phone', 'form_id': 'one'},
-                  {'field_id': 'other', 'label': 'Phone', 'form_id': 'two'}]
-        answers, issues = plan_fields({'fields': fields}, saved, 'GB')
-        self.assertEqual(issues, [])
-        self.assertEqual([a['value'] for a in answers], ['+44', '20 7946 0000', '+44 20 7946 0000'])
+
+class PhoneTypeTests(unittest.TestCase):
+    def test_unknown_remains_unknown_and_confirmed_choice_survives_save(self):
+        self.assertEqual(profile_with_defaults({"identity": {}})["identity"]["phone_type"], "")
+        profile = empty_profile()
+        profile["identity"].update(legal_name="Example Candidate", email="example@example.test", phone_type="mobile")
+        profile["confirmed"] = True
+        saved = validate_profile(profile, {})
+        self.assertEqual(saved["identity"]["phone_type"], "mobile")
+        self.assertIn("identity.phone_type", {fact["id"] for fact in saved["facts"]})
+        profile["identity"]["phone_type"] = "guess"
+        with self.assertRaises(ValueError):
+            validate_profile(profile, {})
+
+    def test_profile_edit_does_not_reset_submitted_or_uncertain_attempts(self):
+        store = Mock()
+        statuses = ["new", "submitted", "submitting", "submission_unknown", "ready"]
+        store.all.return_value = [{"id": status, "status": status} for status in statuses]
+        Workspace.invalidate_profile_jobs(SimpleNamespace(store=store), "changed")
+        store.job.assert_called_once_with("ready", status="needs_review", exceptions=["changed"])
+
+
+class PostalCodeTests(unittest.TestCase):
+    """Fictional domestic and international codes exercise the public profile boundary."""
+
+    def setUp(self):
+        self.profile = empty_profile()
+        self.profile["identity"].update(legal_name="Test Applicant", email="test@example.invalid")
+        self.profile["confirmed"] = True
+
+    def test_codes_preserve_leading_zeros_letters_spaces_and_hyphens(self):
+        for code in ("00501", "02108-1234", "SW1A 1AA", "K1A 0B1", "00100"):
+            with self.subTest(code=code):
+                self.profile["identity"]["postal_code"] = code
+                saved = validate_profile(self.profile, empty_profile())
+                self.assertEqual(saved["identity"]["postal_code"], code)
+                fact = next(item for item in saved["facts"] if item["id"] == "identity.postal_code")
+                self.assertEqual(fact, {"id": "identity.postal_code", "text": code, "kind": "identity", "confirmed": True})
+
+    def test_missing_postal_code_remains_empty_without_a_fact_or_answer(self):
+        self.profile["identity"].update(city="Boston", region="Massachusetts", country="US")
+        self.profile["identity"].pop("postal_code")
+        saved = validate_profile(self.profile, empty_profile())
+        self.assertEqual(saved["identity"]["postal_code"], "")
+        self.assertFalse(any(item["id"] == "identity.postal_code" for item in saved["facts"]))
+
+    def test_numeric_or_structured_codes_are_rejected_instead_of_coerced(self):
+        for value in (501, 501.0, True, None, [], {"code": "00501"}):
+            with self.subTest(value=value):
+                self.profile["identity"]["postal_code"] = value
+                with self.assertRaisesRegex(ValueError, "Postal code must be text"):
+                    validate_profile(self.profile, empty_profile())
+
+    def test_legacy_read_does_not_mutate_or_reconfirm_saved_profile(self):
+        self.profile["identity"].pop("postal_code")
+        self.profile["revision"] = 9
+        original = copy.deepcopy(self.profile)
+        restored = profile_with_defaults(self.profile)
+        self.assertEqual(self.profile, original)
+        self.assertEqual(restored["identity"]["postal_code"], "")
+        self.assertEqual(restored["revision"], 9)
+
+    def test_extraction_retains_explicit_text_but_needs_user_confirmation(self):
+        self.profile["identity"]["postal_code"] = "00501"
+        client = Mock()
+        client.ask.return_value = copy.deepcopy(self.profile)
+        extracted = extract_profile(client, "Applicant address: example address, postal code 00501")
+        draft = profile_draft({"profile": extracted, "notes": []})["profile"]
+        self.assertEqual(draft["identity"]["postal_code"], "00501")
+        self.assertFalse(draft["confirmed"])
+        self.assertEqual(draft["facts"], [])
+        self.assertIn("postal_code", client.ask.call_args.args[0])

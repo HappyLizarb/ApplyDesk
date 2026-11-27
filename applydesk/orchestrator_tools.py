@@ -1,6 +1,7 @@
 """Chat tools for web research, workspace files, and application workflows."""
 
 import json
+from urllib.parse import urldefrag
 
 from .agent_contract import object_fields, string
 from .agent_context import source_record
@@ -8,9 +9,8 @@ from .auto_start import usage_limited
 from .chat_evidence import record_chat_evidence
 from .chatgpt_transport import AccountError
 from .profile import model_profile
-from .public_discovery import google_xray_query
+from .discovery import google_xray_query
 from .web_research import WebResearch
-from .application_verification import refill_application, verify_application
 from .workday_reset import request_reset_email
 
 CAPTURE_FIELDS = {"capture_id": {"type": "string"}, "company": {"type": "string"}, "title": {"type": "string"},
@@ -44,8 +44,6 @@ DEFINITIONS = {
     "find_jobs": ("Search Google X-ray for public employer and recruiting-system listings without job-platform accounts. Use short queries across adjacent specialties and site:employer.com when useful. Open promising results, read their complete descriptions, then save matching jobs with save_job.", {
         "query": {"type": "string"}}),
     "run_applications": ("Open live employer forms, fill and submit saved jobs using the conversation's permission and resume. Supply job_ids in priority order, or [] for all saved candidates. Honor the user's total submission count. Draft tools are not prerequisites. Report an interruption using the returned submission counts and interrupted_job.submission_status.", {"job_ids": {"type": "array", "items": {"type": "string"}}}),
-    "refill_application": ("Refill the same application only when the user explicitly says refill after an employer rejected its email code. Reuses the original attempt and resume, rechecks eligibility and answers, and requests fresh verification if needed.", {"job_id": {"type": "string"}}),
-    "verify_application": ("Continue a retained application using the exact email verification code provided in the current user message. Never invent a code. Require an employer receipt before reporting success.", {"job_id": {"type": "string"}, "code": {"type": "string"}}),
     "request_reset_email": ("Request a single password-reset email for a saved Workday account when explicitly requested. Returns the employer response. No password is changed.", {"job_id": {"type": "string"}}),
 }
 
@@ -89,7 +87,7 @@ class MasterTools:
         object_fields(data, {} if name == "run_applications" else DEFINITIONS[name][1], ["job_ids"] if name == "run_applications" else [])
         if name == "request_reset_email":
             return request_reset_email(self.engine, string(data["job_id"], 100))
-        if name in {"find_jobs", "web_search", "read_page", "refresh_page", "save_job", "link_saved_listing", "refill_application", "verify_application"}:
+        if name in {"find_jobs", "web_search", "read_page", "refresh_page", "save_job", "link_saved_listing"}:
             return self._browser_tool(name, data)
         if name in {"prepare_task", "retry_task"}:
             return self.prepare(name, data)
@@ -127,10 +125,6 @@ class MasterTools:
 
     def _browser_tool(self, name, data):
         """Route bounded browser research and user-authorized verification recovery."""
-        if name == "refill_application":
-            return refill_application(self.engine, string(data["job_id"], 100))
-        if name == "verify_application":
-            return verify_application(self.engine, string(data["job_id"], 100), data["code"])
         if name in {"find_jobs", "web_search"}:
             if data.get("engine", "google") != "google":
                 raise ValueError("Use Google X-ray for public employer job discovery.")
@@ -171,3 +165,50 @@ class MasterTools:
                 "jobs": [{**{key: job.get(key) for key in ("id", "company", "title")}, "status": job.get("manual_status") or job["status"],
                           "manually_set": bool(job.get("manual_status"))} for job in self.w.store.all("job") if not job.get("removed_at")],
                 "documents": inventory}
+
+
+class ToolProgress:
+    """Track progress within one chat turn, without limiting useful research steps."""
+
+    def __init__(self, call):
+        self.call = call
+        self.pages, self.seen = {}, set()
+        self.repeats = 0
+
+    def execute(self, item):
+        """Repeated reads reuse the exact capture; changed results count as progress."""
+        key = self.key(item)
+        cached = item.get("name") in {"read_page", "web_search", "find_jobs"}
+        if cached and key in self.pages:
+            result = self.pages[key]
+        else:
+            try:
+                result = self.call(item)
+            except InterruptedError:
+                raise
+            except Exception as exc:
+                if usage_limited(exc):
+                    raise
+                result = {"error": str(exc)[:1000]}
+            if cached:
+                self.pages[key] = result
+            elif item.get("name") == "refresh_page":
+                self.pages[self.key({**item, "name": "read_page"})] = result
+        evidence = (key, json.dumps(result, sort_keys=True, ensure_ascii=False))
+        self.repeats = self.repeats + 1 if evidence in self.seen else 0
+        self.seen.add(evidence)
+        if self.repeats and isinstance(result, dict):
+            return {**result, "progress_note": "This operation returned the same information. Use a different query or source, or report the blocker."}
+        return result
+
+    def key(self, item):
+        """Ignore argument ordering and URL fragments when identifying identical reads."""
+        try:
+            arguments = json.loads(item.get("arguments", "{}"))
+            if item.get("name") == "read_page" and isinstance(arguments.get("url"), str):
+                arguments["url"] = urldefrag(arguments["url"])[0]
+            if item.get("name") in {"web_search", "find_jobs"} and isinstance(arguments.get("query"), str):
+                arguments["query"] = " ".join(arguments["query"].split())
+        except (ValueError, AttributeError, TypeError):
+            arguments = item.get("arguments")
+        return json.dumps([item.get("namespace", "applydesk"), item.get("name"), arguments], sort_keys=True)

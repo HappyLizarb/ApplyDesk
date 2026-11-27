@@ -4,7 +4,6 @@ import {apiProviders} from './api-key-settings.js';
 import {roles as roleNames} from './agent-settings.js';
 import {agentMenu,initializeAgentMenu,updateAgentMenu} from './composer-agents.js';
 import {submitComposer,updateComposeAction} from './composer-send.js';
-import {groupAgentRuns} from './agent-activity.js';
 import {initializeApplicationWindow,updateApplicationWindow} from './application-window.js';
 
 let open=false,lastMessages='',lastRuns='';
@@ -44,6 +43,18 @@ export function toggleAssistant(value=true) {
   if(open)document.querySelector('#assistant-input').focus();
 }
 
+// A shortcut opens an editable draft; only Send gives the agent an instruction.
+export function composeInstruction(message) {
+  toggleAssistant(true);
+  const input=document.querySelector('#assistant-input');
+  if(input.value.trim()) {
+    toast('Your unsent message is still in chat.');
+    return;
+  }
+  input.value=message;
+  input.dispatchEvent(new Event('input',{bubbles:true}));
+}
+
 // Deleting a conversation is explicit; failed resets preserve messages and the unsent composer.
 function resetChat() {
   const dialog=modal('Start a new chat?', '<div class="modal-body"><p>This deletes the current conversation and pauses active and queued agent work. Your saved profile, applications, and documents are kept.</p></div>', '<button id="cancel-chat-reset" type="button">Cancel</button><button id="confirm-chat-reset" class="danger" type="button">Delete and restart</button>');
@@ -73,4 +84,25 @@ export function updateAssistant() {
     if(bottom)messages.scrollTop=messages.scrollHeight;lastMessages=serialized;
   }
   const runs=JSON.stringify(engine.runs);if(runs!==lastRuns){const groups=groupAgentRuns(engine.runs);panel.querySelector('#agent-runs').innerHTML=groups.slice(-12).reverse().map(run=>`<div class="agent-run"><strong>${h(roleNames[run.role]||'Previous agent run')}</strong><span>${h(run.status)}</span><small>${h(run.model)}${run.steps>1?` · ${run.steps} steps`:''}</small></div>`).join('')||'<p class="muted small">No agent runs yet.</p>';panel.querySelector('#activity-count').textContent=groups.length||'';lastRuns=runs;}
+}
+
+// One agent conversation can include many sequential model requests and tool steps.
+export function groupAgentRuns(runs) {
+  const groups=[],masters=new Map();
+  for(const run of runs) {
+    const previous=groups.at(-1);
+    const key=run.role==='master'?(run.turn_id||(!previous?.turn_id&&previous?.role==='master'?previous.id:run.id)):null;
+    const current=key&&masters.get(key);
+    if(current) {
+      current.steps++;
+      current.status=run.status;
+      current.model=run.model;
+      current.finished_at=run.finished_at;
+    } else {
+      const group={...run,steps:1};
+      groups.push(group);
+      if(key)masters.set(key,group);
+    }
+  }
+  return groups;
 }

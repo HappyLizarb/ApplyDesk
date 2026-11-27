@@ -1,4 +1,4 @@
-#import "../native-browser-window.h"
+#import "../native/native-browser.h"
 #include <unistd.h>
 
 static NSString *fixtureRole, *fixtureSubrole;

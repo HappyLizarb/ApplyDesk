@@ -5,7 +5,7 @@ import re
 from urllib.parse import parse_qs, unquote, urlsplit, urlunsplit
 
 from .workday_skill import tenant_key
-from .recommendation_checks import same_workday_job
+from .recommendation_source import same_workday_job
 
 
 class NativeInputRequired(ValueError):
@@ -157,41 +157,6 @@ def matches_auth_path(url, realm):
     query = parse_qs(parsed.query)
     return (https_origin(url) == https_origin(realm) and path_matches
             and all(query.get(key) == values for key, values in parse_qs(scope.query).items()))
-
-
-def sign_in_scope(job, snapshot, button):
-    """Require visible employer evidence and retain the exact authentication path boundary."""
-    employer_key(job)
-    company = " ".join(job["company"].split()).casefold()
-    visible = " ".join(str(snapshot.get("text") or "").split()).casefold()
-    if not re.search(r"(?<!\w)" + re.escape(company) + r"(?!\w)", visible):
-        raise ValueError("The sign-in page does not identify this employer. Sign in manually.")
-    if button.get("auth_widget") == "workday":
-        return workday_scope(snapshot, button)
-    if button.get("auth_widget") == "successfactors":
-        from .successfactors_auth import successfactors_auth_context
-        successfactors_auth_context(snapshot, button)
-        return "https://career4.successfactors.com/career?company=" + snapshot["successfactors_auth"]["tenant"]
-    action = urlsplit(button["form_action"])
-    if action.query or action.fragment or "%" in action.path or ".." in action.path.split("/"):
-        raise ValueError("The employer's sign-in scope is ambiguous. Sign in manually.")
-    parent = action.path.rstrip("/").rsplit("/", 1)[0] + "/"
-    return https_origin(button["form_action"]) + parent
-
-
-def workday_scope(snapshot, button):
-    """Bind Workday credentials to the exact observed employer host and career site."""
-    page, action = urlsplit(snapshot["url"]), urlsplit(button["form_action"])
-    root = snapshot.get("workday_auth", {}).get("root", "")
-    if (not re.fullmatch(r"[a-z0-9-]+\.wd\d+\.myworkdayjobs\.com", page.hostname or "")
-            or not re.fullmatch(r"/[a-z]{2}-[A-Z]{2}/[\w-]+", root)
-            or not page.path.startswith(root + "/job/") or https_origin(snapshot["url"]) != https_origin(button["form_action"])):
-        raise ValueError("The Workday account scope changed.")
-    kind = "register" if button["action"] == "create_account" else "login"
-    expected = {"redirect": [page.path + ("?" + page.query if page.query else "")]} if kind == "register" else {}
-    if action.path != root + "/" + kind or parse_qs(action.query) != expected or action.fragment:
-        raise ValueError("The Workday account destination changed.")
-    return https_origin(snapshot["url"]) + root + "/"
 
 
 def native_account_scope(workspace, job, page, decision, registration_route=None):

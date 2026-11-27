@@ -4,7 +4,7 @@ import json
 
 from .agent_contract import object_fields, string, strings
 from .chatgpt_inference import output_text
-from .matching_policy import ROLE_FAMILIES
+from .application_policy import ROLE_FAMILIES
 
 INTENT_PROMPT = ROLE_FAMILIES + """Resolve the agreed application plan from this conversation. Carry permission,
 preferences and resume choices across follow-ups, including confirmation that a

@@ -4,10 +4,9 @@ import subprocess
 import time
 
 from . import PROGRAM_ROOT
-from .browser_bridge import BrowserError
-from .native_browser import NativeBrowser
+from .native_browser import BrowserError, NativeBrowser
 from .public_source import matches_saved_requisition_form
-from .recommendation_checks import same_workday_application
+from .recommendation_source import same_workday_application
 from .lifecycle import interface_process
 
 
@@ -79,7 +78,7 @@ def confirmed_empty(manager, generation):
         return False
     try:
         interface = 0 if pid else interface_process(manager.w.root) or 0
-        probe = PROGRAM_ROOT / "browser/chrome-window-inventory.cjs"
+        probe = PROGRAM_ROOT / "native/chrome-window-inventory.cjs"
         result = subprocess.run(["/usr/bin/osascript", "-l", "JavaScript", str(probe), str(pid), str(interface)],
                                 capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.SubprocessError):

@@ -1,14 +1,10 @@
-"""Behavior checks for evidence gates and provider transport without paid calls."""
+"""Behavior checks for profile and job evidence gates without paid calls."""
 
 import copy
-import io
-import json
 import unittest
-from unittest.mock import Mock, patch
-from urllib.error import HTTPError
+from unittest.mock import Mock
 
 from applydesk import intelligence as ai
-from applydesk.providers import MODEL_OPTIONS, ProviderClient, ProviderError, validate_settings
 
 
 PROFILE = {"confirmed": True, "facts": [
@@ -150,10 +146,6 @@ class EligibilityTests(unittest.TestCase):
         self.assertFalse(ai.validate_eligibility(ANALYSIS, profile)["eligible"])
 
 
-
-
-
-
 class IntelligenceTests(unittest.TestCase):
     """Imported facts, document changes and live fields preserve trust boundaries."""
 
@@ -168,110 +160,3 @@ class IntelligenceTests(unittest.TestCase):
         self.assertEqual(draft["facts"], [])
         self.assertEqual(draft["authorizations"], [])
         self.assertEqual(draft["preferences"]["disability"], "unknown")
-
-
-
-
-
-
-
-
-
-
-
-
-
-    def test_live_mismatch_cannot_be_overruled_by_model(self):
-        """A sponsorship answer mismatch fails without consulting the model."""
-        client = StubClient({"passed": True, "issues": []})
-        expected = [{"id": "sponsor", "value": "No", "fact_ids": ["work"]}]
-        result = ai.audit_fields(PROFILE,
-                                {"fields": [{"id": "sponsor", "value": "Yes"}]}, expected)
-        self.assertFalse(result["passed"])
-        self.assertFalse(client.calls)
-
-    def test_duplicate_live_field_ids_are_ambiguous(self):
-        """Identical values do not make duplicate field identities safe."""
-        field = {"id": "x", "value": "yes"}
-        expected = [{**field, "fact_ids": ["work"]}]
-        result = ai.audit_fields(PROFILE, {"fields": [field, field]}, expected)
-        self.assertFalse(result["passed"])
-
-    def test_matching_values_and_known_facts_pass_without_a_model_request(self):
-        """Field verification is local; self-checking belongs in the agent prompt."""
-        field = {"id": "x", "value": "yes"}
-        result = ai.audit_fields(PROFILE, {"fields": [field]}, [{**field, "fact_ids": ["work"]}])
-        self.assertTrue(result["passed"])
-        self.assertEqual(result["issues"], [])
-
-
-
-
-class ProviderTests(unittest.TestCase):
-    """Exercise every supported preset without an API key or external request."""
-
-    def test_supported_settings_and_request_shapes(self):
-        """Each preset sends valid JSON to its provider with credentials in headers."""
-        for provider, models in MODEL_OPTIONS.items():
-            for model, efforts in models.items():
-                for thinking in efforts:
-                    settings = {"provider": provider, "model": model, "thinking": thinking}
-                    client = ProviderClient(settings, "unit-test-key")
-                    with self.subTest(settings=settings):
-                        self.assertEqual(validate_settings(settings), settings)
-                        url, headers, body = getattr(client, "_" + provider)("JSON", "{}", [])
-                        self.assertNotIn("unit-test-key", url + json.dumps(body))
-                        self.assertIn("unit-test-key", " ".join(headers.values()))
-                        self.assertEqual(body.get("model", model), model)
-
-    def test_unsupported_effort_fails_before_network(self):
-        """Custom IDs cannot inherit unverified thinking controls from another model."""
-        for settings in ({"provider": "openai", "model": "unknown", "thinking": "high"},
-                         {"provider": "google", "model": "gemini-3.8-flash", "thinking": "none"}):
-            with self.assertRaises(ProviderError):
-                ProviderClient(settings, "test-key")
-
-    def test_api_response_parsing_for_each_provider(self):
-        """Provider response envelopes resolve to the same public JSON contract."""
-        replies = {
-            "openai": {"status": "completed", "output": [{"type": "message", "content": [
-                {"type": "output_text", "text": '{"passed":true}'}]}]},
-            "anthropic": {"stop_reason": "end_turn", "content": [
-                {"type": "text", "text": '{"passed":true}'}]},
-            "google": {"candidates": [{"finishReason": "STOP", "content": {"parts": [
-                {"text": '{"passed":true}'}]}}]},
-        }
-        for provider, reply in replies.items():
-            client = ProviderClient({"provider": provider, "model": next(iter(MODEL_OPTIONS[provider]))}, "test")
-            opener = Mock()
-            opener.open.return_value = io.BytesIO(json.dumps(reply).encode())
-            with patch("applydesk.providers.request.build_opener", return_value=opener):
-                self.assertEqual(client.ask("Task", {"example": 1}), {"passed": True})
-            self.assertEqual(opener.open.call_args.kwargs["timeout"], 60)
-
-    def test_markdown_duplicates_and_nan_are_rejected(self):
-        """Never repair or accept ambiguous structured decisions."""
-        client = ProviderClient({"provider": "openai", "model": "gpt-5.4"}, "test")
-        for text in ('```json\n{}\n```', '{"passed":true,"passed":false}', '{"x":NaN}', '[]'):
-            reply = {"status": "completed", "output": [{"type": "message", "content": [
-                {"type": "output_text", "text": text}]}]}
-            with patch.object(client, "_post", return_value=reply), self.assertRaises(ProviderError):
-                client.ask("Task", {})
-
-    def test_incomplete_response_and_http_errors_do_not_leak_secrets(self):
-        """Token exhaustion and authentication errors fail without exposing data."""
-        client = ProviderClient({"provider": "openai", "model": "gpt-5.4"}, "secret-test-key")
-        with patch.object(client, "_post", return_value={"status": "incomplete"}):
-            with self.assertRaises(ProviderError):
-                client.ask("Task", {})
-        opener = Mock()
-        opener.open.side_effect = HTTPError("https://api.openai.com", 401, "secret-test-key", {}, None)
-        with patch("applydesk.providers.request.build_opener", return_value=opener):
-            with self.assertRaises(ProviderError) as caught:
-                client.ask("Task", {"private": "Do not log"})
-        self.assertIn("401", str(caught.exception))
-        self.assertNotIn("secret-test-key", str(caught.exception))
-
-
-if __name__ == "__main__":
-    unittest.main()
