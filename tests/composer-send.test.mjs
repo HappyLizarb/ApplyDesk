@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {test, beforeEach, afterEach} from 'node:test';
 import {state, toast} from '../web/ui.js';
-import {composerIsWorking, updateComposeAction, submitComposer} from '../web/composer-send.js';
+import {composerIsWorking, updateComposeAction, submitComposer} from '../web/assistant.js';
 
 let elements, calls, serverState, respond;
 

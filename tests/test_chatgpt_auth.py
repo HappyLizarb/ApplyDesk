@@ -1,7 +1,6 @@
 """OAuth validation and credential lifecycle tests use generated keys and fake endpoints."""
 
 import base64
-import copy
 import hashlib
 import json
 import threading

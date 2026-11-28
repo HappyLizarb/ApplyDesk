@@ -1,18 +1,13 @@
-import {state,h,api,refresh,task,busy,toast,modal,upload} from './ui.js';
+import {state,h,api,refresh,busy,toast,modal,upload} from './ui.js';
 import {composeInstruction} from './assistant.js';
 import {deleteDocument} from './documents.js';
-import {profileListRow,bindAuthorization} from './profile-lists.js';
-import {phoneFields,bindPhone} from './phone.js';
-import {entryFields,timelineRow,storedDate,updateEntryDurations} from './profile-timeline.js';
-import {readEducationDate,updateLevelTags,bindLevelPicker} from './profile-controls.js';
+import {profileListRow,profileOptions,bindProfileControls,phoneFields,languageRow,countryOptions} from './profile-controls.js';
+import {entryFields,timelineRow,storedDate,readEducationDate,updateEntryDurations} from './profile-timeline.js';
 
 const sections={education:['Education',entryFields.education],experiences:['Professional experience',entryFields.experiences],languages:['Languages',['name','proficiency']],industries:['Roles and job levels',['name','years','levels']],websites:['Websites',['type','url']],authorizations:['Work authorization',['country','sponsorship_required','immigration_status','restrictions']]};
 const labels={legal_name:'Legal name',family_name:'Family name',preferred_name:'Preferred name · optional',email:'Email',street_address:'Street address',phone_type:'Phone type',city:'City',region:'State or region',postal_code:'Postal code · optional',country:'Country or area'};
 const addLabels={education:'education',experiences:'experience',languages:'language',industries:'role preference',websites:'website',authorizations:'work authorization'};
 const confirmationTag='<span class="badge" data-profile-confirmation>Draft</span>';
-const countries='AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW'.split(' ');
-const regionNames=new Intl.DisplayNames(['en'],{type:'region'});
-const countryOptions=[['','Select country or area'],...countries.map(code=>[code,regionNames.of(code)]).sort((a,b)=>a[1].localeCompare(b[1]))];
 const disclosures=[['unknown','Not answered'],['yes','Yes'],['no','No'],['decline','Prefer not to disclose']];
 let draft=null;
 const imports=[];
@@ -20,34 +15,28 @@ const imports=[];
 // Native labeled controls keep the canonical profile editable without hidden guesses.
 function field(name,key,value,options=null) {
   const label=h(labels[key]||key), id='profile-'+name.replaceAll('.','-');
-  if(options)return `<label for="${id}">${label}<select id="${id}" name="${h(name)}">${options.map(([v,t])=>`<option value="${h(v)}" ${v===value?'selected':''}>${h(t)}</option>`).join('')}</select></label>`;
+  if(options)return `<label for="${id}">${label}<select id="${id}" name="${h(name)}">${profileOptions(options,value)}</select></label>`;
   const type=key==='email'?'email':'text';
   return `<label for="${id}">${label}<input id="${id}" name="${h(name)}" type="${type}" value="${h(value)}" maxlength="10000"></label>`;
 }
 
-// Repeated records match backend fields exactly; empty facts are never invented.
-function rowMarkup(section,row,index) {
-  if(entryFields[section])return timelineRow(section,row,index);
-  return profileListRow(section,row,index,countryOptions);
-}
-
 // Repeated sections retain their labels and empty-state status.
 function sectionMarkup(section,profile,embedded=false) {
-  const [title]=sections[section];
+  const [title]=sections[section],renderRow=entryFields[section]?timelineRow:profileListRow;
   const heading=embedded?'h3':'h2';
-  return `<section class="${embedded?'profile-detail-list':'panel'}"><div class="panel-heading"><div><${heading}>${title}</${heading}></div>${embedded?'':confirmationTag}</div><div>${(profile[section]||[]).map((row,index)=>rowMarkup(section,row,index)).join('')||'<p class="muted small">No entries.</p>'}</div><button type="button" class="quiet profile-add" data-add="${section}">Add ${addLabels[section]}</button></section>`;
+  return `<section class="${embedded?'profile-detail-list':'panel'}"><div class="panel-heading"><div><${heading}>${title}</${heading}></div>${embedded?'':confirmationTag}</div><div>${(profile[section]||[]).map((row,index)=>renderRow(section,row,index,addLabels[section])).join('')||'<p class="muted small">No entries.</p>'}</div><button type="button" class="quiet profile-add" data-add="${section}">Add ${addLabels[section]}</button></section>`;
 }
 
 // Preserve nonrendered identity facts while reading explicit choices from the form.
 function readForm(form) {
-  const result=structuredClone(draft||state.data.profile), values=new FormData(form);
+  const source=draft||state.data.profile,result={...source},values=new FormData(form);
   result.identity={street_address:'',postal_code:'',phone_country_code:'',...result.identity};
-  result.identity=Object.fromEntries(Object.keys(result.identity).map(key=>[key,values.has('identity.'+key)?String(values.get('identity.'+key)||'').trim():result.identity[key]]));
+  for(const key of Object.keys(result.identity))if(values.has('identity.'+key))result.identity[key]=values.get('identity.'+key).trim();
   for(const [section,[,fields]] of Object.entries(sections)) {
     result[section]=[...form.querySelectorAll(`[data-row="${section}"]`)].map((_,index)=>readRow(form,values,section,index,fields));
   }
   result.authorizations.forEach((row,index)=>{
-    const previous=(draft||state.data.profile).authorizations[index];
+    const previous=source.authorizations[index];
     row.status=previous?.country===row.country?(previous.status||'unknown'):'unknown';
   });
   result.skills=String(values.get('skills')||'').split(/[,\n]/).map(item=>item.trim()).filter(Boolean);
@@ -82,8 +71,7 @@ function importMarkup() {
 // Confirmation is reset by edits, so a previous confirmation cannot approve new facts.
 export function renderProfile(root) {
   if(state.data.profile_imports)imports.splice(0,imports.length,...state.data.profile_imports);
-  const profile=draft||structuredClone(state.data.profile);
-  profile.identity={street_address:'',postal_code:'',phone_country_code:'',...profile.identity};
+  const profile={...(draft||state.data.profile)};
   profile.industries=(profile.industries||[]).map(row=>({...row,levels:row.levels??profile.preferences.levels??[]}));
   if(!profile.industries.length&&profile.preferences.levels?.length)profile.industries=[{name:'',years:'',levels:profile.preferences.levels}];
   const identity=['legal_name','family_name','preferred_name','email','phone','phone_type','street_address','city','region','postal_code','country'].map(key=>key==='phone'?phoneFields(profile.identity):field('identity.'+key,key,profile.identity[key]||'',key==='country'?countryOptions:key==='phone_type'?[['','Not specified'],['mobile','Mobile'],['home','Home / landline']]:null)).join('');
@@ -91,7 +79,7 @@ export function renderProfile(root) {
     <form id="profile-form">${importMarkup()}<section class="panel"><div class="panel-heading"><div><h2>Personal details</h2></div>${confirmationTag}</div>
     <div class="form-grid three">${identity}${field('age_18_or_older','Are you 18 or older?',profile.preferences.age_18_or_older||'unknown',[['unknown','Not answered'],['yes','Yes'],['no','No']])}</div>${sectionMarkup('websites',profile,true)}</section>${Object.keys(sections).filter(section=>!['languages','industries','websites'].includes(section)).map(section=>sectionMarkup(section,profile)).join('')}${preferencesMarkup(profile)}<div class="form-footer"><label class="check-label"><input type="checkbox" name="confirmed" ${profile.confirmed?'checked':''}>I reviewed these facts and confirm they are accurate.</label><button class="primary" type="submit">Save profile</button></div></form>`;
   const form=root.querySelector('#profile-form');
-  bindLevelPicker(form);bindPhone(form);bindAuthorization(form);
+  bindProfileControls(form);
   updateProfileBadges(form,profile.confirmed&&!draft);
   form.addEventListener('input',event=>captureProfileEdit(event,form));
   form.addEventListener('change',event=>captureProfileEdit(event,form));
@@ -113,7 +101,7 @@ function captureProfileEdit(event,form) {
   if(event.target.name==='veteran_service')updateVeteranFollowUp(form,event.target.value);
   if(event.target.name!=='confirmed')form.elements.confirmed.checked=false;
   draft=readForm(form);
-  updateLevelTags(form);updateEntryDurations(form);
+  if(/^experiences\.\d+\.(start|end)$/.test(event.target.name))updateEntryDurations(form);
   updateProfileBadges(form,false);
 }
 
@@ -138,20 +126,13 @@ function preferencesMarkup(profile) {
     <div data-protected-veteran ${profile.preferences.veteran_service==='no'?'hidden':''}>${field('veteran','Protected veteran status',profile.preferences.veteran,disclosures)}</div>${field('race','Race',profile.preferences.race||'')}${field('hispanic','Hispanic / Latino',profile.preferences.hispanic||'unknown',disclosures)}${field('gender','Gender',profile.preferences.gender||'')}</div></section>`;
 }
 
-// Proficiency stays optional and user-supplied; an import can retain its original wording.
-function languageRow(row,index) {
-  const choices=['Elementary proficiency','Limited working proficiency','Professional working proficiency','Full professional proficiency','Native or bilingual proficiency'];
-  if(row.proficiency&&!choices.includes(row.proficiency))choices.push(row.proficiency);
-  return `<div class="language-row" data-row="languages"><label class="sr-only" for="language-${index}">Language</label><input id="language-${index}" name="languages.${index}.name" value="${h(row.name||'')}" placeholder="Language" maxlength="500"><span aria-hidden="true">·</span><label class="sr-only" for="proficiency-${index}">Proficiency</label><select id="proficiency-${index}" name="languages.${index}.proficiency"><option value="">Select proficiency</option>${choices.map(value=>`<option value="${h(value)}" ${value===row.proficiency?'selected':''}>${h(value)}</option>`).join('')}</select><button type="button" class="row-remove quiet danger" data-remove="languages" data-index="${index}" aria-label="Remove language entry ${index+1}">Remove</button></div>`;
-}
-
 // Removing and adding rows preserve every other unsaved form value.
 function handleProfileClick(event,form,root) {
   const button=event.target.closest('button');
   if(!button)return;
   if(button.dataset.add||button.dataset.remove) {
     draft=readForm(form);draft.confirmed=false;
-    if(button.dataset.add)(draft[button.dataset.add]??=[]).push(Object.fromEntries(sections[button.dataset.add][1].map(key=>[key,key==='levels'?[]:''])));
+    if(button.dataset.add)draft[button.dataset.add].push(button.dataset.add==='industries'?{levels:[]}:{});
     else draft[button.dataset.remove].splice(Number(button.dataset.index),1);
     renderProfile(root);
   }
@@ -173,9 +154,9 @@ function handleProfileClick(event,form,root) {
 // Profile saves are explicit and retain a draft if the local API rejects a field.
 async function saveProfile(form,root) {
   await busy(form.querySelector('[type=submit]'),async()=>{
-    const submitted=readForm(form),payload=structuredClone(submitted);draft=submitted;
+    const submitted=readForm(form),payload={...submitted};draft=submitted;
     for(const section of Object.keys(sections))payload[section]=payload[section].filter(row=>Object.entries(row).some(([key,value])=>key!=='status'&&(Array.isArray(value)?value.length:value)));
-    const saved=await persistProfile(payload,sections);await refresh();
+    const saved=await persistProfile(payload);await refresh();
     const current=form.isConnected?readForm(form):draft;
     if(JSON.stringify(current)!==JSON.stringify(submitted)){
       draft=current;toast('Profile saved. Your newer edits are still unsaved.');return;
@@ -233,7 +214,7 @@ function showDraft(extracted,current,root) {
 }
 
 // An older running server must never receive fields it would silently discard.
-async function persistProfile(payload,sections) {
+async function persistProfile(payload) {
   if(!Number.isInteger(state.data.profile_schema)||state.data.profile_schema<10){
     throw new Error('ApplyDesk needs a full restart to save these fields. Your edits are still on this page; keep a copy before quitting.');
   }

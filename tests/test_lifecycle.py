@@ -130,14 +130,6 @@ class StartupTests(unittest.TestCase):
                     open_window(self.url, self.root)
         launch.assert_not_called()
 
-    def test_focus_helper_receives_only_the_private_profile(self):
-        # Native focus never receives the capability URL or job platform profiles.
-        with patch("applydesk.lifecycle.subprocess.run", return_value=Mock(returncode=0)) as focus:
-            self.assertTrue(focus_window(self.root))
-        arguments = focus.call_args.args[0]
-        self.assertEqual(arguments[1:], ["--focus-interface", str(self.root / "interface")])
-        self.assertNotIn(self.url, arguments)
-
     def test_service_lock_is_released_on_close(self):
         # The existing service singleton still prevents concurrent writers.
         first, second = LocalInstance(self.root), LocalInstance(self.root)
@@ -159,4 +151,4 @@ class StartupTests(unittest.TestCase):
         with patch.dict("os.environ", {"APPLYDESK_LAUNCHER": launcher}):
             with patch("applydesk.lifecycle.subprocess.run", return_value=Mock(returncode=0)) as focus:
                 self.assertTrue(focus_window(self.root))
-        self.assertEqual(focus.call_args.args[0][0], launcher)
+        self.assertEqual(focus.call_args.args[0], [launcher, "--focus-interface", str(self.root / "interface")])

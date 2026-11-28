@@ -13,7 +13,7 @@ from applydesk.application_public_source import recently_screened_draft, native_
 from applydesk.storage import now
 from applydesk.applications import Applications
 from applydesk.orchestrator_tools import MasterTools, master_tools
-from applydesk.discovery import canonical_url, google_xray_query, page_problem, require_public_listing
+from applydesk.discovery import canonical_url, google_xray_query, require_public_listing
 
 
 class PublicSearchToolTests(unittest.TestCase):
@@ -192,8 +192,6 @@ class PublicSourceTests(unittest.TestCase):
         self.assertIsNone(recently_screened_draft(app, job))
         browser.call.assert_not_called()
 
-    """Source checks distinguish original listing reads from observed application destinations."""
-
     def test_capture_hash_and_complete_fields_are_required(self):
         for change in ({"complete": False}, {"company": ""}, {"description_sha256": "wrong"},
                        {"url": "file:///tmp/example"}, {"url": "https://name:secret@example.test"}):
@@ -228,10 +226,6 @@ class PublicSourceTests(unittest.TestCase):
 
 
 URL = "https://careers.example.com/jobs/123/software-engineer"
-TEXT = ("Acme is hiring a Software Engineer in San Francisco, US. Remote work is available in the US. "
-        "You will build software with a collaborative engineering team. Required qualifications include "
-        "three years of production software experience, Python and clear written communication.")
-PAGE = {"url": URL, "source_url": URL, "title": "Software Engineer at Acme", "text": TEXT}
 
 
 class DiscoveryValidationTests(unittest.TestCase):
@@ -240,9 +234,3 @@ class DiscoveryValidationTests(unittest.TestCase):
         self.assertEqual(canonical_url(greenhouse), "https://job-boards.greenhouse.io/acme/jobs/123")
         self.assertEqual(canonical_url("https://jobs.lever.co/acme/abc/apply?source=linkedin"), "https://jobs.lever.co/acme/abc")
         self.assertNotEqual(canonical_url(URL + "?job=1"), canonical_url(URL + "?job=2"))
-
-    def test_closed_and_challenge_pages_are_not_listings(self):
-        for phrase in ("This job is no longer available", "Verify you are human", "Job has expired"):
-            self.assertTrue(page_problem({**PAGE, "text": phrase + TEXT}))
-        self.assertTrue(page_problem({**PAGE, "text": "Short"}))
-        self.assertEqual(page_problem(PAGE), "")

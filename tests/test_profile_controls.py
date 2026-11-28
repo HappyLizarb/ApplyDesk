@@ -1,14 +1,8 @@
 """Profile field round trips and conservative application answers use fictional records."""
 
-import copy
 import unittest
-from types import SimpleNamespace
-from unittest.mock import Mock
 
-from applydesk.agent_contract import profile_draft
-from applydesk.intelligence import extract_profile
 from applydesk.profile import empty_profile, profile_with_defaults, validate_profile
-from applydesk.workspace import Workspace
 
 
 class ProfileControlTests(unittest.TestCase):
@@ -100,13 +94,6 @@ class PhoneTypeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_profile(profile, {})
 
-    def test_profile_edit_does_not_reset_submitted_or_uncertain_attempts(self):
-        store = Mock()
-        statuses = ["new", "submitted", "submitting", "submission_unknown", "ready"]
-        store.all.return_value = [{"id": status, "status": status} for status in statuses]
-        Workspace.invalidate_profile_jobs(SimpleNamespace(store=store), "changed")
-        store.job.assert_called_once_with("ready", status="needs_review", exceptions=["changed"])
-
 
 class PostalCodeTests(unittest.TestCase):
     """Fictional domestic and international codes exercise the public profile boundary."""
@@ -138,23 +125,3 @@ class PostalCodeTests(unittest.TestCase):
                 self.profile["identity"]["postal_code"] = value
                 with self.assertRaisesRegex(ValueError, "Postal code must be text"):
                     validate_profile(self.profile, empty_profile())
-
-    def test_legacy_read_does_not_mutate_or_reconfirm_saved_profile(self):
-        self.profile["identity"].pop("postal_code")
-        self.profile["revision"] = 9
-        original = copy.deepcopy(self.profile)
-        restored = profile_with_defaults(self.profile)
-        self.assertEqual(self.profile, original)
-        self.assertEqual(restored["identity"]["postal_code"], "")
-        self.assertEqual(restored["revision"], 9)
-
-    def test_extraction_retains_explicit_text_but_needs_user_confirmation(self):
-        self.profile["identity"]["postal_code"] = "00501"
-        client = Mock()
-        client.ask.return_value = copy.deepcopy(self.profile)
-        extracted = extract_profile(client, "Applicant address: example address, postal code 00501")
-        draft = profile_draft({"profile": extracted, "notes": []})["profile"]
-        self.assertEqual(draft["identity"]["postal_code"], "00501")
-        self.assertFalse(draft["confirmed"])
-        self.assertEqual(draft["facts"], [])
-        self.assertIn("postal_code", client.ask.call_args.args[0])

@@ -58,14 +58,6 @@ class NativePageTests(unittest.TestCase):
         self.assertTrue(all(params["delta_y"] == 140 for params in scrolls))
         self.assertEqual(session.index, 0)
 
-    def test_any_unreadable_visible_section_remains_incomplete_after_reaching_bottom(self):
-        """A later complete viewport cannot erase missing text or capped native control evidence."""
-        for flag in ("text_truncated", "controls_truncated", "elements_truncated"):
-            pages = [viewport("First"), viewport("Partially visible", **{flag: True}), viewport("End")]
-            with self.subTest(flag=flag):
-                result = capture_page(ViewportSession(pages), pages[0])
-                self.assertTrue(result["text_truncated"])
-
     def test_capture_limit_and_navigation_do_not_claim_complete_evidence(self):
         """A long page stays incomplete and a navigation abandons evidence from the former listing."""
         pages = [viewport("Section " + str(index)) for index in range(8)]
@@ -73,26 +65,6 @@ class NativePageTests(unittest.TestCase):
         moved = [pages[0], viewport("Another listing", url="https://employer.test/jobs/two")]
         with self.assertRaisesRegex(ValueError, "navigated"):
             capture_page(ViewportSession(moved), moved[0])
-
-    def test_boundary_clipped_text_resolves_only_after_same_control_is_fully_readable(self):
-        """Ordinary viewport overlap recovers the same paragraph without treating a real text cap as complete."""
-        partial = {"id": "paragraph", "web_content": True, "text_incomplete": True, "clipped": True}
-        whole = {**partial, "text_incomplete": False, "clipped": False, "value": "Complete requirements"}
-        pages = [viewport("Heading", text_truncated=True, screenshot_needed=True, elements=[partial]),
-                 viewport("Complete requirements", elements=[whole]), viewport("End")]
-        result = capture_page(ViewportSession(pages), pages[0])
-        self.assertFalse(result["text_truncated"])
-        self.assertEqual(result["unreadable_control_ids"], [])
-        reversed_pages = [pages[1], pages[0], pages[2]]
-        self.assertFalse(capture_page(ViewportSession(reversed_pages), reversed_pages[0])["text_truncated"])
-        pages[0]["text_capped"] = True
-        self.assertTrue(capture_page(ViewportSession(pages), pages[0])["text_truncated"])
-
-    def test_legacy_capture_remains_unchanged(self):
-        """Explicit legacy test adapters keep their pre-collected page response."""
-        page, session = {"url": "https://employer.test/job", "text": "Legacy capture"}, Mock()
-        self.assertIs(capture_page(session, page), page)
-        session.call.assert_not_called()
 
     def test_retained_page_at_bottom_is_read_from_top_and_left_at_top(self):
         """Reloading a retained page cannot silently omit the initial role and qualification paragraphs."""

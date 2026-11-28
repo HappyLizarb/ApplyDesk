@@ -1,11 +1,5 @@
 const assert=require('node:assert/strict');
-const fs=require('node:fs');
-const path=require('node:path');
-const {createRequire}=require('node:module');
-const load=process.env.APPLYDESK_NODE_MODULES?createRequire(path.join(process.env.APPLYDESK_NODE_MODULES,'__test__.cjs')):require;
-const {chromium}=load('playwright');
-const {workspace,routeRequest}=require('./documents-ui.test.cjs');
-const origin='http://127.0.0.1:63498';
+const {workspace,routeRequest,origin,browserTest,screenshot}=require('./documents-ui.test.cjs');
 
 // Only fictional files and explicit local mutations exist in this browser fixture.
 function fixture() {
@@ -130,10 +124,9 @@ async function sliderChecks(page,fixture) {
   await page.waitForTimeout(160);
   assert.ok((await fill.boundingBox()).width>lowWidth);
   if(process.env.APPLYDESK_TEST_SCREENSHOTS){
-    fs.mkdirSync(process.env.APPLYDESK_TEST_SCREENSHOTS,{recursive:true});
-    await page.locator('.agent-menu-popover').screenshot({path:path.join(process.env.APPLYDESK_TEST_SCREENSHOTS,'thinking-slider.png')});
+    await screenshot(page.locator('.agent-menu-popover'),'thinking-slider.png');
     await page.emulateMedia({colorScheme:'dark'});
-    await page.locator('.agent-menu-popover').screenshot({path:path.join(process.env.APPLYDESK_TEST_SCREENSHOTS,'thinking-slider-dark.png')});
+    await screenshot(page.locator('.agent-menu-popover'),'thinking-slider-dark.png');
   }
   await slider.evaluate(input=>{input.value='1';input.dispatchEvent(new Event('input',{bubbles:true}));});
   await page.setViewportSize({width:390,height:950});
@@ -202,25 +195,14 @@ async function layoutChecks(page) {
     await page.goto(origin+'/#'+view);
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`${view}: ${width}, ${theme}`);
     assert.equal(await page.locator('#toast.danger:not([hidden])').count(),0,`${view} has an unexpected error`);
-    if(process.env.APPLYDESK_TEST_SCREENSHOTS) {
-      fs.mkdirSync(process.env.APPLYDESK_TEST_SCREENSHOTS,{recursive:true});
-      await page.screenshot({path:path.join(process.env.APPLYDESK_TEST_SCREENSHOTS,`${view}-${width}-${theme}.png`),fullPage:true});
-    }
+    await screenshot(page,`${view}-${width}-${theme}.png`,{fullPage:true});
   }
 }
 
 // The isolated Chrome profile is always closed, including when an assertion fails.
-async function main() {
-  const browser=await chromium.launch({channel:'chrome',headless:true,chromiumSandbox:true});
-  const data=fixture(),errors=[];
-  try {
-    const page=await browser.newPage({viewport:{width:1440,height:950}});
-    page.on('pageerror',error=>errors.push(error.message));
-    await page.route('**/*',request=>route(request,data));
+const data=fixture();
+browserTest('Model and API settings, profile edits, document deletion and responsive themes',
+  {fixture:data,route,viewport:{width:1440,height:950}},async page=>{
     await sliderChecks(page,data);await providerChecks(page,data);
     await websiteAndUploadChecks(page,data);await rolePreferenceChecks(page,data);await educationChecks(page,data);await layoutChecks(page);
-    assert.deepEqual(errors,[]);
-    console.log('Slider stops, API key rows, Cursor limitation, GitHub websites, file deletion and responsive themes passed.');
-  } finally {await browser.close();}
-}
-main().catch(error=>{console.error(error);process.exitCode=1;});
+  });

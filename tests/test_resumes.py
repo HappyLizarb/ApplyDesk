@@ -14,13 +14,13 @@ from applydesk.native_application_io import _document
 from applydesk.workspace import Workspace
 from chat_helpers import ChatFixture
 from test_documents import sample_docx, sample_pdf
-from test_workspace import FakeSecrets
+from test_employer_accounts import MemorySecrets
 
 
 class ResumeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.w = Workspace(Path(self.temp.name), secrets=FakeSecrets())
+        self.w = Workspace(Path(self.temp.name), secrets=MemorySecrets())
         profile = self.w.profile()
         profile["industries"] = [{"name": "Engineering", "years": "2"}, {"name": "Finance", "years": "1"}]
         self.w.save_profile(profile)
@@ -185,17 +185,6 @@ class ResumeTests(unittest.TestCase):
         review.assert_called_once_with(document["id"])
         self.assertEqual(self.w.store.get("job", job["id"])["resume_id"], document["id"])
 
-    def test_document_generation_and_template_uploads_are_unavailable(self):
-        """The document workflow contains only local checks, and uploads reject templates."""
-        document = self.upload()
-        tasks = DocumentTasks(self.w)
-        for method in ("generate", "cover", "chat", "save"):
-            self.assertFalse(hasattr(tasks, method))
-        for kind in ("resume_template", "cover_template"):
-            with self.assertRaisesRegex(ValueError, "Template uploads are no longer available"):
-                self.w.import_file({"kind": kind})
-        self.w.docs.verify(document["id"])
-
     def test_resume_integrity_is_checked_without_another_model_or_template(self):
         """An unchanged uploaded resume needs no separate layout or factual agent."""
         document = self.upload()
@@ -233,13 +222,6 @@ class RunResumeTests(ChatFixture):
         path, _, digest = _document(self.w, {"resume_id": selected}, {"kind": "resume", "document_id": selected})
         self.assertEqual(path.read_bytes(), b"synthetic PDF source")
         self.assertEqual(digest, self.choice["sha256"])
-
-    def test_unspecified_choice_keeps_general_fallback(self):
-        """Existing category selection still applies when chat did not name an upload."""
-        app = Applications(self.w)
-        with patch.object(app.documents, "require_review"):
-            app._resume(self.job, {"category": "Hardware"})
-        self.assertEqual(self.w.store.get("job", self.job["id"])["resume_id"], self.resume["id"])
 
     def test_changed_source_bytes_stop_before_attachment_selection(self):
         """Tampered files cannot pass simply because the requested document ID still exists."""

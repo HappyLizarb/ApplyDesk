@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const test = require('node:test');
 const fs = require('node:fs');
 const path = require('node:path');
 const {createRequire} = require('node:module');
@@ -135,10 +136,9 @@ async function layoutChecks(page, fixture) {
     await page.waitForSelector('[data-delete-document="resume"]');
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `Document overflow: ${width}, ${theme}`);
     if (process.env.APPLYDESK_TEST_SCREENSHOTS) {
-      fs.mkdirSync(process.env.APPLYDESK_TEST_SCREENSHOTS, {recursive: true});
-      await page.screenshot({path: path.join(process.env.APPLYDESK_TEST_SCREENSHOTS, `documents-${width}-${theme}.png`)});
+      await screenshot(page,`documents-${width}-${theme}.png`);
       await page.click('#toggle-assistant');
-      await page.locator('#assistant-form').screenshot({path: path.join(process.env.APPLYDESK_TEST_SCREENSHOTS, `composer-${width}-${theme}.png`)});
+      await screenshot(page.locator('#assistant-form'),`composer-${width}-${theme}.png`);
     }
   }
 }
@@ -228,28 +228,29 @@ async function applicationWindowChecks(page, fixture) {
   assert.equal(await page.locator('#show-application').isVisible(), false);
 }
 
-// Close the isolated Chrome profile even when a browser assertion fails.
-async function main() {
-  const fixture = {data: workspace(), writes: [], failDelete: false}, errors = [];
-  const browser = await chromium.launch({channel: 'chrome', headless: true, chromiumSandbox: true});
-  try {
-    const page = await browser.newPage({viewport: {width: 1440, height: 950}});
-    page.on('pageerror', error => errors.push(error.message));
-    await page.route('**/*', route => routeRequest(route, fixture));
-    await deletionChecks(page, fixture);
-    await searchChecks(page, fixture);
-    await layoutChecks(page, fixture);
-    await modelCatalogChecks(page, fixture);
-    await applicationWindowChecks(page, fixture);
-    await readOnlyDocumentChecks(page, fixture);
-    await resumePickerChecks(page, fixture);
-    await requiredLetterChecks(page, fixture);
-    assert.deepEqual(errors, []);
-    console.log('Document deletion, public Google search, removed platform controls, model availability and responsive layouts passed.');
-  } catch(error) {
-    if(errors.length)error.message+='\nBrowser errors: '+errors.join('; ');
-    throw error;
-  } finally { await browser.close(); }
+// Every suite exercises the shipped page through an isolated Chrome profile and local routes.
+function browserTest(name,{fixture,route=routeRequest,viewport},checks) {
+  test(name,async()=>{
+    const browser=await chromium.launch({channel:'chrome',headless:true,chromiumSandbox:true}),errors=[];
+    try {
+      const page=await browser.newPage({viewport});
+      page.on('pageerror',error=>errors.push(error.message));
+      await page.route('**/*',request=>route(request,fixture));
+      await checks(page,browser);
+      assert.deepEqual(errors,[]);
+    } catch(error) {
+      if(errors.length)error.message+='\nBrowser errors: '+errors.join('; ');
+      throw error;
+    } finally {await browser.close();}
+  });
+}
+
+// Capture the requested page or element only when screenshot output is enabled.
+async function screenshot(target,filename,options={}) {
+  const directory=process.env.APPLYDESK_TEST_SCREENSHOTS;
+  if(!directory)return;
+  fs.mkdirSync(directory,{recursive:true});
+  await target.screenshot({...options,path:path.join(directory,filename)});
 }
 
 // A required letter shows the existing Needs input status and its reason in details.
@@ -266,5 +267,18 @@ async function requiredLetterChecks(page, fixture) {
   assert.ok((await page.locator('#modal').textContent()).includes(issue));
 }
 
-module.exports={workspace,routeRequest};
-if(require.main===module)main().catch(error => { console.error(error); process.exitCode = 1; });
+module.exports={workspace,routeRequest,origin,browserTest,screenshot};
+if(require.main===module){
+  const fixture={data:workspace(),writes:[],failDelete:false};
+  browserTest('Documents, public search, model availability and responsive layouts',
+    {fixture,viewport:{width:1440,height:950}},async page=>{
+      await deletionChecks(page,fixture);
+      await searchChecks(page,fixture);
+      await layoutChecks(page,fixture);
+      await modelCatalogChecks(page,fixture);
+      await applicationWindowChecks(page,fixture);
+      await readOnlyDocumentChecks(page,fixture);
+      await resumePickerChecks(page,fixture);
+      await requiredLetterChecks(page,fixture);
+    });
+}

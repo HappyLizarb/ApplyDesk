@@ -11,13 +11,14 @@ const views={applications:renderApplications,profile:renderProfile,documents:ren
 function navigate() {
   const requested=location.hash.slice(1)||'applications';
   state.view=Object.hasOwn(views,requested)?requested:'applications';
-  document.querySelectorAll('[data-view]').forEach(button=>{
+  document.querySelectorAll('nav [data-view]').forEach(button=>{
     const active=button.dataset.view===state.view;
     button.classList.toggle('active',active);
     if(active)button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');
   });
-  document.querySelector('#main').dataset.view=state.view;
-  views[state.view](document.querySelector('#main'));
+  const main=document.querySelector('#main');
+  main.dataset.view=state.view;
+  views[state.view](main);
   window.scrollTo(0,0);
   if(requested==='chat')toggleAssistant(true);
 }
@@ -27,7 +28,7 @@ async function start() {
   try {
     bindQuitControl();
     await refresh();initializeAssistant();navigate();
-    document.querySelectorAll('[data-view]').forEach(button=>button.onclick=()=>location.hash=button.dataset.view);
+    document.querySelectorAll('nav [data-view]').forEach(button=>button.onclick=()=>location.hash=button.dataset.view);
     window.addEventListener('hashchange',navigate);
     window.addEventListener('workspace-updated',()=>{
       if(state.view==='applications'){
@@ -60,7 +61,6 @@ function setQuitExpanded(button,expanded) {
   button.setAttribute('aria-expanded',String(expanded));
   button.querySelector('[data-quit-label]').textContent=expanded?'Quit ApplyDesk':'Quit';
   button.title=expanded?'Click again to quit ApplyDesk':'Quit';
-  button.classList.toggle('quit-confirming',expanded);
 }
 
 // Only the confirmed second click shuts down, and failures remain ready for retry.
@@ -75,7 +75,6 @@ async function quitApp(button) {
     window.close();
   } catch(error) {
     button.disabled=false;button.setAttribute('aria-busy','false');
-    setQuitExpanded(button,true);
     toast(error.message,true);
   }
 }

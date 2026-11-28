@@ -7,7 +7,6 @@ from unittest.mock import Mock
 
 from applydesk.agent_context import inputs_for
 from applydesk.agent_contract import profile_draft
-from applydesk.intelligence import extract_profile
 from applydesk.profile import empty_profile, model_profile, profile_with_defaults, validate_profile
 
 
@@ -76,13 +75,10 @@ class AuthorizationDetailTests(unittest.TestCase):
     def test_imports_cannot_propose_immigration_or_restriction_answers(self):
         """Even an explicit model-produced visa claim is discarded from profile import drafts."""
         source = self.source()
-        client = Mock(ask=Mock(return_value=copy.deepcopy(source)))
-        extracted = extract_profile(client, "Example source document")
         draft = profile_draft({"profile": source, "notes": []})["profile"]
-        for profile in [extracted, draft]:
-            self.assertEqual(profile["authorizations"], [])
-            self.assertFalse(profile["confirmed"])
-            self.assertEqual(profile["facts"], [])
+        self.assertEqual(draft["authorizations"], [])
+        self.assertFalse(draft["confirmed"])
+        self.assertEqual(draft["facts"], [])
 
     def test_active_status_and_restrictions_are_validated_as_bounded_plain_text(self):
         """Only supported status IDs and plain restriction notes cross the save boundary."""

@@ -1,7 +1,6 @@
-import {state,h,icon,labels,api,refresh,task,busy,toast,modal,taskStrip} from './ui.js';
+import {state,h,icon,labels,api,refresh,busy,toast,modal,taskStrip} from './ui.js';
 import {openEditor} from './documents.js';
 import {composeInstruction} from './assistant.js';
-import {findJobs,discoverySummary,showSearchReport} from './discovery.js';
 import {compensationLabel,descriptionItems} from './job-details.js';
 
 const selectedJobs=new Set();
@@ -15,12 +14,18 @@ export function renderApplications(root) {
   const search=root.querySelector('#search-jobs');
   const selection=document.activeElement===search?[search.selectionStart,search.selectionEnd]:null;
   const jobs=state.data.jobs;
-  for(const id of selectedJobs)if(!jobs.some(job=>job.id===id))selectedJobs.delete(id);
-  const shown=jobs.filter(job=>matchesStatus(job,state.filter) && `${job.company} ${job.title}`.toLowerCase().includes(state.query.toLowerCase()));
+  if(selectedJobs.size){
+    const jobIds=new Set(jobs.map(job=>job.id));
+    for(const id of selectedJobs)if(!jobIds.has(id))selectedJobs.delete(id);
+  }
+  const grouped=groupJobs(jobs);
+  const documents=availableDocuments();
+  const query=state.query.toLowerCase();
+  const shown=(grouped[state.filter]||[]).filter(job=> `${job.company} ${job.title}`.toLowerCase().includes(query));
   const filters=[['all','All'],['draft','Drafts'],['needs_review','Needs input'],['submitted','Submitted'],['skipped','Skipped']];
   root.innerHTML=`<header class="page-head"><h1>Applications</h1><div class="actions"><button id="remove-jobs" class="danger" hidden></button><button id="add-job">${icon('plus')}Add link</button></div></header>${taskStrip()}${discoverySummary()}
-    <section class="applications-panel"><div class="toolbar"><div class="tabs" role="group" aria-label="Application status filter">${filters.map(([key,label])=>`<button data-filter="${key}" class="${state.filter===key?'active':''}" aria-pressed="${state.filter===key}">${label}<span class="tab-count">${jobs.filter(job=>matchesStatus(job,key)).length}</span></button>`).join('')}</div><div class="search-wrap">${icon('search')}<input class="search" id="search-jobs" placeholder="Search applications" aria-label="Search applications" value="${h(state.query)}"></div></div>
-    <div class="table-wrap"><table aria-label="Applications"><thead><tr><th scope="col">Company</th><th scope="col">Role</th><th scope="col">Compensation</th><th scope="col">Resume</th><th scope="col">Cover letter</th><th scope="col">Account</th><th scope="col">Status</th><th scope="col" class="job-selection"><input id="select-all-jobs" type="checkbox" aria-label="Select/unselect all shown applications" title="Select/unselect all shown applications"></th></tr></thead><tbody>${shown.map(jobRow).join('')}</tbody></table>${!shown.length?emptyState(jobs.length):''}</div>
+    <section class="applications-panel"><div class="toolbar"><div class="tabs" role="group" aria-label="Application status filter">${filters.map(([key,label])=>`<button data-filter="${key}" class="${state.filter===key?'active':''}" aria-pressed="${state.filter===key}">${label}<span class="tab-count">${grouped[key]?.length||0}</span></button>`).join('')}</div><div class="search-wrap">${icon('search')}<input class="search" id="search-jobs" placeholder="Search applications" aria-label="Search applications" value="${h(state.query)}"></div></div>
+    <div class="table-wrap"><table aria-label="Applications"><thead><tr>${['Company','Role','Compensation','Resume','Cover letter','Account','Status'].map(name=>`<th scope="col">${name}</th>`).join('')}<th scope="col" class="job-selection"><input id="select-all-jobs" type="checkbox" aria-label="Select/unselect all shown applications" title="Select/unselect all shown applications"></th></tr></thead><tbody>${shown.map(job=>jobRow(job,documents)).join('')}</tbody></table>${!shown.length?emptyState(jobs.length):''}</div>
     <div class="table-footer"><span>${shown.length} of ${jobs.length} applications</span><span>/ = cover letter not required</span></div></section>`;
   bindSelection(root);
   root.querySelector('#add-job').onclick=addJob;
@@ -34,10 +39,16 @@ export function renderApplications(root) {
   if(selection) {const input=root.querySelector('#search-jobs');input.focus();input.setSelectionRange(...selection);}
 }
 
-// The needs-input filter includes documents changed after an earlier review.
-function matchesStatus(job,filter) {
-  const status=job.manual_status||job.status;
-  return filter==='all'||status===filter||(filter==='needs_review'&&['documents_changed','submission_unknown'].includes(status));
+// Count each board tab once, treating a changed document or an uncertain submission as needing input.
+function groupJobs(jobs) {
+  const groups=Object.create(null);
+  for(const job of jobs){
+    const status=job.manual_status||job.status;
+    const tab=['documents_changed','submission_unknown'].includes(status)?'needs_review':status;
+    (groups[tab]??=[]).push(job);
+  }
+  groups.all=jobs;
+  return groups;
 }
 
 // Keep transient engine states visible while offering only the five user-editable board states.
@@ -52,21 +63,26 @@ function statusControl(job) {
     ${options.map(key=>`<option value="${h(key)}" ${key===status?'selected':''} ${automatic&&key===status?'disabled':''}>${h(labels[key]||key)}</option>`).join('')}</select></label>`;
 }
 
+// A retired resume can still appear on earlier applications.
+function availableDocuments() {
+  const {documents=[],resumes=[]}=state.data;
+  return new Set([...documents,...resumes].map(record=>record.id));
+}
+
 // An employer upload is historical evidence even after the current resume selection changes.
-function applicationResume(job,label,css) {
+function applicationResume(job,label,css,documents) {
   const ledger=Array.isArray(job.attachments)?job.attachments:[];
   const receipt=ledger.findLast(item=>item?.kind==='resume'&&item.document_id);
   const id=receipt?.document_id||job.resume_id;
   if(!id)return css==='doc-link'?'<span class="muted">—</span>':'No resume selected';
-  const known=[...(state.data.documents||[]),...(state.data.resumes||[])].some(record=>record.id===id);
-  if(!known&&receipt)return `<span class="muted">${h(receipt.filename||'Resume')} · removed</span>`;
+  if(receipt&&!documents.has(id))return `<span class="muted">${h(receipt.filename||'Resume')} · removed</span>`;
   return `<button class="${css}" data-doc="${h(id)}">${css==='doc-link'?icon('document'):''}${label}</button>`;
 }
 
 // Each resume and letter cell names a concrete immutable document version.
-function jobRow(job) {
+function jobRow(job,documents) {
   const cover=job.cover_id?`<button class="doc-link" data-doc="${h(job.cover_id)}">${icon('document')}View letter</button>`:job.cover_state==='not_required'?'<span title="Checked: not required">/</span>':`<span class="muted small">${job.cover_state==='required'?'Manual handling':'Not checked'}</span>`;
-  return `<tr><td><div class="company-cell" title="${h(job.company)}">${h(job.company||'—')}</div></td><td><button class="job-title" data-detail="${h(job.id)}" title="${h(job.title)}">${h(job.title)}</button>${job.analysis?.category?`<div class="company">${h(job.analysis.category)}</div>`:''}</td><td><div class="compensation-cell">${h(compensationLabel(job.compensation))||'<span class="muted">Not stated</span>'}</div></td><td>${applicationResume(job,'Resume','doc-link')}</td><td>${cover}</td><td><button class="doc-link account-link" data-account="${h(job.id)}" title="${h(job.account)}">${h(job.account||'Add account')}</button></td><td>${statusControl(job)}</td><td class="job-selection"><input type="checkbox" data-select-job="${h(job.id)}" aria-label="Select ${h(job.title)} at ${h(job.company||'unknown company')}" ${selectedJobs.has(job.id)?'checked':''} ${removingJobs?'disabled':''}></td></tr>`;
+  return `<tr><td><div class="company-cell" title="${h(job.company)}">${h(job.company||'—')}</div></td><td><button class="job-title" data-detail="${h(job.id)}" title="${h(job.title)}">${h(job.title)}</button>${job.analysis?.category?`<div class="company">${h(job.analysis.category)}</div>`:''}</td><td><div class="compensation-cell">${h(compensationLabel(job.compensation))||'<span class="muted">Not stated</span>'}</div></td><td>${applicationResume(job,'Resume','doc-link',documents)}</td><td>${cover}</td><td><button class="doc-link account-link" data-account="${h(job.id)}" title="${h(job.account)}">${h(job.account||'Add account')}</button></td><td>${statusControl(job)}</td><td class="job-selection"><input type="checkbox" data-select-job="${h(job.id)}" aria-label="Select ${h(job.title)} at ${h(job.company||'unknown company')}" ${selectedJobs.has(job.id)?'checked':''} ${removingJobs?'disabled':''}></td></tr>`;
 }
 
 // Give a clear first action without pretending any applications already exist.
@@ -83,46 +99,42 @@ function bindRows(root) {
 }
 
 // A manual edit updates the tracker and filter counts through the same persisted request.
-async function saveBoardStatus(select) {
+function saveBoardStatus(select) {
   const {jobStatus:id,previous}=select.dataset;
-  select.disabled=true;
-  try {
-    await api('job/status',{id,previous,status:select.value});
-    await refresh();
-    if(state.view==='applications')renderApplications(document.querySelector('#main'));
-    if(select.closest('dialog')?.open)jobDetails(id);
-  } catch(error) {
-    select.value=previous;
-    toast(error.message,true);
-  } finally {
-    select.disabled=false;
-  }
+  return busy(select,async()=>{
+    try {
+      await api('job/status',{id,previous,status:select.value});
+      await refresh();
+      if(state.view==='applications')renderApplications(document.querySelector('#main'));
+      if(select.closest('dialog')?.open)jobDetails(id);
+    } catch(error){select.value=previous;throw error;}
+  });
 }
 
 // Selections survive filtering and polling; removal always uses explicit record IDs.
 function bindSelection(root) {
   const button=root.querySelector('#remove-jobs');
-  button.hidden=!selectedJobs.size;
-  button.textContent=removingJobs?'Removing…':`Remove selected (${selectedJobs.size})`;
-  button.disabled=removingJobs;
-  button.onclick=()=>removeSelected(root);
   const rows=[...root.querySelectorAll('[data-select-job]')];
   const all=root.querySelector('#select-all-jobs');
-  const count=rows.filter(input=>selectedJobs.has(input.dataset.selectJob)).length;
-  all.checked=rows.length>0&&count===rows.length;
-  all.indeterminate=count>0&&count<rows.length;
-  all.disabled=removingJobs||!rows.length;
-  all.onchange=()=>{
-    rows.forEach(input=>{
-      input.checked=all.checked;
-      if(all.checked)selectedJobs.add(input.dataset.selectJob);else selectedJobs.delete(input.dataset.selectJob);
-    });
-    bindSelection(root);
+  const updateControls=()=>{
+    const count=rows.filter(input=>input.checked).length;
+    all.checked=rows.length>0&&count===rows.length;
+    all.indeterminate=count>0&&count<rows.length;
+    button.hidden=!selectedJobs.size;
+    button.textContent=removingJobs?'Removing…':`Remove selected (${selectedJobs.size})`;
   };
-  rows.forEach(input=>input.onchange=()=>{
-    if(input.checked)selectedJobs.add(input.dataset.selectJob);else selectedJobs.delete(input.dataset.selectJob);
-    bindSelection(root);
-  });
+  updateControls();
+  all.disabled=removingJobs||!rows.length;
+  button.disabled=removingJobs;
+  button.onclick=()=>removeSelected(root);
+  root.querySelector('table').onchange=({target})=>{
+    if(target!==all&&!target.hasAttribute('data-select-job'))return;
+    for(const input of target===all?rows:[target]){
+      input.checked=target.checked;
+      if(input.checked)selectedJobs.add(input.dataset.selectJob);else selectedJobs.delete(input.dataset.selectJob);
+    }
+    updateControls();
+  };
 }
 
 // Keep failed selections available for retry and refresh the tracker after success.
@@ -156,11 +168,11 @@ function descriptionSections(job) {
 }
 
 // Details distinguish skipped, ready, manual, and submitted states explicitly.
-export function jobDetails(id) {
+function jobDetails(id) {
   const job=state.data.jobs.find(item=>item.id===id);
   if(!job)return;
   const issues=[...new Set([...(job.exceptions||[]),...(job.recommendation_source?.issues||[])])].map(issue=>`<div class="notice warning">${h(issue)}</div>`).join('');
-  const body=`<div class="modal-body"><div class="actions">${statusControl(job)}<a href="${h(job.url)}" target="_blank" rel="noreferrer">Job description ↗</a></div>${issues}<p class="muted small">${h(job.progress||'Not prepared yet. No employer form has been changed.')}</p><div class="details-grid"><div><h3>Company</h3>${h(job.company||'Not assessed')}</div><div><h3>Documents</h3>${applicationResume(job,'View resume','inline-link')}<br>${job.cover_id?`<button class="inline-link" data-doc="${h(job.cover_id)}">View saved letter</button>`:h(job.cover_state==='not_required'?'/ · not required':job.cover_state==='required'?'Cover letter required · continue manually':'Cover letter: not checked')}</div><div class="wide"><h3>Compensation</h3><div class="job-details" data-compensation>${h(compensationLabel(job.compensation))||'<span class="muted">Not stated</span>'}</div></div></div>${descriptionSections(job)}<section class="detail-section"><h3>Activity</h3><ol class="timeline">${job.history.slice(-8).map(item=>`<li>${h(item.message)}</li>`).join('')||'<li>No preparation activity yet.</li>'}</ol></section><p class="muted small">Ask in chat to submit applications; application count and target locations are optional.</p></div>`;
+  const body=`<div class="modal-body"><div class="actions">${statusControl(job)}<a href="${h(job.url)}" target="_blank" rel="noreferrer">Job description ↗</a></div>${issues}<p class="muted small">${h(job.progress||'Not prepared yet. No employer form has been changed.')}</p><div class="details-grid"><div><h3>Company</h3>${h(job.company||'Not assessed')}</div><div><h3>Documents</h3>${applicationResume(job,'View resume','inline-link',availableDocuments())}<br>${job.cover_id?`<button class="inline-link" data-doc="${h(job.cover_id)}">View saved letter</button>`:h(job.cover_state==='not_required'?'/ · not required':job.cover_state==='required'?'Cover letter required · continue manually':'Cover letter: not checked')}</div><div class="wide"><h3>Compensation</h3><div class="job-details" data-compensation>${h(compensationLabel(job.compensation))||'<span class="muted">Not stated</span>'}</div></div></div>${descriptionSections(job)}<section class="detail-section"><h3>Activity</h3><ol class="timeline">${job.history.slice(-8).map(item=>`<li>${h(item.message)}</li>`).join('')||'<li>No preparation activity yet.</li>'}</ol></section><p class="muted small">Ask in chat to submit applications; application count and target locations are optional.</p></div>`;
   const draft=(state.data.chat_tasks||[]).find(task=>task.kind==='application'&&task.target_id===id);
   const footer=`${draft?'<button id="view-draft">View draft</button>':''}<button id="prepare-job" class="primary" ${job.status==='submitted'||['submitted','skipped'].includes(job.manual_status)?'disabled':''}>Prepare draft in chat</button>`;
   const dialog=modal(job.title,body,footer,'job-detail-dialog');
@@ -188,11 +200,10 @@ async function openChatTask(id) {
     const statuses={queued:'Queued for chat',draft_ready:'Draft prepared',needs_input:'Needs input',stale:'Inputs changed'};
     const issues=task.issues||[];
     const documents=context.review.documents.map(doc=>`<button data-chat-document="${h(doc.id)}">${h(doc.title||doc.filename)}</button>`).join('');
-    const body=`<div class="modal-body"><span class="badge">${h(statuses[task.status])}</span><p class="muted small">Prepared by your agent. Check the draft before using it.</p>${issues.map(issue=>`<p class="notice warning">${h(issue)}</p>`).join('')}${draftContents(task)}${documents?`<h3>Documents</h3><div class="actions">${documents}</div>`:''}${['needs_input','stale'].includes(task.status)?'<button id=retry-chat-task>Retry task</button>':''}${task.kind==='profile'&&task.result?'<a href="#profile" id="review-profile-link">Review extracted facts in Profile</a>':''}</div>`;
+    const body=`<div class="modal-body"><span class="badge">${h(statuses[task.status])}</span><p class="muted small">Prepared by your agent. Check the draft before using it.</p>${issues.map(issue=>`<p class="notice warning">${h(issue)}</p>`).join('')}${draftContents(task)}${documents?`<h3>Documents</h3><div class="actions">${documents}</div>`:''}${['needs_input','stale'].includes(task.status)?'<button id=retry-chat-task>Retry task</button>':''}</div>`;
     const dialog=modal(task.title,body);
     dialog.querySelector('#retry-chat-task')?.addEventListener('click',()=>{dialog.close();composeInstruction('Retry the draft task '+id+'.');});
     dialog.querySelectorAll('[data-chat-document]').forEach(button=>button.onclick=()=>{dialog.close();openEditor(button.dataset.chatDocument);});
-    dialog.querySelector('#review-profile-link')?.addEventListener('click',()=>dialog.close());
   } catch(error){toast(error.message,true);}
 }
 
@@ -203,4 +214,35 @@ function draftContents(task) {
   const requirements=result.analysis?.required||[];
   const answers=result.answers||[];
   return `${requirements.length?`<h3>Required qualifications</h3><ul>${requirements.map(item=>`<li>${h(item.text)}</li>`).join('')}</ul>`:''}${answers.length?`<h3>Proposed answers</h3>${answers.map(item=>`<p><strong>${h(item.question)}</strong><br>${h(item.answer)}</p>`).join('')}`:''}${(result.notes||[]).map(note=>`<p>${h(note)}</p>`).join('')}`;
+}
+
+// Keep the last search visible without mistaking discovered listings for qualified jobs.
+function discoverySummary() {
+  const report=state.data.discovery;
+  if(!report?.criteria)return '';
+  const filters=[report.criteria.keywords,report.criteria.location,report.criteria.remote?'Remote':''].filter(Boolean).join(' · ');
+  const outcome=report.status==='searching'?'Searching…':report.status==='error'?'Search interrupted':`${report.added_count} added`;
+  return `<div class="search-summary"><p>${h(filters)} <span aria-hidden="true">—</span> ${h(outcome)}</p><button class="quiet" id="search-report">Search details ${icon('arrow')}</button></div>`;
+}
+
+// Source links and failures remain inspectable after the browser task has ended.
+function showSearchReport() {
+  const report=state.data.discovery;
+  if(!report?.criteria)return;
+  const warnings=[...new Set(report.warnings||[])];
+  const candidates=(report.candidates||[]).map(job=>`<li><a href="${h(job.url)}" target="_blank" rel="noreferrer">${h(job.title)}</a> · ${h(job.company)}${job.location?` · ${h(job.location)}`:''}</li>`).join('');
+  const sources=(report.sources||[]).map(source=>`<li><a href="${h(source.url)}" target="_blank" rel="noreferrer">${h(source.label||source.url)}</a></li>`).join('');
+  modal('Search details',`<div class="modal-body"><h3>${h(report.criteria.keywords)}</h3><p class="muted small">${report.status==='searching'?'Search in progress':`${h(report.added_count)} added to your applications`}. Qualifications have not been checked.</p>${candidates?`<ul class="discovery-report">${candidates}</ul>`:''}${warnings.map(message=>`<p class="notice warning">${h(message)}</p>`).join('')}${sources?`<section class="detail-section"><h3>Sources</h3><ul class="discovery-report">${sources}</ul></section>`:''}</div>`);
+}
+
+// Describe the saved role preferences in a draft the user can edit and send.
+function findJobs() {
+  const roles=(state.data.profile.industries||[]).filter(role=>role.name);
+  const preferences=roles.map(role=>{
+    const levels=role.levels??state.data.profile.preferences?.levels??[];
+    return [role.name,levels.join(', ')].filter(Boolean).join(' · ');
+  });
+  composeInstruction(preferences.length
+    ? 'Find jobs matching my saved role preferences: '+preferences.join(' | ')+'.'
+    : 'Find jobs for ');
 }

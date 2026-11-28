@@ -1,12 +1,9 @@
 /* Full-page chat keeps navigation available and centers the conversation for reading. */
-.assistant-toggle{margin-top:14px;display:flex;align-items:center;justify-content:flex-start;padding:11px 13px;gap:12px;text-align:left}
-#assistant-panel{position:fixed;left:224px;right:0;top:0;bottom:0;z-index:12;background:var(--bg);border-left:0;display:flex;flex-direction:column;min-width:0}
-#assistant-panel[hidden]{display:none}
+.assistant-toggle{margin-top:14px;display:flex;align-items:center;justify-content:flex-start;padding:11px 13px;gap:12px;text-align:left;color:var(--muted)}
+#assistant-panel{position:fixed;inset:0 0 0 var(--sidebar-width);z-index:12;background:var(--bg);border-left:0;display:flex;flex-direction:column;min-width:0}
 body.assistant-open{overflow:hidden}
 body.assistant-open #main{display:none}
 body.assistant-open nav button.active{background:transparent;border-color:transparent;color:var(--muted)}
-body.assistant-open nav button.active>.icon{color:var(--muted)}
-.assistant-toggle{background:transparent;border-color:transparent;color:var(--muted)}
 .assistant-toggle[aria-expanded="true"]{background:var(--selection);color:var(--text);border-color:transparent}
 .assistant-head{padding:12px 20px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);gap:12px}
 .assistant-head h2{font-size:17px;margin:0}
@@ -40,14 +37,10 @@ body.assistant-open nav button.active>.icon{color:var(--muted)}
 #composer-thinking-label{color:var(--complete);white-space:nowrap}
 .agent-menu-popover{position:absolute;right:12px;bottom:calc(100% + 12px);z-index:14;width:min(296px,calc(100% - 24px));max-height:65dvh;overflow:auto;overscroll-behavior:contain;padding:12px 14px;background:var(--panel);border:1px solid var(--border);border-radius:22px;box-shadow:var(--modal-shadow)}
 .agent-menu-row{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;padding:0}
-.agent-menu-row:first-child{padding-top:0}
 .agent-menu-row h3{margin:0;font-size:13px}
-.agent-menu-row label:not(.sr-only){display:flex;align-items:center;gap:12px;min-width:0;font-size:11px;color:var(--muted)}
 .agent-menu-row select{flex:1;min-width:0;margin:0;padding:4px 0;font-size:14px;color:var(--text);border:0;background:transparent}
 #agent-menu-status{font-size:12px;line-height:1.5;margin:8px 0 0;color:var(--muted)}
 #agent-menu-status:empty{display:none}
-.agent-menu-popover a{display:inline-block;margin-top:8px;font-size:12px}
-/* Native range controls keep keyboard support while matching the Mist palette. */
 .agent-slider-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .agent-effort-label{color:var(--complete);font-size:12px;white-space:nowrap}
 /* The thick rail fills up to the selected stop while the native range keeps keyboard support. */
@@ -59,38 +52,28 @@ body.assistant-open nav button.active>.icon{color:var(--muted)}
 .agent-effort-dot.lit{background:#fff;opacity:.75}
 .agent-effort-thumb{position:absolute;left:var(--effort-position,16px);top:4px;width:32px;height:32px;border:1px solid #0001;border-radius:50%;background:#fff;box-shadow:0 1px 4px #0002;transform:translateX(-50%);pointer-events:none;transition:left 120ms ease-out}
 .agent-thinking-slider{appearance:none;-webkit-appearance:none;position:absolute;inset:0;width:100%;height:40px;padding:0;margin:0;border:0;background:transparent;cursor:pointer;opacity:0}
-.agent-thinking-slider::-webkit-slider-runnable-track{height:24px;background:transparent}
-.agent-thinking-slider::-moz-range-track,.agent-thinking-slider::-moz-range-progress{height:24px;background:transparent}
-.agent-thinking-slider::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:32px;height:32px;margin-top:-4px;border:1px solid #0001;border-radius:50%;background:#fff;box-shadow:0 1px 4px #0002}
-.agent-thinking-slider::-moz-range-thumb{width:30px;height:30px;border:1px solid #0001;border-radius:50%;background:#fff;box-shadow:0 1px 4px #0002}
+/* Match the native range's travel to the visible 32px thumb. */
+.agent-thinking-slider::-webkit-slider-thumb{appearance:none;width:32px;height:32px}
+.agent-thinking-slider::-moz-range-thumb{width:30px;height:30px;border:1px solid transparent}
 .agent-effort-track:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:4px;border-radius:999px}
 .agent-effort-track:has(input:disabled){opacity:.45}
 .agent-thinking-slider:disabled{cursor:not-allowed}
-@media(prefers-reduced-motion:reduce){.agent-effort-fill,.agent-effort-thumb{transition:none}}
-.composer-account-link{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;flex:none;margin-right:auto;color:var(--muted)}
+.composer-account-link{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;flex:none;color:var(--muted)}
 .composer-account-link:hover{color:var(--text);text-decoration:none}
-.composer-account-link .icon{width:18px;height:18px}
 .assistant-connect{display:block;padding:12px 20px;font-size:13px}
 #assistant-error{font-size:13px;color:var(--danger);padding:0 16px;max-height:85px;overflow:auto}
 #assistant-error:not(:empty){padding-top:10px;padding-bottom:10px}
 .show-application{align-self:center;margin:8px 0 0;padding:7px 12px;font-size:12px}
-.show-application[hidden]{display:none}
 .agent-activity{padding:0 max(4px,calc((100% - 900px)/2));font-size:12px}
 .agent-activity summary{padding:10px 20px;cursor:pointer;color:var(--muted)}
 #agent-runs{max-height:180px;overflow:auto;padding:0 20px 10px}
 .agent-run{display:grid;grid-template-columns:1fr auto;gap:4px 10px;padding:8px 0;border-top:1px solid var(--border)}
 .agent-run small{grid-column:1/-1;color:var(--muted)}
-.agent-auto{display:flex;align-items:center;gap:10px;margin:20px 0 12px}.agent-auto input{width:auto}
-.account-select{display:inline-block;max-width:440px;width:100%;margin-right:14px}.account-note{margin-top:18px}
-@media(max-width:1200px){#assistant-panel{left:204px}}
-@media(max-width:760px){#assistant-panel{left:0;border-left:0}#assistant-messages{padding:20px}#assistant-form{width:calc(100% - 32px);padding:12px;margin-bottom:18px}.assistant-toggle{margin:0}.account-select{max-width:100%;margin-right:0}}
+@media(max-width:760px){#assistant-panel{left:0}#assistant-messages{padding:20px}#assistant-form{width:calc(100% - 32px);padding:12px;margin-bottom:18px}.assistant-toggle{margin:0}}
 
-main[data-view="settings"] .panel-heading{align-items:center;flex-wrap:wrap}
-@media(max-width:760px){body.assistant-open{overflow:hidden;height:100dvh}}
+@media(max-width:760px){body.assistant-open{height:100dvh}}
 
-@media(max-width:500px){.assistant-head{padding:12px 16px;gap:8px}.assistant-head h2{font-size:15px}.assistant-head .actions{gap:4px}#reset-assistant span{display:none}}
-
-@media(max-width:500px){
+@media(max-width:500px){.assistant-head{padding:12px 16px;gap:8px}.assistant-head h2{font-size:15px}.assistant-head .actions{gap:4px}#reset-assistant span{display:none}
   #assistant-form{border-radius:22px;padding:14px 12px 12px}
   .assistant-compose-actions{gap:8px}
   .agent-menu-trigger{gap:6px;font-size:12px}
@@ -99,10 +82,8 @@ main[data-view="settings"] .panel-heading{align-items:center;flex-wrap:wrap}
 
 /* The timer shares the account toolbar without taking space from the typed prompt. */
 .composer-tools{display:flex;align-items:center;gap:4px;flex:none;margin-right:auto}
-.composer-tools .composer-account-link{margin:0}
 .composer-timer-button{width:36px;height:36px;flex:none;padding:0;border:0;color:var(--muted)}
 .composer-timer-button:hover,.composer-timer-button.active{color:var(--text)}
-.composer-timer-button .icon{width:18px;height:18px}
 .auto-start-dialog{width:min(400px,calc(100vw - 32px))}
 .auto-start-fields{display:grid;gap:20px}
 .auto-start-fields p{margin:0}

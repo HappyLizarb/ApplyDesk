@@ -1,10 +1,5 @@
 const assert=require('node:assert/strict');
-const path=require('node:path');
-const {createRequire}=require('node:module');
-const load=process.env.APPLYDESK_NODE_MODULES?createRequire(path.join(process.env.APPLYDESK_NODE_MODULES,'__test__.cjs')):require;
-const {chromium}=load('playwright');
-const {workspace,routeRequest}=require('./documents-ui.test.cjs');
-const origin='http://127.0.0.1:63498';
+const {workspace,routeRequest,origin,browserTest}=require('./documents-ui.test.cjs');
 
 // Delayed saves expose dropped keyboard changes without using any real account.
 async function route(route,fixture) {
@@ -58,16 +53,12 @@ async function saveChecks(page,fixture) {
 }
 
 // The real fixture headers enforce CSP; browser motions and reduced motion share one state.
-async function main() {
-  const browser=await chromium.launch({channel:'chrome',headless:true,chromiumSandbox:true});
-  const fixture={data:workspace(),writes:[]};
-  fixture.data.orchestrator.account.models[0].thinking=['low','medium','high','xhigh'];
-  fixture.data.orchestrator.settings.roles.master.thinking='high';
-  try {
-    const page=await browser.newPage({viewport:{width:1440,height:950}}),errors=[];
-    page.on('pageerror',error=>errors.push(error.message));
+const fixture={data:workspace(),writes:[]};
+fixture.data.orchestrator.account.models[0].thinking=['low','medium','high','xhigh'];
+fixture.data.orchestrator.settings.roles.master.thinking='high';
+browserTest('Model slider motion, queued saves, focus, failure recovery and reduced motion',
+  {fixture,route,viewport:{width:1440,height:950}},async page=>{
     await page.addInitScript(()=>{window.violations=[];document.addEventListener('securitypolicyviolation',event=>window.violations.push(event.violatedDirective));});
-    await page.route('**/*',request=>route(request,fixture));
     await page.goto(origin+'/#applications');await page.click('#toggle-assistant');await page.click('#composer-agents summary');
     await page.waitForTimeout(160);
     const panel=await page.locator('.agent-menu-popover').boundingBox(),rail=await page.locator('.agent-effort-track').boundingBox();
@@ -78,8 +69,5 @@ async function main() {
     await motionChecks(page);await saveChecks(page,fixture);
     await page.emulateMedia({reducedMotion:'reduce'});
     assert.equal(await page.locator('.agent-effort-fill').evaluate(node=>getComputedStyle(node).transitionDuration),'0s');
-    assert.deepEqual(await page.evaluate(()=>window.violations),[]);assert.deepEqual(errors,[]);
-    console.log('CSP, smooth bidirectional animation, queued saves, focus, failed-save recovery and reduced motion passed.');
-  } finally {await browser.close();}
-}
-main().catch(error=>{console.error(error);process.exitCode=1;});
+    assert.deepEqual(await page.evaluate(()=>window.violations),[]);
+  });

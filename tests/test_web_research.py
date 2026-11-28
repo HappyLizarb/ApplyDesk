@@ -141,7 +141,8 @@ class WebResearchTests(unittest.TestCase):
 
     def test_truncated_closed_or_challenge_page_cannot_be_saved(self):
         for changes in ({"text_truncated": True}, {"title": "Verify you are human"},
-                        {"title": "This position is no longer available"}, {"text": "Too short"}):
+                        {"title": "This position is no longer available"}, {"text": "Job has expired. " + self.page["text"]},
+                        {"text": "Verify you are human. " + self.page["text"]}, {"text": "Too short"}):
             original = copy.deepcopy(self.page)
             self.page.update(changes)
             capture = self.web.read_page(self.url)

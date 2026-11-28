@@ -29,15 +29,14 @@ function payPeriod(block, matches, index) {
 }
 
 // Shared shorthand in "$80–100k" applies to both bounds.
-function rangeLabel(groups) {
-  const {currency, highCurrency, suffixCurrency, high} = groups;
-  const unit = currency || highCurrency || suffixCurrency || '';
+function rangeLabel(groups, unit, period) {
+  const {highCurrency, high} = groups;
   const suffix = high?.match(/(?:[km]|thousand|million)$/i)?.[0];
   const low = suffix && /^\d{1,3}$/.test(groups.low.trim()) ? groups.low.trim() + suffix : groups.low.trim();
   const first = amountLabel(low, unit), last = high ? amountLabel(high.trim(), highCurrency || unit) : first;
   const leftPeriod = groups.lowPeriod && groups.highPeriod && groups.lowPeriod !== groups.highPeriod;
   if (leftPeriod) return first + groups.lowPeriod + '–' + last + groups.highPeriod;
-  return first + (last === first ? '' : '–' + last);
+  return first + (last === first ? '' : '–' + last) + period;
 }
 
 // Keep numeric pay statements; source prose stays internal.
@@ -49,8 +48,7 @@ function compactPay(block) {
     if (!unit && (!high || /^(?:19|20)\d{2}$/.test(low.trim()) || !/[,km]|\d{4}/i.test(low))) continue;
     const qualifier = block.slice(0, match.index).match(/\b(up to|at least|starting at|from)\s*$/i)?.[1];
     const bound = !high && qualifier ? (/up to/i.test(qualifier) ? '≤' : '≥') : '';
-    const mixed = match.groups.lowPeriod && match.groups.highPeriod && match.groups.lowPeriod !== match.groups.highPeriod;
-    labels.push(bound + rangeLabel(match.groups) + (mixed ? '' : payPeriod(block, matches, index)));
+    labels.push(bound + rangeLabel(match.groups, unit, payPeriod(block, matches, index)));
   }
   return labels.length ? labels : /\bunpaid\b/i.test(block) ? ['Unpaid'] : [];
 }

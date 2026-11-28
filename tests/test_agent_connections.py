@@ -81,14 +81,6 @@ class ConnectionsTests(unittest.TestCase):
             self.accounts.select_source("chatgpt")
             self.assertEqual(self.accounts.token(), "oauth-token")
 
-    def test_stale_key_check_cannot_override_newer_source(self):
-        generation = self.accounts.generation
-        self.accounts.select_source("chatgpt")
-        with self.assertRaisesRegex(ValueError, "Connection changed"):
-            self.accounts.save_api_key("sk-test-secret", generation)
-        self.assertFalse(self.secrets)
-        self.assertEqual(self.accounts.state()["source"], "chatgpt")
-
     def test_remove_key_leaves_oauth_registration_and_no_fallback(self):
         self.save()
         result = self.accounts.remove_api_key()

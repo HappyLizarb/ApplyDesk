@@ -1,11 +1,5 @@
 const assert=require('node:assert/strict');
-const path=require('node:path');
-const fs=require('node:fs');
-const {createRequire}=require('node:module');
-const load=process.env.APPLYDESK_NODE_MODULES?createRequire(path.join(process.env.APPLYDESK_NODE_MODULES,'__test__.cjs')):require;
-const {chromium}=load('playwright');
-const {workspace,routeRequest}=require('./documents-ui.test.cjs');
-const origin='http://127.0.0.1:63498';
+const {workspace,routeRequest,origin,browserTest,screenshot}=require('./documents-ui.test.cjs');
 
 // Self-reported status is tested only with fictional profiles and intercepted local saves.
 async function route(route,fixture) {
@@ -93,10 +87,7 @@ async function visualChecks(page) {
     if(!await page.locator('#modal').isVisible())await page.locator('[data-row="authorizations"]').first().locator('[data-us-status]').click();
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
     const box=await page.locator('#modal').boundingBox();assert.ok(box.x>=0&&box.x+box.width<=width);
-    if(process.env.APPLYDESK_TEST_SCREENSHOTS){
-      fs.mkdirSync(process.env.APPLYDESK_TEST_SCREENSHOTS,{recursive:true});
-      await page.screenshot({path:path.join(process.env.APPLYDESK_TEST_SCREENSHOTS,`authorization-${width}-${theme}.png`)});
-    }
+    await screenshot(page,`authorization-${width}-${theme}.png`);
     await page.locator('[data-cancel-status]').click();
   }
 }
@@ -124,21 +115,15 @@ async function veteranChecks(page,fixture) {
 }
 
 // Browser state stays isolated from the installed application and all provider accounts.
-async function main() {
-  const browser=await chromium.launch({channel:'chrome',headless:true,chromiumSandbox:true});
-  const fixture={data:workspace(),writes:[]},errors=[];
-  fixture.data.profile.revision=1;
-  fixture.data.profile.authorizations=[{country:'US',sponsorship_required:'yes',status:'unknown',immigration_status:'',restrictions:''}];
-  try{
-    const page=await browser.newPage({viewport:{width:1440,height:900}});
-    page.on('pageerror',error=>errors.push(error.message));await page.route('**/*',request=>route(request,fixture));
+const fixture={data:workspace(),writes:[]};
+fixture.data.profile.revision=1;
+fixture.data.profile.authorizations=[{country:'US',sponsorship_required:'yes',status:'unknown',immigration_status:'',restrictions:''}];
+browserTest('Authorization disclosures, profile changes, saving and responsive dialog',
+  {fixture,route,viewport:{width:1440,height:900}},async page=>{
     await page.goto(origin+'/#profile');
     assert.deepEqual(await page.locator('[data-profile-confirmation]').allTextContents(),Array(6).fill('Confirmed'));
     await addChecks(page);
     assert.deepEqual(await page.locator('[data-profile-confirmation]').allTextContents(),Array(6).fill('Draft'));
     await confirmationChecks(page);await statusChecks(page,fixture);
-    await clearingChecks(page);await visualChecks(page);await veteranChecks(page,fixture);assert.deepEqual(errors,[]);
-    console.log('Bottom Add links, US-only status, cancellation, draft saving, reload, clearing and responsive dialog passed.');
-  }finally{await browser.close();}
-}
-main().catch(error=>{console.error(error);process.exitCode=1;});
+    await clearingChecks(page);await visualChecks(page);await veteranChecks(page,fixture);
+  });

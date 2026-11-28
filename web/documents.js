@@ -2,30 +2,32 @@ import {state,h,icon,asset,api,refresh,busy,toast,modal,task,upload,taskStrip} f
 
 // Uploaded resumes remain unchanged; their tags select the active application attachment.
 export function renderDocuments(root) {
-  const {resumes=[]}=state.data;
-  const other=(state.data.uploads||[]).filter(item=>!resumes.some(row=>row.id===item.id)&&item.id!==state.data.profile.transcript_id);
+  const {resumes=[],uploads=[],profile:{transcript_id:transcriptId}}=state.data;
+  const activeIds=new Set(resumes.map(record=>record.id));
+  const other=uploads.filter(record=>!activeIds.has(record.id)&&record.id!==transcriptId);
+  const redraw=()=>{if(root.isConnected&&state.view==='documents')renderDocuments(root);};
+  const saved=async message=>{await refresh();redraw();toast(message);};
   root.innerHTML=`<header class="page-head"><h1>Documents</h1></header>${taskStrip()}
     <div class="documents-stack"><section class="panel"><div class="panel-heading"><h2>Resumes</h2><button class="primary" id="upload-resume">Choose resume</button></div>
-    ${resumes.length?resumes.map(documentRow).join(''):`<div class="empty"><div class="empty-symbol">${icon('document')}</div><h3>No resumes yet</h3></div>`}</section>
-    <section class="panel"><div class="panel-heading"><h2>Transcript</h2></div><label>Transcript · optional<input type="file" id="transcript-upload" accept=".pdf,.docx"></label><p id="transcript-status" data-transcript-id="${h(state.data.profile.transcript_id||'')}" class="field-help">${state.data.profile.transcript_id?'Saved locally.':'No transcript uploaded.'}</p>${state.data.profile.transcript_id?`<button class="quiet danger" data-delete-document="${h(state.data.profile.transcript_id)}">Delete transcript</button>`:''}</section>${other.length?`<section class="panel"><div class="panel-heading"><h2>Other uploads</h2></div>${other.map(uploadRow).join('')}</section>`:''}</div>`;
-  root.querySelector('#upload-resume').onclick=event=>importResume(event.currentTarget,root);
-  root.querySelectorAll('[data-resume-tag]').forEach(select=>select.onchange=()=>tagResume(select,root));
-  root.querySelector('#transcript-upload').onchange=event=>importTranscript(event.target,root);
-  showTranscript(root,state.data.profile.transcript_id);
+    ${resumes.length?resumes.map(record=>fileRow(record,true)).join(''):`<div class="empty"><div class="empty-symbol">${icon('document')}</div><h3>No resumes yet</h3></div>`}</section>
+    <section class="panel"><div class="panel-heading"><h2>Transcript</h2></div><label>Transcript · optional<input type="file" id="transcript-upload" accept=".pdf,.docx"></label><p id="transcript-status" data-transcript-id="${h(transcriptId||'')}" class="field-help">${transcriptId?'Saved locally.':'No transcript uploaded.'}</p>${transcriptId?`<button class="quiet danger" data-delete-document="${h(transcriptId)}">Delete transcript</button>`:''}</section>${other.length?`<section class="panel"><div class="panel-heading"><h2>Other uploads</h2></div>${other.map(record=>fileRow(record,false)).join('')}</section>`:''}</div>`;
+  root.querySelector('#upload-resume').onclick=event=>busy(event.currentTarget,async()=>{
+    if((await task('choose-resume',{}))?.selected)await saved('Resume selected. Choose a tag.');
+  });
+  root.querySelectorAll('[data-resume-tag]').forEach(select=>select.onchange=()=>tagResume(select,saved));
+  root.querySelector('#transcript-upload').onchange=event=>importTranscript(event.target,saved);
+  showTranscript(root,transcriptId);
   root.querySelectorAll('[data-document]').forEach(button=>button.onclick=()=>openEditor(button.dataset.document));
-  root.querySelectorAll('[data-delete-document]').forEach(button=>button.onclick=()=>deleteDocument(button.dataset.deleteDocument,()=>{if(root.isConnected&&state.view==='documents')renderDocuments(root);}));
+  root.querySelectorAll('[data-delete-document]').forEach(button=>button.onclick=()=>deleteDocument(button.dataset.deleteDocument,redraw));
 }
 
 // Transcript imports use the existing server-owned profile attachment, without a profile save.
-async function importTranscript(input,root) {
+function importTranscript(input,saved) {
   if(!input.files[0])return;
-  input.disabled=true;
-  try {
-    await upload(input.files[0],'transcript');await refresh();
-    if(root.isConnected&&state.view==='documents')renderDocuments(root);
-    toast('Transcript saved locally.');
-  } catch(error){toast(error.message,true);}
-  finally {input.disabled=false;input.value='';}
+  return busy(input,async()=>{
+    try {await upload(input.files[0],'transcript');await saved('Transcript saved locally.');}
+    finally {input.value='';}
+  });
 }
 
 // Resolve saved transcript links through their document records, never guessed paths.
@@ -38,40 +40,27 @@ async function showTranscript(root,identity) {
   } catch(error){toast(error.message,true);}
 }
 
-// Show each original file with one explicit industry or General tag.
-function documentRow(document) {
+// Active resumes have a tag selector; older uploads share the same preview and deletion controls.
+function fileRow(record,activeResume) {
+  const id=h(record.id),name=h(record.filename||record.title),category=record.category;
   const categories=state.data.resume_categories||['General'];
-  const orphan=document.category&&!categories.includes(document.category);
-  return `<div class="file-row resume-row"><span class="file-icon" aria-hidden="true">${icon('document')}</span><div class="file-info"><strong>${h(document.filename)}</strong></div><select data-resume-tag="${h(document.id)}" aria-label="Tag for ${h(document.filename)}"><option value="" disabled ${document.category?'':'selected'}>Choose tag</option>${orphan?`<option selected disabled value="${h(document.category)}">${h(document.category)} · not in Profile</option>`:''}${categories.map(category=>`<option value="${h(category)}" ${category===document.category?'selected':''}>${h(category)}</option>`).join('')}</select><div class="actions"><button data-document="${h(document.id)}">Preview</button><button class="quiet danger" data-delete-document="${h(document.id)}" aria-label="Delete ${h(document.filename)}">Delete</button></div></div>`;
-}
-
-// Only the native chooser can grant ApplyDesk access to the original resume.
-async function importResume(button,root) {
-  await busy(button,async()=>{
-    const result=await task('choose-resume',{});
-    if(!result?.selected)return;
-    await refresh();
-    if(root.isConnected&&state.view==='documents')renderDocuments(root);
-    toast('Resume selected. Choose a tag.');
-  });
+  const orphan=category&&!categories.includes(category);
+  const tag=activeResume?`<select data-resume-tag="${id}" aria-label="Tag for ${name}"><option value="" disabled ${category?'':'selected'}>Choose tag</option>${orphan?`<option selected disabled value="${h(category)}">${h(category)} · not in Profile</option>`:''}${categories.map(option=>`<option value="${h(option)}" ${option===category?'selected':''}>${h(option)}</option>`).join('')}</select>`:'';
+  const kinds={profile:'Profile',transcript:'Transcript',resume:'Resume',cover_template:'Saved template',resume_template:'Saved template'};
+  return `<div class="file-row${activeResume?' resume-row':''}">
+    ${activeResume?`<span class="file-icon" aria-hidden="true">${icon('document')}</span>`:''}
+    <div class="file-info"><strong>${name}</strong>${activeResume?'':`<span>${h(kinds[record.kind]||'Document')}</span>`}</div>
+    ${tag}<div class="actions"><button data-document="${id}">Preview</button><button class="quiet danger" data-delete-document="${id}" aria-label="Delete ${name}">Delete</button></div></div>`;
 }
 
 // A tag change replaces that category's active row while retaining historical attachments.
-async function tagResume(select,root) {
-  const document=state.data.resumes.find(item=>item.id===select.dataset.resumeTag);
-  select.disabled=true;
-  try {
-    await api('resume/tag',{document_id:document.id,category:select.value});await refresh();
-    if(root.isConnected&&state.view==='documents')renderDocuments(root);
-    toast('Resume tag saved.');
-  } catch(error){select.value=document.category||'';toast(error.message,true);}
-  finally {select.disabled=false;}
-}
-
-// Older and profile uploads remain reachable even when they are no longer selected.
-function uploadRow(record) {
-  const names={profile:'Profile',transcript:'Transcript',resume:'Resume',cover_template:'Saved template',resume_template:'Saved template'};
-  return `<div class="file-row"><div class="file-info"><strong>${h(record.filename||record.title)}</strong><span>${h(names[record.kind]||'Document')}</span></div><div class="actions"><button data-document="${h(record.id)}">Preview</button><button class="quiet danger" data-delete-document="${h(record.id)}" aria-label="Delete ${h(record.filename||record.title)}">Delete</button></div></div>`;
+function tagResume(select,saved) {
+  const id=select.dataset.resumeTag;
+  const previous=state.data.resumes.find(item=>item.id===id)?.category||'';
+  return busy(select,async()=>{
+    try {await api('resume/tag',{document_id:id,category:select.value});await saved('Resume tag saved.');}
+    catch(error){select.value=previous;throw error;}
+  });
 }
 
 // Saved documents remain available for preview and download without customization tools.

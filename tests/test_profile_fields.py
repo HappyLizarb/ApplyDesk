@@ -2,14 +2,16 @@
 
 import copy
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from applydesk.agent_contract import profile_draft
-from applydesk.intelligence import extract_profile
-from applydesk.profile import empty_profile, facts_for, model_profile, profile_with_defaults, validate_profile
+from applydesk.profile import PROFILE_SCHEMA_VERSION, empty_profile, model_profile, profile_with_defaults, validate_profile
+
+from applydesk.workspace import Workspace
 
 
 class ProfileFieldTests(unittest.TestCase):
@@ -42,6 +44,8 @@ class ProfileFieldTests(unittest.TestCase):
         profile["revision"] = 7
         profile["experiences"] = [{"company": "Old employer", "title": "Old title", "start": "2019", "end": "2020", "details": "Old facts"}]
         profile["projects"] = [{"name": "Old project", "details": "Preserved details", "url": "https://example.invalid"}]
+        profile["education"] = [{"institution": "Example University", "degree": "BS"}]
+        profile["identity"].pop("postal_code")
         del profile["languages"]
         before = copy.deepcopy(profile)
         result = profile_with_defaults(profile)
@@ -49,6 +53,9 @@ class ProfileFieldTests(unittest.TestCase):
         self.assertEqual(result["revision"], 7)
         self.assertTrue(result["confirmed"])
         self.assertEqual(result["languages"], [])
+        self.assertEqual(result["identity"]["postal_code"], "")
+        self.assertEqual(result["education"][0]["gpa"], "")
+        self.assertEqual(validate_profile(profile, profile)["education"][0]["gpa"], "")
         for field, value in before["experiences"][0].items():
             self.assertEqual(result["experiences"][0][field], value)
         self.assertEqual(result["experiences"][0]["job_type"], "")
@@ -58,7 +65,11 @@ class ProfileFieldTests(unittest.TestCase):
 
     def test_imported_fields_survive_but_cannot_confirm_themselves(self):
         source = self.source()
+        source["identity"]["postal_code"] = "00501"
+        source["education"] = [{"institution": "Example University", "gpa": "3.85"}]
         result = profile_draft({"profile": source, "notes": []})["profile"]
+        self.assertEqual(result["identity"]["postal_code"], "00501")
+        self.assertEqual((result["education"][0]["gpa"], result["education"][0]["gpa_scale"]), ("3.85", ""))
         self.assertEqual(result["experiences"], source["experiences"])
         self.assertEqual(result["projects"], source["projects"])
         self.assertEqual(result["languages"], source["languages"])
@@ -86,18 +97,6 @@ class ProfileFieldTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "plain text"):
                 validate_profile(source, empty_profile())
 
-    def test_extraction_keeps_language_rows_and_accepts_older_sources_without_them(self):
-        source = self.source()
-        client = Mock()
-        client.ask.return_value = copy.deepcopy(source)
-        result = extract_profile(client, "Applicant-provided language facts")
-        self.assertEqual(result["languages"], source["languages"])
-        self.assertFalse(result["confirmed"])
-        self.assertEqual(result["facts"], [])
-        del source["languages"]
-        client.ask.return_value = source
-        self.assertEqual(extract_profile(client, "Older source")["languages"], [])
-
     def test_language_rows_are_bounded_and_proficiency_can_remain_unknown(self):
         source = self.source()
         source["languages"] = [{"name": "Spanish", "proficiency": ""}]
@@ -120,41 +119,6 @@ class ProfileFieldTests(unittest.TestCase):
             if gpa:
                 self.assertIn("gpa: " + gpa, fact["text"])
 
-    def test_legacy_education_gets_empty_gpa_without_mutating_saved_data(self):
-        """Adding the optional field cannot fabricate a grade or reconfirm an older profile."""
-        source = self.source()
-        source["revision"] = 7
-        source["education"] = [{"institution": "Example University", "degree": "BS"}]
-        before = copy.deepcopy(source)
-        restored = profile_with_defaults(source)
-        self.assertEqual(source, before)
-        self.assertEqual(restored["education"][0]["gpa"], "")
-        self.assertEqual(restored["revision"], 7)
-        self.assertTrue(restored["confirmed"])
-        self.assertEqual(validate_profile(source, source)["education"][0]["gpa"], "")
-
-    def test_imported_gpa_remains_unconfirmed_and_never_gains_a_scale(self):
-        """Both extraction entry points retain the explicit source text pending user review."""
-        source = self.source()
-        source["education"] = [{"institution": "Example University", "gpa": "3.85"}]
-        client = Mock(ask=Mock(return_value=copy.deepcopy(source)))
-        extracted = extract_profile(client, "Example University; GPA: 3.85")
-        draft = profile_draft({"profile": extracted, "notes": []})["profile"]
-        self.assertEqual(extracted["education"][0]["gpa"], "3.85")
-        self.assertEqual(draft["education"][0]["gpa"], "3.85")
-        self.assertFalse(draft["confirmed"])
-        self.assertEqual(draft["facts"], [])
-        source["education"][0].pop("gpa")
-        self.assertEqual(profile_draft({"profile": source, "notes": []})["profile"]["education"][0]["gpa"], "")
-
-    def test_gpa_rejects_structured_or_boolean_values(self):
-        """The optional text field cannot accept model objects or boolean claims."""
-        for value in [{"value": 3.8}, ["3.8"], True, None]:
-            source = self.source()
-            source["education"] = [{"gpa": value}]
-            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "plain text"):
-                validate_profile(source, empty_profile())
-
     def test_separate_gpa_scale_survives_save_and_source_import(self):
         """Explicit values remain distinct text without a default scale or range restriction."""
         source = self.source()
@@ -167,31 +131,99 @@ class ProfileFieldTests(unittest.TestCase):
         self.assertFalse(imported["confirmed"])
         self.assertEqual(imported["facts"], [])
 
-    def test_legacy_numeric_gpa_ratio_splits_on_read_only_when_scale_is_absent(self):
-        """A slash is source evidence for both numbers, while explicit empty scales stay empty."""
-        source = self.source()
-        source["revision"] = 9
+    def test_gpa_and_scale_require_bounded_text(self):
+        """Separate grading scales cannot smuggle structured data into model context."""
+        for field in ("gpa", "gpa_scale"):
+            for value in [{"grade": 4}, ["4"], True, None, "x" * 10001]:
+                source = self.source()
+                source["education"] = [{field: value}]
+                with self.subTest(field=field, value=type(value).__name__), self.assertRaises(ValueError):
+                    validate_profile(source, empty_profile())
+
+
+class ProfileSaveTests(unittest.TestCase):
+    def setUp(self):
+        """Keep every record and credential interaction inside an isolated temporary workspace."""
+        self.directory = tempfile.TemporaryDirectory()
+        self.secrets = Mock()
+        self.secrets.get.return_value = ""
+        self.workspace = Workspace(self.directory.name, secrets=self.secrets)
+
+    def tearDown(self):
+        """Close only the temporary workspace created for this test."""
+        self.workspace.close()
+        self.directory.cleanup()
+
+    def draft(self):
+        """Use synthetic profile facts covering every field added by the profile redesign."""
+        profile = empty_profile()
+        profile["identity"].update(legal_name="Test Applicant", email="test@example.invalid", postal_code="SW1A 1AA")
+        profile["education"] = [{"institution": "Example University", "degree": "BS", "field": "Engineering",
+                                  "gpa": "3.85", "gpa_scale": "4.00", "start": "2021", "end": "2025", "coursework": "Circuit design"}]
+        profile["experiences"] = [{"company": "Example employer", "title": "Designer", "job_type": "Contract",
+                                   "start": "2024-04", "end": "2025-01", "location": "Remote", "details": "Built forms."}]
+        profile["projects"] = [{"name": "Example project", "start": "2025-03", "end": "Present",
+                                "details": "Built a tracker.", "url": "https://example.invalid/project"}]
+        profile["languages"] = [{"name": "French", "proficiency": "Professional working proficiency"}]
+        profile["authorizations"] = [{"country": "US", "status": "unknown", "sponsorship_required": "no",
+                                       "immigration_status": "f1_stem_opt", "restrictions": "E-Verify employer; degree-related work."}]
+        return profile
+
+    def test_state_advertises_loaded_profile_schema(self):
+        state = self.workspace.state()
+        self.assertEqual(state["profile_schema"], 10)
+        self.assertEqual(state["profile_schema"], PROFILE_SCHEMA_VERSION)
+        self.assertIn("languages", state["profile"])
+        self.secrets.get.assert_not_called()
+
+    def test_saved_draft_survives_workspace_reopen(self):
+        source = self.draft()
+        saved = self.workspace.save_profile(source)
+        self.assertFalse(saved["confirmed"])
+        self.assertEqual(saved["facts"], [])
+        self.workspace.close()
+        self.workspace = Workspace(self.directory.name, secrets=self.secrets)
+        restored = self.workspace.profile()
+        self.assertEqual(restored, saved)
+        for section in ("education", "experiences", "projects", "languages", "authorizations"):
+            self.assertEqual(restored[section], source[section])
+        self.assertEqual(restored["revision"], 1)
+        self.assertEqual(restored["identity"]["postal_code"], "SW1A 1AA")
+
+    def test_confirmed_save_retains_new_facts_for_application_context(self):
+        source = self.draft()
+        source["confirmed"] = True
+        source["preferences"].update(age_18_or_older="yes", application_answers=["Use the highest posted base salary."])
+        source["education"][0]["start"] = "2023-08-20"
+        saved = self.workspace.save_profile(source)
+        facts = {fact["id"]: fact["text"] for fact in saved["facts"]}
+        self.assertTrue(saved["confirmed"])
+        self.assertEqual(facts["preferences.age_18_or_older"], "18 years or older: yes")
+        self.assertEqual(facts["preferences.application_answers.0"], "Use the highest posted base salary.")
+        self.assertIn("start: 2023-08-20", facts["education.0"])
+        self.assertEqual(facts["identity.postal_code"], "SW1A 1AA")
+        self.assertIn("gpa: 3.85; gpa_scale: 4.00", facts["education.0"])
+        self.assertIn("job_type: Contract", facts["experiences.0"])
+        self.assertIn("location: Remote", facts["experiences.0"])
+        self.assertIn("start: 2025-03", facts["projects.0"])
+        self.assertIn("Professional working proficiency", facts["languages.0"])
+
+    def test_legacy_gpa_read_does_not_write_or_reconfirm_the_profile(self):
+        """Opening schema-five controls must not change persisted legacy profile bytes."""
+        source = self.draft()
         source["education"] = [{"gpa": "3.85 / 4.00"}, {"gpa": "3.85"},
                                {"gpa": "3.85 / 4.00", "gpa_scale": ""},
                                {"gpa": "3.85 / 4.00", "gpa_scale": "Explicit scale"},
                                {"gpa": "3.85 / 4.00 weighted"}]
-        before = copy.deepcopy(source)
-        restored = profile_with_defaults(source)
-        actual = [(row["gpa"], row["gpa_scale"]) for row in restored["education"]]
-        self.assertEqual(actual, [("3.85", "4.00"), ("3.85", ""), ("3.85 / 4.00", ""),
+        source.update(revision=9, confirmed=True)
+        self.workspace.store.put("profile", "main", source)
+        restored = self.workspace.profile()
+        grades = [(row["gpa"], row["gpa_scale"]) for row in restored["education"]]
+        self.assertEqual(grades, [("3.85", "4.00"), ("3.85", ""), ("3.85 / 4.00", ""),
                                   ("3.85 / 4.00", "Explicit scale"), ("3.85 / 4.00 weighted", "")])
-        self.assertEqual(source, before)
-        self.assertEqual(restored["revision"], 9)
-        self.assertTrue(restored["confirmed"])
         self.assertEqual(restored["facts"], source["facts"])
-
-    def test_gpa_scale_uses_the_same_bounded_text_validation(self):
-        """Separate grading scales cannot smuggle structured data into model context."""
-        for value in [{"scale": 4}, ["4"], True, None, "x" * 10001]:
-            source = self.source()
-            source["education"] = [{"gpa": "3.85", "gpa_scale": value}]
-            with self.subTest(value=type(value).__name__), self.assertRaises(ValueError):
-                validate_profile(source, empty_profile())
+        self.assertEqual((restored["revision"], restored["confirmed"]), (9, True))
+        self.assertEqual(self.workspace.store.get("profile", "main"), source)
 
 
 if __name__ == "__main__":

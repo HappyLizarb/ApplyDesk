@@ -3,7 +3,7 @@ const test = require('node:test');
 
 // Exercise the real view and service interface without launching disposable Chrome profiles.
 test('only Show moves the workspace, and closing it restores the prior bounds', async () => {
-  const {initializeApplicationWindow, updateApplicationWindow, workspaceLayout} = await import('../web/application-window.js');
+  const {dockApplicationWindow, updateApplicationWindow, workspaceLayout} = await import('../web/application-window.js');
   const view = {screenX: 55, screenY: 70, outerWidth: 850, outerHeight: 700};
   const original = {...view}, moves = [], requests = [];
   global.window = Object.assign(view, {
@@ -12,22 +12,21 @@ test('only Show moves the workspace, and closing it restores the prior bounds', 
     moveTo(x, y) {moves.push('move'); Object.assign(view, {screenX: x, screenY: y});},
     dispatchEvent() {}
   });
-  const button = {setAttribute() {}};
-  global.document = {createElement: () => button, querySelector: () => ({classList: {toggle() {}}})};
-  const panel = {querySelector: id => id === '#assistant-error' ? {after() {}} : button};
+  const button = {hidden: true};
+  global.document = {querySelector: () => ({classList: {toggle() {}}})};
+  const panel = {querySelector: () => button};
   const data = {jobs: [], profile: {confirmed: true}, tasks: [{id: 'show', status: 'done'}]};
   global.fetch = async (path, options) => {
     if (options.method === 'POST') requests.push([path, JSON.parse(options.body)]);
     return {ok: true, json: async () => options.method === 'POST' ? {task: 'show'} : data};
   };
-  initializeApplicationWindow(panel);
   for (const paused of [false, true]) {
     updateApplicationWindow(panel, {paused, application_browser: {available: true, workspace_id: 'ordinary'}});
     assert.equal(button.hidden, false);
     assert.deepEqual(moves, []);
     assert.deepEqual(requests, []);
   }
-  await button.onclick();
+  await dockApplicationWindow();
   const {app, browser} = workspaceLayout(view.screen);
   assert.deepEqual(requests, [['/api/orchestrator/show-application', {bounds: browser}]]);
   assert.deepEqual([view.screenX, view.screenY, view.outerWidth, view.outerHeight],

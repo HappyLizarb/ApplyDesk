@@ -6,23 +6,22 @@ from unittest.mock import patch
 from chat_helpers import ChatFixture
 from test_documents import saved_letter
 from applydesk.workspace import Workspace
-from test_workspace import FakeSecrets
+from test_employer_accounts import MemorySecrets
 from applydesk.agent_contract import profile_draft
 from applydesk.agent_context import digest
 
 
 class ChatTaskTests(ChatFixture):
-    def test_full_draft_and_two_reviews_never_approve_application(self):
-        """Even reported passing subagents cannot mark a job ready or submitted."""
+    def test_prepared_draft_waits_for_user_and_keeps_job_unsubmitted(self):
+        """Preparing a grounded draft cannot approve or submit the application."""
         with patch.object(self.w, "client", side_effect=AssertionError("Provider access")):
             context = self.w.chat.submit(self.payload())
-            self.assertEqual(context["task"]["status"], "draft_ready")
             result = context["task"]
         self.assertEqual(result["status"], "draft_ready")
         self.assertEqual(self.w.chat.get(self.task["id"])["next_action"], "await_user")
         self.assertEqual(self.w.store.get("job", self.job["id"])["status"], "draft")
         task = self.w.chat.get(self.task["id"])["task"]
-        self.assertTrue(all(not review["identity_verified"] for review in task["reviews"].values()))
+        self.assertEqual(task["reviews"], {})
         self.assertEqual(self.w.chat.enqueue({"kind": "application", "target_id": self.job["id"]})["id"], task["id"])
         self.assertNotIn("disability", str(self.w.chat.get(task["id"])["inputs"]))
 
@@ -204,16 +203,22 @@ class ChatTaskTests(ChatFixture):
         """A blocked task and its evidence survive a workspace restart."""
         self.w.chat.block({"task_id": self.task["id"], "version": self.w.chat.get(self.task["id"])["version"], "issues": ["Need more evidence"]})
         self.w.close()
-        self.w = Workspace(self.w.root, secrets=FakeSecrets())
+        self.w = Workspace(self.w.root, secrets=MemorySecrets())
         self.assertEqual(self.w.chat.get(self.task["id"])["next_action"], "resolve_input")
 
     def test_provider_settings_and_client_are_disabled_without_erasing_secrets(self):
         """Old credentials stay unused, and no agent configuration is exposed to the UI."""
+        previous = {**self.w.settings(), "keys": {"openai": True}}
+        self.w.store.put("settings", "main", previous)
         self.w.secrets.set("api:openai", "saved-before-experiment")
-        with self.assertRaises(ValueError):
-            self.w.client("application")
+        with patch.object(self.w.secrets, "get", side_effect=AssertionError("Unexpected secret read")):
+            with self.assertRaisesRegex(ValueError, "Provider calls are disabled"):
+                self.w.client("application")
+            public = self.w.state()
+        self.assertEqual(self.w.settings(), previous)
+        self.assertNotIn("model_catalog", public)
         self.assertEqual(self.w.secrets.get("api:openai"), "saved-before-experiment")
-        self.assertEqual(set(self.w.state()["settings"]), {"cover_template_id"})
+        self.assertEqual(public["settings"], {"cover_template_id": ""})
 
     def test_preview_changes_and_attachment_changes_invalidate_passed_reviews(self):
         """A passing report covers exact previews and the same current job attachments."""

@@ -179,20 +179,13 @@ class NativeIOTests(unittest.TestCase):
                 upload(session, self.workspace, self.job, self.profile, pages[0], self.upload_decision)
         self.assertFalse(any(item.args[1].get("action") == "type" for item in session.call.call_args_list))
 
-    def test_unrelated_native_go_dialog_never_receives_a_path(self):
-        pages = upload_pages()
-        pages[2]["dialogs"][1]["parent_dialog_id"] = "other"
-        session = native_session(pages[:3])
-        with patch("applydesk.native_application_io.time.monotonic", side_effect=[0, 0, 6]):
-            with self.assertRaisesRegex(ValueError, "file picker"):
-                upload(session, self.workspace, self.job, self.profile, pages[0], self.upload_decision)
-        self.assertFalse(any(item.args[1].get("action") == "type" for item in session.call.call_args_list))
-
-    def test_old_or_ambiguous_nested_folder_dialog_never_receives_a_path(self):
-        """The no-Go path requires exactly one new child of the proven original picker."""
-        for mode in ("old", "two_dialogs", "two_fields"):
+    def test_unverified_folder_never_receives_a_path(self):
+        """A path can be typed only into one new child of the original native picker."""
+        for mode in ("wrong_parent", "old", "two_dialogs", "two_fields"):
             pages = upload_pages()
-            if mode == "old":
+            if mode == "wrong_parent":
+                pages[2]["dialogs"][1]["parent_dialog_id"] = "other"
+            elif mode == "old":
                 pages[1]["dialogs"].append(dialog("folder", "picker"))
             elif mode == "two_dialogs":
                 pages[2]["dialogs"].append(dialog("second", "picker"))

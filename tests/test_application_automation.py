@@ -92,7 +92,7 @@ class AutomationTests(PublicApplicationFixture):
         self.assertEqual(run["results"][0]["status"], "submission_unknown")
         self.assertEqual(len(self.browsers), 1)
         self.assertEqual(self.w.store.get("submission_attempt", attempt_key(self.jobs[0]))["status"], "submission_unknown")
-        self.assertEqual([job["id"] for job in self.engine.applications._candidates(["handshake"])], [self.jobs[1]["id"]])
+        self.assertEqual([job["id"] for job in self.engine.applications._candidates()], [self.jobs[1]["id"]])
         current = self.engine.history.add("user", "Please continue that run.")
         self.engine.active = {"message": current}
         self.intent.update(action="continue", run_id=run["id"])
@@ -212,7 +212,7 @@ class AutomationTests(PublicApplicationFixture):
         recovered = ApplicationAutomation(self.engine)
         self.assertEqual(self.w.store.get("submission_attempt", attempt_key(job))["status"], "submission_unknown")
         self.assertEqual(self.w.store.get("application_run", "run")["status"], "interrupted")
-        self.assertNotIn(job["id"], [item["id"] for item in recovered._candidates(["handshake"])])
+        self.assertNotIn(job["id"], [item["id"] for item in recovered._candidates()])
 
     def test_transient_failure_resumes_only_unprocessed_jobs(self):
         """A later tool call resumes its original allowance without a second submission."""

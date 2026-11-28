@@ -174,12 +174,6 @@ class JobCompensationTests(unittest.TestCase):
         self.assertEqual(result["compensation"], pay)
         self.assertEqual(result["detail_sections"]["required_qualifications"], "Engineering degree.")
 
-    def test_annual_compensation_and_hourly_statement_remain_exact(self):
-        annual = "Annual Compensation Range: $80,000 - $105,000"
-        hourly = "The hourly rate range for this position in the selected city is $35- $35."
-        self.assertEqual(parse_job_details(annual)["compensation"], annual)
-        self.assertEqual(parse_job_details(hourly)["compensation"], hourly)
-
     def test_multiple_location_periods_are_not_averaged_or_annualized(self):
         text = "California pay: $35/hour.\n\nNew York annual salary: USD 80,000–105,000."
         self.assertEqual(parse_job_details(text)["compensation"], text)
@@ -212,13 +206,11 @@ class JobCompensationTests(unittest.TestCase):
                 "10 paid holidays per year.\n\nFounded in 1995; hiring 2027 graduates.")
         self.assertEqual(parse_job_details(text)["compensation"], "")
 
-    def test_currency_and_period_are_copied_without_conversion(self):
-        for pay in ("Pay: £45,000–£55,000 per year.", "Salary: EUR 5,000 per month.", "$20/hr - $30/hr"):
-            with self.subTest(pay=pay):
-                self.assertEqual(parse_job_details(pay)["compensation"], pay)
-
     def test_pay_period_currency_and_zero_formats_remain_verbatim(self):
         cases = (
+            "Annual Compensation Range: $80,000 - $105,000",
+            "The hourly rate range for this position in the selected city is $35- $35.",
+            "Pay: £45,000–£55,000 per year.", "Salary: EUR 5,000 per month.", "$20/hr - $30/hr",
             "Hourly pay: $0–$18/hour.",
             "Pay: £20–£25 per hour.",
             "Salary: USD 4,500–5,500 per month.",

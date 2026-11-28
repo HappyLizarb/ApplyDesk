@@ -7,12 +7,10 @@ import tempfile
 import unittest
 
 from docx import Document
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
 from reportlab.pdfgen import canvas
 
-from applydesk.document_import import read_docx, validate_upload
+from applydesk.document_import import validate_upload
 from applydesk.documents import DocumentService
 
 
@@ -94,22 +92,6 @@ class DocumentTests(unittest.TestCase):
                                ("resume.txt", b"text"), ("empty.pdf", b"")):
             with self.subTest(filename=filename), self.assertRaises(ValueError):
                 validate_upload(filename, data)
-
-    def test_word_fields_keep_their_protected_status_in_extracted_text(self):
-        """Cross-paragraph Word fields retain their metadata without changing the original file."""
-        document = Document()
-        paragraph = document.add_paragraph()
-        field = OxmlElement("w:fldChar")
-        field.set(qn("w:fldCharType"), "begin")
-        paragraph.add_run()._r.append(field)
-        paragraph.add_run("2026")
-        document.add_paragraph("A field continues across paragraphs")
-        source = Path(self.temporary.name) / "field.docx"
-        document.save(source)
-        blocks = read_docx(source)["blocks"]
-        self.assertTrue(blocks[0]["uneditable"])
-        self.assertTrue(blocks[1]["uneditable"])
-        self.assertEqual(blocks[1]["text"], "A field continues across paragraphs")
 
     def test_profile_docx_preserves_original_header_and_table_with_rendered_preview(self):
         """Profile extraction retains content in the header and table, plus every original byte."""

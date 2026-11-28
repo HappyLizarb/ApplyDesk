@@ -4,7 +4,7 @@ import hashlib
 import json
 import unittest
 from applydesk.native_browser import BrowserError
-from applydesk.native_page import HARD_FLAGS, _move_view, _record_readability, _viewport_action, capture_page, incomplete_capture_message, public_page
+from applydesk.native_page import _move_view, _record_readability, _viewport_action, capture_page, incomplete_capture_message, public_page
 from applydesk.public_source import validate_public_page
 from applydesk.web_research import WebResearch
 from test_native_research import ViewportSession, viewport
@@ -39,13 +39,16 @@ class NativeCaptureDiagnosticsTests(unittest.TestCase):
         whole = {**self.partial, "text_incomplete": False, "clipped": False, "value": "Complete paragraph"}
         pages = [viewport("Top", elements=[self.partial], text_truncated=True),
                  viewport("Complete paragraph", elements=[whole]), viewport("Footer")]
-        complete = capture_page(ViewportSession(pages), pages[0])
-        self.assertFalse(complete["text_truncated"])
-        self.assertEqual(complete["capture_diagnostics"]["unreadable_controls"], [])
-        for flag in HARD_FLAGS:
+        for order in (pages, [pages[1], pages[0], pages[2]]):
+            complete = capture_page(ViewportSession(order), order[0])
+            self.assertFalse(complete["text_truncated"])
+            self.assertEqual(complete["unreadable_control_ids"], [])
+            self.assertEqual(complete["capture_diagnostics"]["unreadable_controls"], [])
+        for flag in ("text_capped", "controls_truncated", "elements_truncated", "render_unsettled"):
             with self.subTest(flag=flag):
                 first = {**pages[0], flag: True}
-                result = capture_page(ViewportSession([first, *pages[1:]]), first)
+                sequence = [viewport("Earlier section"), first, *pages[1:]]
+                result = capture_page(ViewportSession(sequence), sequence[0])
                 self.assertTrue(result["text_truncated"])
                 self.assertEqual(result["capture_diagnostics"]["hard_flags"], [flag])
                 self.assertEqual(result["capture_diagnostics"]["unreadable_controls"], [])
@@ -57,7 +60,8 @@ class NativeCaptureDiagnosticsTests(unittest.TestCase):
                  (viewport("Incomplete", text_truncated=True), 32, "bottom_reached", ["text_truncated_without_control"])]
         for page, limit, reason, flags in cases:
             with self.subTest(reason=reason):
-                result = capture_page(ViewportSession([page]), page, limit=limit)
+                sequence = [page, viewport("Footer")]
+                result = capture_page(ViewportSession(sequence), page, limit=limit)
                 self.assertTrue(result["text_truncated"])
                 self.assertEqual(result["capture_diagnostics"]["stop_reason"], reason)
                 self.assertEqual(result["capture_diagnostics"]["hard_flags"], flags)

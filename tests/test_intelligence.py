@@ -19,29 +19,17 @@ ANALYSIS = {"requirements_complete": True, "required": [
      "evidence_ids": ["work"]}]}
 
 
-class StubClient:
-    """Record a model request and return a fresh, controlled response."""
-
-    def __init__(self, response):
-        """Keep the fixture independent from mutations performed by the caller."""
-        self.response, self.calls = response, []
-
-    def ask(self, system, payload, images=None):
-        """Capture only test data; no network is involved."""
-        self.calls.append((system, payload, images))
-        return copy.deepcopy(self.response)
-
-
 class EligibilityTests(unittest.TestCase):
     """Assumed qualifications do not create personal facts or waive source validation."""
 
     def test_screening_does_not_treat_another_browser_tab_as_posting_evidence(self):
-        client = StubClient(dict(ANALYSIS, company="Example", title="Engineer", details="Current posting",
-                                 country="US", category="", preferred=[], cover_letter_required=False))
+        client = Mock()
+        client.ask.return_value = dict(ANALYSIS, company="Example", title="Engineer", details="Current posting",
+                                       country="US", category="", preferred=[], cover_letter_required=False)
         page = {"native": True, "text": "Current posting", "url": "https://example.com/job/1",
                 "tabs": [{"label": "Applied to Engineer"}], "elements": [{"label": "Other job"}]}
         ai.analyze_job(client, PROFILE, page)
-        self.assertEqual(client.calls[0][1]["page"], {"native": True, "url": page["url"], "text": "Current posting"})
+        self.assertEqual(client.ask.call_args.args[1]["page"], {"native": True, "url": page["url"], "text": "Current posting"})
 
     def test_document_id_is_repaired_once_or_the_posting_stays_in_review(self):
         """A résumé identifier cannot verify professional experience or cause a false eligibility skip."""
@@ -58,10 +46,6 @@ class EligibilityTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "another review"):
                     ai.analyze_job(client, PROFILE, ANALYSIS["required"][0]["text"])
             self.assertEqual(client.ask.call_count, 2)
-
-    def test_confirmed_work_evidence_passes(self):
-        """Required professional experience can cite confirmed employment."""
-        self.assertTrue(ai.validate_eligibility(ANALYSIS, PROFILE)["eligible"])
 
     def test_assumed_skills_and_experience_types_need_no_personal_evidence(self):
         """Unlisted skills and hands-on experience remain allowed without inventing profile facts."""
@@ -144,19 +128,3 @@ class EligibilityTests(unittest.TestCase):
         profile = copy.deepcopy(PROFILE)
         profile["facts"].append(copy.deepcopy(profile["facts"][0]))
         self.assertFalse(ai.validate_eligibility(ANALYSIS, profile)["eligible"])
-
-
-class IntelligenceTests(unittest.TestCase):
-    """Imported facts, document changes and live fields preserve trust boundaries."""
-
-    def test_import_is_always_an_unconfirmed_draft(self):
-        """The model cannot mark facts or sensitive answers as user confirmed."""
-        result = {key: [] for key in ("education", "experiences", "projects",
-                                      "skills", "industries", "websites")}
-        result.update(identity={}, confirmed=True, facts=PROFILE["facts"],
-                      authorizations=[{"country": "US", "status": "authorized_no_sponsor"}])
-        draft = ai.extract_profile(StubClient(result), "Explicit imported text")
-        self.assertFalse(draft["confirmed"])
-        self.assertEqual(draft["facts"], [])
-        self.assertEqual(draft["authorizations"], [])
-        self.assertEqual(draft["preferences"]["disability"], "unknown")

@@ -46,8 +46,8 @@ class ResearchRoutingTests(ChatFixture):
         values = iter([{"status": "waiting"}] * 3 + [{"status": "complete", "jobs": ["one"]}])
         progress = ToolProgress(lambda _: next(values))
         for _ in range(4):
-            result = progress.execute({"name": "job_search_status", "arguments": '{"run_id":"scan"}'})
-        self.assertEqual(progress.repeats, 0)
+            result = progress.execute({"name": "workspace_overview", "arguments": "{}"})
+        self.assertNotIn("progress_note", result)
         self.assertEqual(result["jobs"], ["one"])
 
     def test_explicit_refresh_is_available_when_a_page_has_changed(self):

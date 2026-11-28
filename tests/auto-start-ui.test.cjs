@@ -1,11 +1,5 @@
 const assert=require('node:assert/strict');
-const fs=require('node:fs');
-const path=require('node:path');
-const {createRequire}=require('node:module');
-const load=process.env.APPLYDESK_NODE_MODULES?createRequire(path.join(process.env.APPLYDESK_NODE_MODULES,'__test__.cjs')):require;
-const {chromium}=load('playwright');
-const {workspace,routeRequest}=require('./documents-ui.test.cjs');
-const origin='http://127.0.0.1:63498';
+const {workspace,routeRequest,origin,browserTest,screenshot}=require('./documents-ui.test.cjs');
 
 // Intercepted settings and chat mutations never reach a provider or the installed workspace.
 async function route(route,fixture) {
@@ -94,30 +88,20 @@ async function layoutChecks(page) {
     await page.locator('#composer-agents summary').click();
     const box=await page.locator('.agent-menu-popover').boundingBox();
     assert.ok(box.width<=296&&box.height<=145&&box.x>=0);
-    if(process.env.APPLYDESK_TEST_SCREENSHOTS){
-      fs.mkdirSync(process.env.APPLYDESK_TEST_SCREENSHOTS,{recursive:true});
-      await page.screenshot({path:path.join(process.env.APPLYDESK_TEST_SCREENSHOTS,`composer-${width}-${theme}.png`)});
-    }
+    await screenshot(page,`composer-${width}-${theme}.png`);
     await page.locator('#composer-agents summary').click();await page.locator('#auto-start-button').click();
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
     const dialog=await page.locator('#modal').boundingBox();assert.ok(dialog.x>=0&&dialog.x+dialog.width<=width);
-    if(process.env.APPLYDESK_TEST_SCREENSHOTS)await page.screenshot({path:path.join(process.env.APPLYDESK_TEST_SCREENSHOTS,`auto-start-${width}-${theme}.png`)});
+    await screenshot(page,`auto-start-${width}-${theme}.png`);
     await page.locator('#cancel-auto-start').click();
   }
 }
 
 // One fixture exercises the shipped page and real CSP without live credentials or timers.
-async function main() {
-  const browser=await chromium.launch({channel:'chrome',headless:true,chromiumSandbox:true});
-  const fixture={data:workspace(),writes:[],reject:false};
-  fixture.data.orchestrator.auto_start={enabled:false,interval:5,unit:'hours',next_run_at:null,last_run_at:null,pending:false};
-  try{
-    const page=await browser.newPage({viewport:{width:1440,height:900}}),errors=[];
-    page.on('pageerror',error=>errors.push(error.message));await page.route('**/*',request=>route(request,fixture));
+const fixture={data:workspace(),writes:[],reject:false};
+fixture.data.orchestrator.auto_start={enabled:false,interval:5,unit:'hours',next_run_at:null,last_run_at:null,pending:false};
+browserTest('Composer sizing, timer changes, cancellation, Stop and responsive themes',
+  {fixture,route,viewport:{width:1440,height:900}},async page=>{
     await page.goto(origin+'/#applications');await page.locator('#toggle-assistant').click();
     await composerChecks(page);await timerChecks(page,fixture);await stopChecks(page,fixture);await layoutChecks(page);
-    assert.deepEqual(errors,[]);
-    console.log('One-to-five-row composer, compact picker, timer toggle, saving, cancellation, Stop and responsive themes passed.');
-  }finally{await browser.close();}
-}
-main().catch(error=>{console.error(error);process.exitCode=1;});
+  });

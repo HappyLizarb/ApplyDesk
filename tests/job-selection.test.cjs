@@ -1,11 +1,5 @@
 const assert=require('node:assert/strict');
-const fs=require('node:fs');
-const path=require('node:path');
-const {createRequire}=require('node:module');
-const load=process.env.APPLYDESK_NODE_MODULES?createRequire(path.join(process.env.APPLYDESK_NODE_MODULES,'__test__.cjs')):require;
-const {chromium}=load('playwright');
-const {workspace,routeRequest}=require('./documents-ui.test.cjs');
-const origin='http://127.0.0.1:63498';
+const {workspace,routeRequest,origin,browserTest,screenshot}=require('./documents-ui.test.cjs');
 
 // Real table controls operate on fictional jobs; every request stays inside this fixture.
 function fixture() {
@@ -105,20 +99,14 @@ async function layoutChecks(browser,fixture) {
   const header=await page.locator('#select-all-jobs').boundingBox();
   const row=await page.locator('[data-select-job]').boundingBox();
   assert.ok(Math.abs(header.x-row.x)<1&&header.y<row.y,'Header checkbox aligns above row checkboxes');
-  if(process.env.APPLYDESK_TEST_SCREENSHOTS){
-    fs.mkdirSync(process.env.APPLYDESK_TEST_SCREENSHOTS,{recursive:true});
-    await page.locator('.applications-panel').screenshot({path:path.join(process.env.APPLYDESK_TEST_SCREENSHOTS,'job-selection.png')});
-  }
+  await screenshot(page.locator('.applications-panel'),'job-selection.png');
   await page.close();
 }
 
 // No employer, signed-in account or personal workspace is accessed by this browser check.
-async function main() {
-  const browser=await chromium.launch({channel:'chrome',headless:true,chromiumSandbox:true}),data=fixture(),errors=[];
-  try {
-    const page=await browser.newPage();
-    page.on('pageerror',error=>errors.push(error.message));
-    await page.route('**/*',request=>route(request,data));
+const data=fixture();
+browserTest('Job selection, filtering, polling, removal and header alignment',
+  {fixture:data,route},async (page,browser)=>{
     await page.goto(origin+'/#applications');
     const status=page.getByRole('combobox',{name:/Status for Copy Editor/});
     assert.deepEqual(await status.locator('option').allTextContents(),['Not started','Draft','Needs input','Submitted','Skipped']);
@@ -128,9 +116,4 @@ async function main() {
     await status.selectOption('draft');
     await selectionChecks(page,data);await pollingChecks(page,data);await removalChecks(page,data);
     await layoutChecks(browser,data);
-    assert.deepEqual(errors,[]);
-    console.log('Select all passed: keyboard, mixed state, filters, polling, empty view, removal and header alignment.');
-  } finally {await browser.close();}
-}
-
-main().catch(error=>{console.error(error);process.exitCode=1;});
+  });

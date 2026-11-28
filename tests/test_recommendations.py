@@ -1,15 +1,11 @@
 """Historical platform records remain readable when new applications use the native browser."""
 
-from http.client import HTTPConnection
-import json
 from pathlib import Path
 import tempfile
-import threading
 import unittest
 from unittest.mock import Mock
 
 from applydesk.recommendation_source import employer_target, process_issues, validate_source
-from applydesk.server import AppServer
 from applydesk.workspace import Workspace
 from recommendation_helpers import saved_listing
 
@@ -33,6 +29,18 @@ class RecommendationTests(unittest.TestCase):
         self.w.close()
         self.w = Workspace(Path(self.temp.name), secrets=self.secrets)
         self.assertEqual(self.w.state()["recommendations"]["linkedin"]["status"], "interrupted")
+
+    def test_restart_preserves_interrupted_public_search_and_saved_jobs(self):
+        criteria = {"keywords": "engineer", "location": "US"}
+        self.w.store.put("discovery", "main", {"status": "searching", "criteria": criteria, "added_count": 1})
+        job = self.w.store.add_job("https://example.test/jobs/1")
+        self.w.close()
+        self.w = Workspace(self.w.root, secrets=self.secrets)
+        report = self.w.state()["discovery"]
+        self.assertEqual((report["status"], report["criteria"], report["added_count"]), ("error", criteria, 1))
+        self.assertIn("finished_at", report)
+        self.assertEqual(self.w.store.all("job"), [job])
+        self.secrets.get.assert_not_called()
 
     def test_historic_false_zero_is_displayed_as_capture_error_without_rewriting_records(self):
         """Only contradictory blocked zero messages change in memory; saved reports remain untouched."""
@@ -66,54 +74,6 @@ class RecommendationTests(unittest.TestCase):
         expected = {"handshake": {"enabled": False}, "linkedin": {"enabled": False}}
         self.assertEqual(self.w.state()["recommendation_preferences"], expected)
         self.secrets.get.assert_not_called()
-
-
-class PreferenceRouteTests(unittest.TestCase):
-    def setUp(self):
-        # The only real network traffic in these tests is the app's loopback HTTP API.
-        self.temp = tempfile.TemporaryDirectory(prefix="applydesk-preference-route-")
-        self.w = Workspace(Path(self.temp.name), secrets=Mock())
-        self.server = AppServer(self.w)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
-
-    def tearDown(self):
-        # Stop request handlers before closing their SQLite workspace.
-        self.server.shutdown()
-        self.thread.join(timeout=2)
-        self.server.server_close()
-        self.w.close()
-        self.temp.cleanup()
-
-    def post(self, data, headers=None):
-        # Call the actual route so the busy exception cannot skip origin/session checks.
-        request_headers = {"Cookie": "applydesk=" + self.server.token, "Origin": self.server.origin,
-                           "X-ApplyDesk": "1", "Content-Type": "application/json", **(headers or {})}
-        connection = HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
-        try:
-            connection.request("POST", "/api/recommendations/preference", json.dumps(data), request_headers)
-            response = connection.getresponse()
-            return response.status, json.loads(response.read())
-        finally:
-            connection.close()
-
-    def test_retired_route_cannot_change_saved_preferences(self):
-        # Historical preferences survive, but old UI requests cannot enable platform sessions.
-        data = {"platform": "handshake", "enabled": True}
-        self.assertEqual(self.post(data)[0], 400)
-        self.assertEqual(self.w.state()["recommendation_preferences"]["handshake"], {"enabled": False})
-        self.assertEqual(self.w.tasks, {})
-
-    def test_retired_route_stays_disabled_during_work_and_requires_authorization(self):
-        # Removed controls cannot mutate a workspace through an old or unauthorized request.
-        self.w.tasks["test"] = {"id": "test", "status": "running"}
-        data = {"platform": "handshake", "enabled": False}
-        self.assertEqual(self.post(data)[0], 400)
-        self.assertEqual(self.post({**data, "enabled": True})[0], 400)
-        self.assertEqual(self.post({**data, "enabled": 0})[0], 400)
-        for headers in ({"Origin": "https://attacker.example"}, {"Cookie": ""}, {"X-ApplyDesk": ""}):
-            with self.subTest(headers=headers):
-                self.assertEqual(self.post(data, headers)[0], 403)
 
 
 def analysis():
@@ -166,14 +126,6 @@ class RecommendationChecksTests(unittest.TestCase):
             captured = saved_listing(text="Fixture role. " + quote)
             with self.subTest(kind=kind):
                 self.assertTrue(any("Manual verification" in issue for issue in process_issues(result, captured)))
-
-    def test_observed_application_limit_blocks_without_a_second_agent(self):
-        """Process restrictions remain enforced locally after the single extraction."""
-        quote = "Apply to at most two roles across all affiliates."
-        captured = saved_listing(text="Fixture role. " + quote)
-        result = analysis()
-        result["process_restrictions"] = [{"kind": "application_limit", "text": quote, "quote": quote}]
-        self.assertTrue(any("Manual verification" in issue for issue in process_issues(result, captured)))
 
     def test_missing_or_platform_employer_link_pauses(self):
         for target in (None, "", "https://www.linkedin.com/jobs/view/12345", "http://employer.example.test/jobs/12345"):

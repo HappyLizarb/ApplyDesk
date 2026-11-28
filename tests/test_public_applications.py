@@ -68,17 +68,15 @@ class PublicApplicationTests(PublicApplicationFixture):
         self.assertEqual(self.w.store.get("job", self.jobs[1]["id"])["status"], "new")
         self.assertEqual(set(self.roles), {"master"})
 
-    def test_public_candidates_and_enabled_native_captures_share_saved_order(self):
+    def test_public_and_historical_jobs_share_saved_order(self):
         source = saved_listing()
         native = self.w.store.add_job(source["source_url"])
         self.w.store.job(native["id"], recommendation_source=source)
-        candidates = self.engine.applications._candidates([])
-        self.assertEqual([job["id"] for job in candidates], [job["id"] for job in self.jobs])
-        candidates = self.engine.applications._candidates(["linkedin"])
+        candidates = self.engine.applications._candidates()
         self.assertEqual([job["id"] for job in candidates], [job["id"] for job in [*self.jobs, native]])
         self.w.store.remove_jobs([self.jobs[0]["id"]])
         self.w.store.put("submission_attempt", attempt_key(self.jobs[1]), {"status": "submission_unknown"})
-        self.assertEqual([job["id"] for job in self.engine.applications._candidates(["linkedin"])], [native["id"]])
+        self.assertEqual([job["id"] for job in self.engine.applications._candidates()], [native["id"]])
 
     def test_corrupt_capture_never_opens_or_fills_that_job(self):
         source = {**self.jobs[0]["public_source"], "description": "Changed source"}

@@ -15,27 +15,14 @@ from applydesk.documents import DocumentTasks
 from applydesk.profile import empty_profile, model_profile
 from applydesk.server import AppServer
 from applydesk.workspace import Workspace
-
-
-class FakeSecrets:
-    def __init__(self):
-        # Tests never invoke the operating system Keychain.
-        self.values = {}
-
-    def get(self, name):
-        # Match the production secret store's absent-key behavior.
-        return self.values.get(name)
-
-    def set(self, name, value):
-        # Values are synthetic and remain in memory for each test.
-        self.values[name] = value
+from test_employer_accounts import MemorySecrets
 
 
 class WorkspaceTests(unittest.TestCase):
     def setUp(self):
         # Each test gets an isolated database and deterministic fake secret storage.
         self.temporary = tempfile.TemporaryDirectory(prefix="applydesk-workspace-test-")
-        self.secrets = FakeSecrets()
+        self.secrets = MemorySecrets()
         self.workspace = Workspace(Path(self.temporary.name), secrets=self.secrets)
 
     def tearDown(self):
@@ -77,15 +64,18 @@ class WorkspaceTests(unittest.TestCase):
     def test_profile_changes_invalidate_ready_but_not_submitted(self):
         # Old eligibility and field audits cannot survive a changed source profile.
         profile = self.confirmed_profile()
-        ready = self.workspace.store.add_job("https://jobs.example.test/ready")
-        submitted = self.workspace.store.add_job("https://jobs.example.test/submitted")
-        self.workspace.store.job(ready["id"], status="ready")
-        self.workspace.store.job(submitted["id"], status="submitted")
+        jobs = {}
+        for status in ("new", "ready", "submitted", "submitting", "submission_unknown"):
+            job = self.workspace.store.add_job(f"https://jobs.example.test/{status}")
+            self.workspace.store.job(job["id"], status=status)
+            jobs[status] = job["id"]
         profile["identity"]["phone"] = "+1 415 555 0101"
         saved = self.workspace.save_profile(profile)
         self.assertEqual(saved["revision"], profile["revision"] + 1)
-        self.assertEqual(self.workspace.store.get("job", ready["id"])["status"], "needs_review")
-        self.assertEqual(self.workspace.store.get("job", submitted["id"])["status"], "submitted")
+        for status, job_id in jobs.items():
+            expected = "needs_review" if status == "ready" else status
+            with self.subTest(status=status):
+                self.assertEqual(self.workspace.store.get("job", job_id)["status"], expected)
 
     def test_transcript_change_invalidates_attachment_and_revision(self):
         # Replacing an attachment requires a fresh audit without repeating renderer tests.
@@ -110,8 +100,6 @@ class WorkspaceTests(unittest.TestCase):
         importer.assert_not_called()
         self.assertEqual(self.workspace.settings(), prior)
 
-
-
     def test_local_integrity_checks_name_the_current_document_version(self):
         """Byte-identical copies keep their own result and never reuse model audit claims."""
         self.workspace.docs = Mock()
@@ -133,7 +121,7 @@ class HttpBoundaryTests(unittest.TestCase):
     def setUp(self):
         # A real ephemeral loopback server validates HTTP behavior without provider calls.
         self.temporary = tempfile.TemporaryDirectory(prefix="applydesk-http-test-")
-        self.secrets = FakeSecrets()
+        self.secrets = MemorySecrets()
         self.workspace = Workspace(Path(self.temporary.name), secrets=self.secrets)
         self.server = AppServer(self.workspace)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -169,9 +157,13 @@ class HttpBoundaryTests(unittest.TestCase):
         headers = {"Authorization": "Bearer retired-draft-token"}
         for path in ("/agent/v1/enqueue", "/api/orchestrator/send"):
             self.assertEqual(self.request("POST", path, {"message": "Test"}, False, headers)[0], 403)
-        for path in ("/api/chat/enqueue", "/api/orchestrator/retry", "/agent/v1/draft"):
+        retired = ("/api/chat/enqueue", "/api/orchestrator/retry", "/agent/v1/draft", "/api/models/refresh",
+                   "/api/jobs/discover", "/api/recommendations/begin", "/api/recommendations/cancel",
+                   "/api/recommendations/preference")
+        for path in retired:
             self.assertEqual(self.request("POST", path, {})[0], 400)
         self.assertEqual(self.request("GET", "/agent/v1/tasks")[0], 404)
+        self.assertEqual(self.workspace.tasks, {})
 
     def test_timer_only_resumes_existing_chat_work(self):
         """The authenticated timer cannot carry a separate instruction."""
@@ -231,8 +223,12 @@ class HttpBoundaryTests(unittest.TestCase):
     def test_wrong_origin_and_asset_traversal_do_not_write(self):
         # Cookie possession alone does not authorize a cross-origin mutation.
         original = self.workspace.profile()
-        status, _, _ = self.request("POST", "/api/profile", {"confirmed": True}, headers={"Origin": "https://attacker.example"})
-        self.assertEqual(status, 403)
+        bad_headers = ({"Cookie": ""}, {"Cookie": "applydesk=incorrect"}, {"Origin": "https://attacker.example"},
+                       {"Origin": self.server.origin + "/"}, {"Host": f"localhost:{self.server.server_port}"},
+                       {"Host": "attacker.example"}, {"X-ApplyDesk": ""})
+        for headers in bad_headers:
+            with self.subTest(headers=headers):
+                self.assertEqual(self.request("POST", "/api/profile", original, headers=headers)[0], 403)
         self.assertEqual(self.workspace.profile(), original)
         self.assertEqual(self.request("GET", "/asset/%2e%2e/workspace.sqlite")[0], 400)
         self.assertEqual(self.request("GET", "/%2e%2e/applydesk/workspace.py")[0], 404)
@@ -240,7 +236,7 @@ class HttpBoundaryTests(unittest.TestCase):
     def test_malformed_profile_and_json_leave_state_intact(self):
         # Invalid object shapes are user errors, not partial profile replacements.
         original = self.workspace.profile()
-        for body in ("{", "[]", '{"identity":null}', '{"skills":[{}]}'):
+        for body in ("{", "[]", "null", '{"identity":null}', '{"skills":[{}]}'):
             with self.subTest(body=body):
                 self.assertEqual(self.request("POST", "/api/profile", raw=body)[0], 400)
                 self.assertEqual(self.workspace.profile(), original)
@@ -285,9 +281,13 @@ class HttpBoundaryTests(unittest.TestCase):
         self.assertEqual(self.request('POST', '/api/orchestrator/reset', {})[0], 200)
         self.assertEqual(self.workspace.orchestrator.history.read(), [])
 
-    def test_quit_is_available_during_background_work(self):
-        """The Quit action cancels inference and shuts down even while another task is running."""
+    def test_background_work_blocks_profile_edits_and_allows_quit(self):
+        """An active task protects workspace data while the user can still quit."""
         self.workspace.tasks['synthetic'] = {'status': 'running'}
+        original = self.workspace.profile()
+        status, _, body = self.request('POST', '/api/profile', {**original, 'skills': ['Python']})
+        self.assertEqual((status, json.loads(body)['error']), (400, 'A task is running. Wait before changing the workspace.'))
+        self.assertEqual(self.workspace.profile(), original)
         status, _, body = self.request('POST', '/api/shutdown', {})
         self.assertEqual((status, json.loads(body)), (200, {'closed': True}))
         self.assertTrue(self.workspace.orchestrator.stop.is_set())

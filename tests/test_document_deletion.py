@@ -7,8 +7,7 @@ from unittest.mock import Mock, patch
 
 from chat_helpers import ChatFixture
 from applydesk.document_deletion import DocumentDeletion
-from applydesk.documents import DocumentTasks
-from applydesk.documents import DocumentService
+from applydesk.documents import DocumentService, DocumentTasks
 from applydesk.server import AppServer
 from test_documents import saved_letter
 
@@ -39,7 +38,7 @@ class DocumentDeletionTests(ChatFixture):
         with self.assertRaisesRegex(ValueError, "not found"):
             self.w.docs.asset(self.resume["source_path"])
 
-    def test_used_resume_leaves_application_copy_and_invalidates_only_pending_readiness(self):
+    def test_deleting_used_resume_invalidates_only_pending_readiness(self):
         """Submitted and uncertain outcomes remain intact while pending work must reselect files."""
         jobs = []
         for status in ("ready", "submitted", "submission_unknown"):
@@ -63,8 +62,8 @@ class DocumentDeletionTests(ChatFixture):
         with self.assertRaisesRegex(ValueError, "Upload and tag"):
             self.w.resumes.select("General")
 
-    def test_attachment_ledger_and_completed_draft_keep_historical_files(self):
-        """Historical references are preserved even when they are not the current resume selection."""
+    def test_deletion_removes_bytes_referenced_by_a_receipt_or_saved_draft(self):
+        """A prior receipt or draft cannot suppress the user’s explicit file deletion."""
         for reference in ("ledger", "task"):
             with self.subTest(reference=reference):
                 record = self.document(reference, "resume")
@@ -82,20 +81,12 @@ class DocumentDeletionTests(ChatFixture):
         """A selected template is physically removed without deleting a different letter version."""
         template, letter = saved_letter(self.w.docs, self.job["id"])
         self.w.store.put("settings", "main", {**self.w.settings(), "cover_template_id": template["id"]})
-        self.deletion.delete({"document_id": template["id"]})
+        result = self.deletion.delete({"document_id": template["id"]})
+        self.assertFalse(result["application_copies_kept"])
+        self.assertTrue(self.w.docs.verify("resume"))
         self.assertEqual(self.w.settings()["cover_template_id"], "")
         self.assertFalse((self.w.docs.root / template["id"]).exists())
         self.assertTrue(self.w.docs.verify(letter["id"]))
-
-    def test_unused_template_is_removed_without_touching_other_files_or_preferences(self):
-        """Deleting a default clears that selection, while transcript and profile remain untouched."""
-        template = self.document("template", "cover_template")
-        self.w.store.put("settings", "main", {**self.w.settings(), "cover_template_id": template["id"]})
-        result = self.deletion.delete({"document_id": template["id"]})
-        self.assertFalse(result["application_copies_kept"])
-        self.assertEqual(self.w.settings()["cover_template_id"], "")
-        self.assertFalse((self.w.docs.root / template["id"]).exists())
-        self.assertTrue(self.w.docs.verify("resume"))
 
     def test_deletion_stops_the_agent_and_can_run_during_an_unrelated_import(self):
         """Cancellation completes before deletion; an unrelated upload does not block removal."""

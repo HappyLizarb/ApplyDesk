@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {test,beforeEach,afterEach} from 'node:test';
 import {state,toast} from '../web/ui.js';
-import {apiProviders,bindApiSettings,updateApiSettings} from '../web/api-key-settings.js';
+import {apiProviders,bindApiSettings,updateApiSettings} from '../web/agent-settings.js';
 
 let root,cards,elements,calls,serverState,respond;
 

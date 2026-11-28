@@ -6,7 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from applydesk.agent_settings import AgentSettings, ROLES
+from applydesk.agent_settings import AgentSettings
 from applydesk.chatgpt_inference import ChatGPTRunner
 from applydesk.orchestrator import Orchestrator
 from applydesk.providers import ProviderError
@@ -37,23 +37,6 @@ class NativeRunnerTests(unittest.TestCase):
         self.cancelled = threading.Event()
         self.emit = Mock()
 
-    def test_single_agent_creates_observable_request_records(self):
-        """Every role uses its selected model and writes its own completed local identity."""
-        response = {'id': 'provider-result', 'stop_reason': 'end_turn', 'content': [{'type': 'text', 'text': 'Complete'}]}
-        identities = []
-        with patch('applydesk.chatgpt_inference.native_request', return_value=response) as request:
-            for role in ROLES:
-                identity, result = self.runner.run(role, 'Review facts.', [{'role': 'user', 'content': 'Evidence'}], self.cancelled, self.emit)
-                identities.append(identity)
-                record = self.workspace.store.get('agent_run', identity)
-                self.assertEqual((record['role'], record['source'], record['status']), (role, 'anthropic_api', 'completed'))
-                self.assertEqual(result['status'], 'completed')
-        self.assertEqual(len(set(identities)), 1)
-        self.assertEqual(request.call_count, 1)
-        self.accounts.api_key.assert_called_with('anthropic')
-        self.accounts.token.assert_not_called()
-        self.assertNotIn('private-key', str(self.workspace.store.records))
-
     def test_retired_agent_roles_are_rejected_before_any_request(self):
         """Old role names cannot silently create another agent or model request."""
         with patch.object(self.runner, "_request") as request:
@@ -73,6 +56,12 @@ class NativeRunnerTests(unittest.TestCase):
         with patch('applydesk.chatgpt_inference.native_request', side_effect=replies) as request:
             answer = engine._master([{'role': 'user', 'content': 'Review my profile.'}])
         self.assertEqual(answer, 'Reviewed.')
+        records = [row for (kind, _), row in self.workspace.store.records.items() if kind == 'agent_run']
+        self.assertEqual([(row['role'], row['source'], row['status']) for row in records],
+                         [('master', 'anthropic_api', 'completed')] * 2)
+        self.accounts.api_key.assert_called_with('anthropic')
+        self.accounts.token.assert_not_called()
+        self.assertNotIn('private-key', str(self.workspace.store.records))
         call = engine.tools.call.call_args.args[0]
         self.assertEqual((call['name'], call['namespace']), ('read_profile', 'applydesk'))
         continuation = request.call_args_list[1].args[3]['messages']

@@ -1,6 +1,9 @@
 """Literal eligibility requirements cannot inherit the ordinary qualification assumption."""
 
+import hashlib
 import unittest
+
+from test_public_applications import PublicApplicationFixture
 
 from applydesk.immigration_eligibility import authorization_context, check_immigration, eligibility_quotes
 from applydesk.intelligence import validate_eligibility
@@ -110,6 +113,44 @@ class ImmigrationEligibilityTests(unittest.TestCase):
         applicant["confirmed"] = False
         self.assertEqual(authorization_context(applicant), [])
         self.assertTrue(check_immigration(applicant, "US citizenship required.", "US")["needs_input"])
+
+
+class ImmigrationApplicationTests(PublicApplicationFixture):
+    def save_authorization(self, status="f1_opt", restrictions=""):
+        """Record the applicant's explicit answer through the normal profile editor boundary."""
+        saved = self.w.profile()
+        saved["authorizations"] = [{"country": "US", "status": "authorized_no_sponsor", "sponsorship_required": "no",
+                                    "immigration_status": status, "restrictions": restrictions}]
+        self.w.save_profile(saved)
+
+    def add_requirement(self, quote):
+        """Preserve source provenance while the model fixture omits the eligibility requirement."""
+        for job in self.jobs:
+            source = {**job["public_source"], "description": job["public_source"]["description"] + " " + quote}
+            source["description_sha256"] = hashlib.sha256(source["description"].encode()).hexdigest()
+            self.w.store.job(job["id"], public_source=source, details=source["description"])
+
+    def test_citizenship_conflict_stops_before_personal_fields(self):
+        self.save_authorization()
+        self.add_requirement("This role requires US citizenship.")
+        run = self.run_public()
+        self.assertEqual(run["attempted_count"], 0)
+        self.assertTrue(all(result["status"] == "skipped" for result in run["results"]))
+        self.assertTrue(all(not browser.name for browser in self.browsers))
+
+    def test_conditional_authorization_becomes_needs_input_not_excluded(self):
+        self.save_authorization("f1_stem_opt", "Employment must relate to my degree")
+        self.add_requirement("Applicants must be authorized to work in the United States.")
+        run = self.run_public()
+        self.assertEqual(run["attempted_count"], 0)
+        self.assertTrue(all(result["status"] == "needs_review" for result in run["results"]))
+        self.assertTrue(all(not browser.name for browser in self.browsers))
+
+    def test_confirmed_citizen_can_pass_an_explicit_citizen_requirement(self):
+        self.save_authorization("us_citizen")
+        self.add_requirement("Applicants must be US citizens.")
+        run = self.run_public()
+        self.assertEqual(run["submitted_count"], 1)
 
 
 if __name__ == "__main__":

@@ -34,24 +34,6 @@ def _evidence_errors(ids, facts):
     return []
 
 
-def extract_profile(client, text) -> dict:
-    """Import explicit source information as an editable draft, never as evidence."""
-    if not isinstance(text, str) or not text.strip():
-        raise ValueError("The imported document contains no readable text.")
-    result = client.ask(prompts.EXTRACT, {"source_text": text})
-    result.setdefault("languages", [])
-    fields = ("education", "experiences", "projects", "skills", "languages", "industries", "websites")
-    if not isinstance(result.get("identity"), dict):
-        raise ValueError("Profile extraction returned no identity object.")
-    for field in fields:
-        if not isinstance(result.get(field), list):
-            raise ValueError(f"Profile extraction returned an invalid {field} list.")
-    # Sensitive answers must be supplied by the applicant in the profile editor.
-    result.update(confirmed=False, revision=0, facts=[], authorizations=[])
-    result["preferences"] = {"levels": [], "disability": "unknown", "veteran": "unknown"}
-    return result
-
-
 def analyze_job(client, profile, page) -> dict:
     """Extract job requirements once before local validation."""
     evidence = page

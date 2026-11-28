@@ -1,12 +1,9 @@
 """Only a native rejection before input can release or retry a reserved application click."""
 
-import tempfile
 import unittest
-from applydesk.application_submission import attempt_key, finish_attempt, submit_ready
+from applydesk.application_submission import attempt_key, submit_ready
 from applydesk.native_browser import BrowserError
-from applydesk.storage import Store
 from native_pipeline_fixture import NativeReviewFixture
-from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -40,6 +37,9 @@ class NativeSubmissionRecoveryTests(unittest.TestCase):
         self.assertEqual(len(saved), 1)
         self.assertEqual(saved[0]["status"], "verification_required")
         self.assertEqual(saved[0]["receipt"], result["receipt"])
+        self.assertEqual(saved[0]["id"], result["receipt"]["attempt_id"])
+        job = self.form.store.get("job", self.form.job["id"])
+        self.assertIn(result["receipt"]["issue"], job["progress"])
         self.assertEqual(result["receipt"]["receipt"], quote)
         self.assertFalse(result["receipt"]["confirmed"])
 
@@ -125,18 +125,3 @@ class NativeSubmissionReceiptTests(NativeReviewFixture, unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "changed after review"):
             submit_ready(engine, self.job, run, lambda: None)
         self.assertEqual(self.store.all("submission_attempt"), [])
-
-
-class VerificationTests(unittest.TestCase):
-    def test_verification_is_not_a_submission_or_an_erased_attempt(self):
-        with tempfile.TemporaryDirectory() as root:
-            store = Store(root)
-            self.addCleanup(store.close)
-            job = store.add_job('https://employer.example/job/123')
-            attempt = {"id": "attempt-1", "job_id": job["id"], "status": "submitting"}
-            receipt = {"confirmed": False, "verification_required": True, "issue": "An email code is required.", "receipt": ""}
-            result = finish_attempt(SimpleNamespace(store=store), job, attempt, 'verification_required', receipt)
-            self.assertEqual(result['status'], 'needs_review')
-            self.assertEqual(store.get('job', job['id'])['progress'], 'An email code is required.')
-            self.assertEqual(store.get('submission_attempt', attempt_key(job))['id'], 'attempt-1')
-            self.assertEqual(store.get('submission_attempt', attempt_key(job))['status'], 'verification_required')

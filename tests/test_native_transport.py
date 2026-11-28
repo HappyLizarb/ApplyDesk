@@ -25,28 +25,28 @@ class NativeTransportTests(unittest.TestCase):
         self.factory = patch.object(agent_transport, 'HTTPSConnection', return_value=self.connection).start()
         self.addCleanup(patch.stopall)
 
-    def test_anthropic_host_and_auth_headers_are_pinned(self):
-        """Only Anthropic receives the explicitly supplied Anthropic key."""
-        result = agent_transport.request_json(self.runner, 'anthropic', 'claude-sonnet-4-6',
-                                             {'messages': []}, 'private-key', self.cancelled, 7)
-        self.assertEqual(result, {'ok': True})
-        self.assertEqual(self.factory.call_args.args[0], 'api.anthropic.com')
-        method, path, body, headers = self.connection.request.call_args.args
-        self.assertEqual((method, path), ('POST', '/v1/messages'))
-        self.assertEqual(headers['x-api-key'], 'private-key')
-        self.assertEqual(headers['anthropic-version'], '2023-06-01')
-        self.assertNotIn(b'private-key', body)
-        self.assertIsNone(self.runner.connection)
-        self.connection.close.assert_called_once()
-
-    def test_google_path_and_header_never_use_a_query_key(self):
-        """Google credentials stay in headers and the model ID cannot change the host."""
-        agent_transport.request_json(self.runner, 'google', 'gemini-3.8-flash', {}, 'private-key', self.cancelled, 7)
-        self.assertEqual(self.factory.call_args.args[0], 'generativelanguage.googleapis.com')
-        _, path, _, headers = self.connection.request.call_args.args
-        self.assertEqual(path, '/v1beta/models/gemini-3.8-flash:generateContent')
-        self.assertEqual(headers['x-goog-api-key'], 'private-key')
-        self.assertNotIn('private-key', path)
+    def test_requests_use_only_the_selected_providers_endpoint_and_credentials(self):
+        """Each provider receives its own headers; keys never enter the URL or body."""
+        cases = [
+            ('anthropic', 'claude-sonnet-4-6', 'api.anthropic.com', '/v1/messages',
+             {'x-api-key': 'private-key', 'anthropic-version': '2023-06-01'}),
+            ('google', 'gemini-3.8-flash', 'generativelanguage.googleapis.com', '/v1beta/models/gemini-3.8-flash:generateContent',
+             {'x-goog-api-key': 'private-key'}),
+            ('xai', 'grok-4.7', 'api.x.ai', '/v1/responses', {'Authorization': 'Bearer private-key'}),
+        ]
+        provider_headers = {'x-api-key', 'anthropic-version', 'x-goog-api-key', 'Authorization'}
+        for provider, model, host, endpoint, expected in cases:
+            with self.subTest(provider=provider):
+                self.connection.reset_mock()
+                self.response.read = io.BytesIO(b'{"ok":true}').read
+                result = agent_transport.request_json(self.runner, provider, model, {}, 'private-key', self.cancelled, 7)
+                self.assertEqual(result, {'ok': True})
+                method, path, body, headers = self.connection.request.call_args.args
+                self.assertEqual((self.factory.call_args.args[0], method, path), (host, 'POST', endpoint))
+                self.assertEqual({name: headers[name] for name in provider_headers & headers.keys()}, expected)
+                self.assertNotIn(b'private-key', body)
+                self.assertIsNone(self.runner.connection)
+                self.connection.close.assert_called_once()
         with self.assertRaises(ProviderError):
             agent_transport.request_json(self.runner, 'google', 'https://elsewhere/model', {}, 'key', self.cancelled, 7)
 
@@ -60,16 +60,6 @@ class NativeTransportTests(unittest.TestCase):
         self.assertIn('401', str(caught.exception))
         self.response.read.assert_not_called()
         self.connection.close.assert_called_once()
-
-    def test_grok_request_uses_only_the_official_xai_host(self):
-        """Grok's key is a header on its pinned Responses endpoint, never an OpenAI request."""
-        agent_transport.request_json(self.runner, 'xai', 'grok-4.7', {'store': False}, 'private-key', self.cancelled, 7)
-        self.assertEqual(self.factory.call_args.args[0], 'api.x.ai')
-        method, path, body, headers = self.connection.request.call_args.args
-        self.assertEqual((method, path), ('POST', '/v1/responses'))
-        self.assertEqual(headers['Authorization'], 'Bearer private-key')
-        self.assertNotIn('x-goog-api-key', headers)
-        self.assertNotIn(b'private-key', body)
 
     def test_cancellation_before_request_opens_no_socket(self):
         """An already-paused operation cannot start a provider request."""

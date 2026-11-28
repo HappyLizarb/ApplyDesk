@@ -1,22 +1,21 @@
 import {h} from './ui.js';
-import {educationDate} from './profile-controls.js';
 
 export const entryFields={education:['institution','degree','field','gpa','gpa_scale','start','end','coursework'],experiences:['title','company','job_type','start','end','location','details']};
-const months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const longMonths=['January','February','March','April','May','June','July','August','September','October','November','December'];
+const monthOptions=longMonths.map((month,index)=>[String(index+1).padStart(2,'0'),month.slice(0,3)]);
 const fieldLabels={institution:'School name',degree:'Degree',field:'Major / field of study',gpa:'GPA (optional)',gpa_scale:'GPA scale (optional)',coursework:'Relevant coursework',title:'Job title',company:'Employer',job_type:'Job type',start:'Start date',end:'End date',location:'Location',details:'Description'};
 
 // Month-specific ISO values get a readable label; partial or unfamiliar dates stay literal.
 export function displayDate(value='') {
   const match=/^(\d{4})-(0[1-9]|1[0-2])$/.exec(value);
-  return match?`${months[Number(match[2])-1]} ${match[1]}`:value;
+  return match?`${monthOptions[Number(match[2])-1][1]} ${match[1]}`:value;
 }
 
 // Normalize only explicit month names, preserving year-only and legacy date descriptions.
 export function storedDate(value='') {
   const text=value.trim(),match=/^([A-Za-z]+)\s+(\d{4})$/.exec(text);
   if(!match)return text;
-  const month=months.findIndex((name,index)=>[name.toLowerCase(),longMonths[index].toLowerCase()].includes(match[1].toLowerCase()));
+  const month=longMonths.findIndex(month=>[month,month.slice(0,3)].some(name=>name.toLowerCase()===match[1].toLowerCase()));
   return month<0?text:`${match[2]}-${String(month+1).padStart(2,'0')}`;
 }
 
@@ -30,6 +29,30 @@ export function experienceDuration(start,end,today=new Date()) {
   if(count<=0)return '';
   const years=Math.floor(count/12),remaining=count%12;
   return [years?`${years} ${years===1?'yr':'yrs'}`:'',remaining?`${remaining} ${remaining===1?'mo':'mos'}`:''].filter(Boolean).join(' ');
+}
+
+// Retain the precision the applicant supplied, including partial and legacy dates.
+function educationDate(name,label,value) {
+  const match=/^(\d{4})(?:-(0[1-9]|1[0-2])(?:-(0[1-9]|[12]\d|3[01]))?)?$/.exec(value);
+  const year=match?match[1]:value,month=match?.[2]||'',day=match?.[3]||'';
+  return `<fieldset class="education-date"><legend class="sr-only">${h(label)}</legend><div class="date-fields">
+    <select name="${name}.month" aria-label="${h(label)} month"><option value="">Month</option>${monthOptions.map(([code,label])=>`<option value="${code}" ${code===month?'selected':''}>${label}</option>`).join('')}</select>
+    <input name="${name}.day" aria-label="${h(label)} day (optional)" type="text" inputmode="numeric" value="${h(day)}" placeholder="Day" size="3" maxlength="2">
+    <input name="${name}.year" aria-label="${h(label)} year" type="text" value="${h(year)}" placeholder="${name.endsWith('.end')?'Year or Present':'Year'}" size="${Math.max(4,year.length)}" maxlength="500">
+    </div></fieldset>`;
+}
+
+// Serialize the visible controls into the existing date field without guessing missing precision.
+export function readEducationDate(form,name) {
+  const year=form.elements.namedItem(name+'.year'),month=form.elements.namedItem(name+'.month').value;
+  const day=form.elements.namedItem(name+'.day'),digits=day.value.trim();
+  const value=year.value.trim(),valid=!month||/^\d{4}$/.test(value);
+  year.setCustomValidity(valid?'':'Enter a four-digit year, or clear the month to use Present.');
+  const maxDay=valid&&month?new Date(Date.UTC(Number(value),Number(month),0)).getUTCDate():0;
+  const validDay=!digits||(/^\d{1,2}$/.test(digits)&&Number(digits)>=1&&Number(digits)<=maxDay);
+  day.setCustomValidity(validDay?'':'Choose a month and year and enter a valid day for that month.');
+  if(digits&&validDay)return `${value}-${month}-${digits.padStart(2,'0')}`;
+  return month&&valid?`${value}-${month}`:value;
 }
 
 // Native inputs remain directly editable while visible content follows the profile hierarchy.

@@ -8,7 +8,7 @@ import unittest
 
 from applydesk.document_import import selected_resume
 from applydesk.workspace import Workspace
-from test_workspace import FakeSecrets
+from test_employer_accounts import MemorySecrets
 
 
 def selected_fixture(service, identity, source):
@@ -30,7 +30,7 @@ class ChatFixture(unittest.TestCase):
     def setUp(self):
         """Use immutable synthetic files without accessing any saved personal workspace."""
         self.temp = tempfile.TemporaryDirectory()
-        self.w = Workspace(Path(self.temp.name), secrets=FakeSecrets())
+        self.w = Workspace(Path(self.temp.name), secrets=MemorySecrets())
         profile = self.w.profile()
         profile["identity"].update(legal_name="Alex Test", email="alex@example.test")
         profile.update(confirmed=True, skills=["Python"])
