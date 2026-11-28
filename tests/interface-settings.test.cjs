@@ -12,6 +12,7 @@ function fixture() {
   data.profile.identity={legal_name:'Example Person',given_name:'Example',family_name:'Person',email:'example@example.test'};
   data.profile.authorizations=[{country:'US',sponsorship_required:'no'}];
   data.profile.revision=4;
+  data.profile.preferences.relative_companies=['Existing, Inc.','Former employer'];
   data.profile.education=[{institution:'Example University',degree:'Bachelor of Arts',field:'History and Geography',gpa:'',gpa_scale:'',start:'2013',end:'2017',coursework:'Cartography, Social History, Public Archives'}];
   data.profile.projects=[{name:'Existing project',details:'Previously saved fact'}];
   data.profile.transcript_id='transcript';
@@ -50,22 +51,34 @@ async function educationChecks(page,fixture) {
   assert.equal(await row.locator('[name="education.0.end.year"]').inputValue(),'2017');
 }
 
-// Only named companies and an explicit disciplinary choice survive a profile save.
+// Existing company names open as editable rows and an empty list survives a save and reload.
 async function affiliationChecks(page,fixture) {
-  const roles=page.locator('section.profile-detail-list').filter({has:page.getByRole('heading',{name:'Roles and job levels'})});
-  const companies=roles.getByLabel('Relatives’ company affiliations');
-  const discipline=page.getByLabel(/^Disciplinary action/);
+  const companies=page.getByRole('textbox',{name:'Company name',exact:true});
+  const discipline=page.getByRole('combobox',{name:'Disciplinary action',exact:true});
+  const add=page.getByRole('button',{name:'Add company',exact:true});
+  const remove=page.getByRole('button',{name:/^Remove company entry /});
+  const roles=page.locator('section').filter({has:page.getByRole('heading',{name:'Roles and job levels',exact:true})}).last();
+  assert.equal(await roles.getByRole('heading',{name:'Relatives’ company affiliations',exact:true}).count(),1);
+  assert.equal(await page.getByText('Enter one company name per line. Leave blank for no affiliations.',{exact:true}).count(),0);
   assert.equal(await page.getByLabel('Application answers',{exact:true}).count(),0);
-  assert.equal(await companies.inputValue(),'');
+  assert.equal(await companies.nth(0).inputValue(),'Existing, Inc.');
+  assert.equal(await companies.nth(1).inputValue(),'Former employer');
   assert.equal(await discipline.inputValue(),'unknown');
-  for(const [names,choice] of [[['Example, Inc.','A & B'],'yes'],[[],'no']]){
-    await companies.fill([...names,...names].join('\n'));
+  await add.click();
+  await companies.last().fill('A & B');
+  await remove.nth(1).click();
+  await add.click();
+  await companies.last().fill('A & B');
+  await add.click();
+  assert.deepEqual(await companies.evaluateAll(inputs=>inputs.map(input=>input.value)),['Existing, Inc.','A & B','A & B','']);
+  for(const [names,choice] of [[['Existing, Inc.','A & B'],'yes'],[[],'no']]){
+    if(!names.length)while(await remove.count())await remove.first().click();
     await discipline.selectOption(choice);
     await Promise.all([page.waitForResponse(response=>response.url().endsWith('/api/profile')),
       page.locator('#profile-form [type=submit]').click()]);
     await page.reload();
-    assert.equal(await companies.inputValue(),names.join('\n'));
     assert.equal(await discipline.inputValue(),choice);
+    assert.deepEqual(await companies.evaluateAll(inputs=>inputs.map(input=>input.value)),names);
     assert.deepEqual(fixture.data.profile.preferences.relative_companies,names);
     assert.equal(Object.hasOwn(fixture.data.profile.preferences,'application_answers'),false);
   }

@@ -145,7 +145,7 @@ main[data-view="settings"] .panel-heading{align-items:center;flex-wrap:wrap}
 @media(max-width:650px){.website-list-row>span{display:none}}
 
 .profile-detail-list{margin-top:24px;padding-top:20px;border-top:1px solid var(--border)}
-.profile-detail-list .panel-heading h3{margin:0;font-size:14px;font-weight:600}
+.profile-detail-list .panel-heading :is(h3,h4){margin:0;font-size:14px;font-weight:600}
 
 /* Experience and desired seniority belong to the same compact role row. */
 .role-preference-row .role-levels{flex:0 1 auto;width:max-content;min-width:min(180px,100%);max-width:min(720px,100%)}

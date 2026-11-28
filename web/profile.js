@@ -6,7 +6,7 @@ import {entryFields,timelineRow,storedDate,readEducationDate,updateEntryDuration
 
 const sections={education:['Education',entryFields.education],experiences:['Professional experience',entryFields.experiences],languages:['Languages',['name','proficiency']],industries:['Roles and job levels',['name','years','levels']],websites:['Websites',['type','url']],authorizations:['Work authorization',['country','sponsorship_required','immigration_status','restrictions']]};
 const labels={legal_name:'Legal name',family_name:'Family name',preferred_name:'Preferred name · optional',email:'Email',street_address:'Street address',phone_type:'Phone type',city:'City',region:'State or region',postal_code:'Postal code · optional',country:'Country or area'};
-const addLabels={education:'education',experiences:'experience',languages:'language',industries:'role preference',websites:'website',authorizations:'work authorization'};
+const addLabels={education:'education',experiences:'experience',languages:'language',industries:'role preference',relative_companies:'company',websites:'website',authorizations:'work authorization'};
 const confirmationTag='<span class="badge" data-profile-confirmation>Draft</span>';
 const yesNo=[['unknown','Not answered'],['yes','Yes'],['no','No']];
 const disclosures=[...yesNo,['decline','Prefer not to disclose']];
@@ -23,12 +23,13 @@ function field(name,key,value,options=null) {
 
 // Repeated sections retain their labels and empty-state status.
 function sectionMarkup(section,profile,embedded=false) {
-  const [title]=sections[section],renderRow=entryFields[section]?timelineRow:profileListRow;
-  const heading=embedded?'h3':'h2';
-  const affiliations=section==='industries'?`<label for="relative-companies">Relatives’ company affiliations</label>
-    <textarea id="relative-companies" name="relative_companies" rows="2" aria-describedby="relative-companies-help">${h((profile.preferences.relative_companies||[]).join('\n'))}</textarea>
-    <p id="relative-companies-help" class="field-help">Enter one company name per line. Leave blank for no affiliations.</p>`:'';
-  return `<section class="${embedded?'profile-detail-list':'panel'}"><div class="panel-heading"><div><${heading}>${title}</${heading}></div>${embedded?'':confirmationTag}</div><div>${(profile[section]||[]).map((row,index)=>renderRow(section,row,index,addLabels[section])).join('')||'<p class="muted small">No entries.</p>'}</div><button type="button" class="quiet profile-add" data-add="${section}">Add ${addLabels[section]}</button>${affiliations}</section>`;
+  const companies=section==='relative_companies';
+  const title=companies?'Relatives’ company affiliations':sections[section][0];
+  const rows=(companies?profile.preferences[section]:profile[section])||[];
+  const renderRow=entryFields[section]?timelineRow:profileListRow;
+  const heading=companies?'h4':embedded?'h3':'h2';
+  const affiliations=section==='industries'?sectionMarkup('relative_companies',profile,true):'';
+  return `<section class="${embedded?'profile-detail-list':'panel'}"><div class="panel-heading"><div><${heading}>${title}</${heading}></div>${embedded?'':confirmationTag}</div><div>${rows.map((row,index)=>renderRow(section,row,index,addLabels[section])).join('')||'<p class="muted small">No entries.</p>'}</div><button type="button" class="quiet profile-add" data-add="${section}">Add ${addLabels[section]}</button>${affiliations}</section>`;
 }
 
 // Preserve nonrendered identity facts while reading explicit choices from the form.
@@ -46,7 +47,7 @@ function readForm(form) {
   result.skills=String(values.get('skills')||'').split(/[,\n]/).map(item=>item.trim()).filter(Boolean);
   result.preferences={levels:[...new Set(result.industries.flatMap(row=>row.levels))],disability:values.get('disability'),
     age_18_or_older:values.get('age_18_or_older')||'unknown',
-    relative_companies:[...new Set(String(values.get('relative_companies')||'').split(/\r?\n/).map(line=>line.trim()).filter(Boolean))],
+    relative_companies:values.getAll('relative_companies').map(name=>name.trim()),
     disciplinary_action:values.get('disciplinary_action')||'unknown',veteran:values.get('veteran'),veteran_service:values.get('veteran_service')||'unknown',
     race:String(values.get('race')||'').trim(),hispanic:values.get('hispanic'),gender:String(values.get('gender')||'').trim()};
   result.confirmed=values.has('confirmed');
@@ -125,7 +126,7 @@ function preferencesMarkup(profile) {
     <div class="form-grid"><label class="wide">Skills<textarea name="skills" rows="3" placeholder="Python, project management, financial modeling">${h((profile.skills||[]).join(', '))}</textarea></label></div><fieldset class="profile-languages"><legend>Languages</legend>${languages}<button type="button" class="quiet profile-add" data-add="languages">Add language</button></fieldset>${sectionMarkup('industries',profile,true)}</section>
     <section class="panel"><div class="panel-heading"><div><h2>Optional disclosures</h2></div>${confirmationTag}</div>
     <div class="form-grid">${field('disability','Disability',profile.preferences.disability,disclosures)}
-    ${field('disciplinary_action','Disciplinary action (terminated or asked to resign from a job or academic institution)',profile.preferences.disciplinary_action||'unknown',yesNo)}
+    ${field('disciplinary_action','Disciplinary action',profile.preferences.disciplinary_action||'unknown',yesNo)}
     ${field('veteran_service','Are you a veteran?',profile.preferences.veteran_service||'unknown',disclosures)}
     <div data-protected-veteran ${profile.preferences.veteran_service==='no'?'hidden':''}>${field('veteran','Protected veteran status',profile.preferences.veteran,disclosures)}</div>${field('race','Race',profile.preferences.race||'')}${field('hispanic','Hispanic / Latino',profile.preferences.hispanic||'unknown',disclosures)}${field('gender','Gender',profile.preferences.gender||'')}</div></section>`;
 }
@@ -136,8 +137,10 @@ function handleProfileClick(event,form,root) {
   if(!button)return;
   if(button.dataset.add||button.dataset.remove) {
     draft=readForm(form);draft.confirmed=false;
-    if(button.dataset.add)draft[button.dataset.add].push(button.dataset.add==='industries'?{levels:[]}:{});
-    else draft[button.dataset.remove].splice(Number(button.dataset.index),1);
+    const section=button.dataset.add||button.dataset.remove;
+    const rows=section==='relative_companies'?draft.preferences[section]:draft[section];
+    if(button.dataset.add)rows.push(section==='relative_companies'?'':section==='industries'?{levels:[]}:{});
+    else rows.splice(Number(button.dataset.index),1);
     renderProfile(root);
   }
   if(button.dataset.deleteUpload)deleteDocument(button.dataset.deleteUpload,()=>{
@@ -159,6 +162,7 @@ function handleProfileClick(event,form,root) {
 async function saveProfile(form,root) {
   await busy(form.querySelector('[type=submit]'),async()=>{
     const submitted=readForm(form),payload={...submitted};draft=submitted;
+    payload.preferences={...submitted.preferences,relative_companies:[...new Set(submitted.preferences.relative_companies.filter(Boolean))]};
     for(const section of Object.keys(sections))payload[section]=payload[section].filter(row=>Object.entries(row).some(([key,value])=>key!=='status'&&(Array.isArray(value)?value.length:value)));
     const saved=await persistProfile(payload);await refresh();
     const current=form.isConnected?readForm(form):draft;

@@ -14,7 +14,7 @@ async function route(route,fixture) {
 // Adding entries stays keyboard accessible and below existing rows in every repeated section.
 async function addChecks(page) {
   const controls=page.locator('#profile-form [data-add]');
-  assert.deepEqual(await controls.allTextContents(),['Add website','Add education','Add experience','Add work authorization','Add language','Add role preference']);
+  assert.deepEqual(await controls.allTextContents(),['Add website','Add education','Add experience','Add work authorization','Add language','Add role preference','Add company']);
   assert.equal(await page.locator('#profile-form .panel-heading [data-add]').count(),0);
   assert.ok(await controls.evaluateAll(buttons=>buttons.every(button=>
     [...button.parentElement.querySelectorAll('[data-row]')].every(row=>row.compareDocumentPosition(button)&Node.DOCUMENT_POSITION_FOLLOWING))));

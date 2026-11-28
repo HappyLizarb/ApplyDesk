@@ -44,7 +44,7 @@ function profileForm(profile) {
     });
   }
   for(const [name,value] of Object.entries({skills:profile.skills.join(', '),disability:profile.preferences.disability,
-    relative_companies:profile.preferences.relative_companies.join('\n'),disciplinary_action:profile.preferences.disciplinary_action,
+    relative_companies:profile.preferences.relative_companies,disciplinary_action:profile.preferences.disciplinary_action,
     veteran:profile.preferences.veteran,veteran_service:profile.preferences.veteran_service,gender:profile.preferences.gender,confirmed:'on'}))fields.set(name,control(value));
   fields.get('confirmed').checked=profile.confirmed;
   fields.get('experiences.0.start').value='Jun 2025';fields.get('experiences.0.end').value='Aug 2025';
@@ -176,7 +176,7 @@ test('missing runtime schema prevents POST and retains the local draft',async()=
 test('older schemas and discarded preference fields preserve the draft',async()=>{
   state.data.profile_schema=10;
   form.fields.get('gender').value='Prefer not to disclose';
-  form.fields.get('relative_companies').value='Company & Co.';
+  form.fields.get('relative_companies').value=['Company & Co.'];
   form.emit('input',{target:{name:'relative_companies'}});
   form.emit('submit',{preventDefault(){}});
   await new Promise(resolve=>setImmediate(resolve));
@@ -192,7 +192,7 @@ test('older schemas and discarded preference fields preserve the draft',async()=
     assert.match(document.querySelector('#toast').textContent,/did not retain/);
     renderProfile(root);
     assert.match(root.innerHTML,/name="gender" type="text" value="Prefer not to disclose"/);
-    assert.match(root.innerHTML,/>Company &amp; Co\.<\/textarea>/);
+    assert.match(root.innerHTML,/value="Company &amp; Co\."/);
   }
 });
 

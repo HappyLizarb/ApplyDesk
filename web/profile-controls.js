@@ -17,12 +17,14 @@ export function profileOptions(choices,selected) {
   }).join('');
 }
 
-// The three compact lists share the same editing layout and removal control.
+// Compact profile lists share the same editing layout and removal control.
 export function profileListRow(section,row,index,entryLabel) {
   const prefix=`profile-${section}-${index}`,name=`${section}.${index}`;
   const control=(key,label,id=key)=>`id="${prefix}-${id}" name="${name}.${key}" aria-label="${label}"`;
   let primary,secondary,extra='',rowClass='';
-  if(section==='websites'){
+  if(section==='relative_companies'){
+    primary=`<input name="relative_companies" aria-label="Company name" value="${h(row)}" placeholder="Company name" maxlength="10000">`;
+  }else if(section==='websites'){
     rowClass=' website-list-row';
     primary=`<select ${control('type','Website type')}>${profileOptions(websiteTypes,row.type)}</select>`;
     secondary=`<input ${control('url','Website URL')} type="url" value="${h(row.url)}" placeholder="https://" maxlength="10000">`;
@@ -37,7 +39,8 @@ export function profileListRow(section,row,index,entryLabel) {
     secondary=`<select ${control('sponsorship_required','If sponsorship is needed','sponsorship')}>${profileOptions(sponsorshipChoices,sponsorship)}</select>`;
     extra=authorizationControls(row,index,row.country==='US'&&sponsorship==='no');
   }
-  return `<div class="profile-list-row${rowClass}" data-row="${section}"><div class="list-primary">${primary}</div><span aria-hidden="true">·</span><div class="list-secondary">${secondary}</div>${extra}
+  const secondaryField=secondary?`<span aria-hidden="true">·</span><div class="list-secondary">${secondary}</div>`:'';
+  return `<div class="profile-list-row${rowClass}" data-row="${section}"><div class="list-primary">${primary}</div>${secondaryField}${extra}
     <button type="button" class="list-remove quiet danger" data-remove="${section}" data-index="${index}" aria-label="Remove ${entryLabel} entry ${index+1}">Remove</button></div>`;
 }
 
