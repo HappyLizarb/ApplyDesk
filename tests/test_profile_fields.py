@@ -171,13 +171,14 @@ class ProfileSaveTests(unittest.TestCase):
 
     def test_state_advertises_loaded_profile_schema(self):
         state = self.workspace.state()
-        self.assertEqual(state["profile_schema"], 10)
+        self.assertEqual(state["profile_schema"], 11)
         self.assertEqual(state["profile_schema"], PROFILE_SCHEMA_VERSION)
         self.assertIn("languages", state["profile"])
         self.secrets.get.assert_not_called()
 
     def test_saved_draft_survives_workspace_reopen(self):
         source = self.draft()
+        source["preferences"].update(relative_companies=["Studio A", "Studio B"], disciplinary_action="no")
         saved = self.workspace.save_profile(source)
         self.assertFalse(saved["confirmed"])
         self.assertEqual(saved["facts"], [])
@@ -185,6 +186,8 @@ class ProfileSaveTests(unittest.TestCase):
         self.workspace = Workspace(self.directory.name, secrets=self.secrets)
         restored = self.workspace.profile()
         self.assertEqual(restored, saved)
+        self.assertEqual(restored["preferences"]["relative_companies"], ["Studio A", "Studio B"])
+        self.assertEqual(restored["preferences"]["disciplinary_action"], "no")
         for section in ("education", "experiences", "projects", "languages", "authorizations"):
             self.assertEqual(restored[section], source[section])
         self.assertEqual(restored["revision"], 1)
@@ -193,13 +196,18 @@ class ProfileSaveTests(unittest.TestCase):
     def test_confirmed_save_retains_new_facts_for_application_context(self):
         source = self.draft()
         source["confirmed"] = True
-        source["preferences"].update(age_18_or_older="yes", application_answers=["Use the highest posted base salary."])
+        source["preferences"].update(age_18_or_older="yes", relative_companies=[" Studio A ", "Studio A"], disciplinary_action="yes")
         source["education"][0]["start"] = "2023-08-20"
         saved = self.workspace.save_profile(source)
         facts = {fact["id"]: fact["text"] for fact in saved["facts"]}
         self.assertTrue(saved["confirmed"])
         self.assertEqual(facts["preferences.age_18_or_older"], "18 years or older: yes")
-        self.assertEqual(facts["preferences.application_answers.0"], "Use the highest posted base salary.")
+        self.assertEqual(saved["preferences"]["relative_companies"], ["Studio A"])
+        self.assertEqual(facts["preferences.disciplinary_action"], "yes")
+        screened = model_profile(saved)
+        self.assertNotIn("relative_companies", screened["preferences"])
+        self.assertNotIn("disciplinary_action", screened["preferences"])
+        self.assertFalse(any(fact["id"] == "preferences.disciplinary_action" for fact in screened["facts"]))
         self.assertIn("start: 2023-08-20", facts["education.0"])
         self.assertEqual(facts["identity.postal_code"], "SW1A 1AA")
         self.assertIn("gpa: 3.85; gpa_scale: 4.00", facts["education.0"])
@@ -207,6 +215,44 @@ class ProfileSaveTests(unittest.TestCase):
         self.assertIn("location: Remote", facts["experiences.0"])
         self.assertIn("start: 2025-03", facts["projects.0"])
         self.assertIn("Professional working proficiency", facts["languages.0"])
+
+    def test_legacy_free_text_does_not_supply_answers_after_update(self):
+        """Past free text cannot become a new affiliation, disclosure, or citable answer."""
+        source = self.draft()
+        source.update(confirmed=True, revision=8)
+        for key in ("disciplinary_action", "relative_companies"):
+            del source["preferences"][key]
+        source["preferences"]["application_answers"] = ["Yes for Example"]
+        retired = {"id": "preferences.application_answers.0", "kind": "application_answer",
+                   "text": "Yes for Example", "confirmed": True}
+        source["facts"] = [retired]
+        self.workspace.store.put("profile", "main", source)
+        restored = self.workspace.profile()
+        self.assertEqual(restored["preferences"]["disciplinary_action"], "unknown")
+        self.assertEqual(restored["preferences"]["relative_companies"], [])
+        for current in (restored, model_profile(source), self.workspace.save_profile(source)):
+            self.assertNotIn("application_answers", current["preferences"])
+            self.assertNotIn(retired, current["facts"])
+        self.assertEqual(restored["revision"], 8)
+
+    def test_affiliations_and_discipline_support_old_clients_and_explicit_clearing(self):
+        """An older form can still edit a profile without deleting the newer answers."""
+        source = self.draft()
+        source["preferences"].update(relative_companies=["Studio A"], disciplinary_action="yes")
+        self.workspace.save_profile(source)
+        for key in ("disciplinary_action", "relative_companies"):
+            del source["preferences"][key]
+        saved = self.workspace.save_profile(source)
+        self.assertEqual(saved["preferences"]["relative_companies"], ["Studio A"])
+        self.assertEqual(saved["preferences"]["disciplinary_action"], "yes")
+        saved["preferences"].update(relative_companies=[], disciplinary_action="unknown")
+        cleared = self.workspace.save_profile(saved)
+        self.assertEqual(cleared["preferences"]["relative_companies"], [])
+        self.assertEqual(cleared["preferences"]["disciplinary_action"], "unknown")
+        for key, value in (("relative_companies", "Studio A"), ("relative_companies", [42]),
+                           ("disciplinary_action", "decline")):
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                self.workspace.save_profile({**cleared, "preferences": {**cleared["preferences"], key: value}})
 
     def test_legacy_gpa_read_does_not_write_or_reconfirm_the_profile(self):
         """Opening schema-five controls must not change persisted legacy profile bytes."""

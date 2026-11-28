@@ -2,14 +2,14 @@
 
 from .account_scope import bound_signin_host, employer_key, is_registration_link, is_signin_switch
 from .workday_skill import adapt_context
-from .agent_context import with_application_source
+from .agent_context import form_profile, with_application_source
 from .native_browser import BrowserError
 from .employer_accounts import EmployerAccounts
 from .native_agent_prompt import PAGE_PROMPT
 from .native_page import return_to_listing
 from .native_window_recovery import observe_application
 from .native_application_io import NativeInputRequired, authenticate, upload
-from .native_evidence import agreement_facts, native_point, observation, public_page, review_context, validate_operation
+from .native_evidence import agreement_facts, native_point, observation, page_text, public_page, review_context, validate_operation
 from .native_review import NativeReviewError, cite_missing_answers, retained_resume, review_feedback, review_surface, validate_review
 
 # Only fixed local diagnostics may enter persistent history; other exceptions can contain private input.
@@ -145,11 +145,10 @@ class NativeAgent:
             if host:
                 account["verified_signin_host"] = host
         account_fields = ("account", "account_origin", "has_password", "employer_account_id", "registration_pending", "verified_signin_host")
-        job_context = {key: self.job.get(key) for key in ("id", "company", "title")}
+        job_context = {key: self.job.get(key) for key in ("id", "company", "title", "compensation")}
         job_context["listing_company"] = (self.job.get("public_source") or {}).get("company", "")
         return {"job": job_context,
-                "profile": {**self.profile, **{key: [fact for fact in self.profile.get(key, [])
-                    if fact.get("kind") != "application_agreement"] for key in ("facts", "chat_evidence")}},
+                "profile": form_profile(self.profile, page_text(self.page)),
                 "page": public_page(self.page), "documents": documents,
                 "account": {key: account[key] for key in account_fields if key in account}, "recent_actions": self.history[-6:],
                 **self.review_feedback,

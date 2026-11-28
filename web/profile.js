@@ -8,7 +8,8 @@ const sections={education:['Education',entryFields.education],experiences:['Prof
 const labels={legal_name:'Legal name',family_name:'Family name',preferred_name:'Preferred name · optional',email:'Email',street_address:'Street address',phone_type:'Phone type',city:'City',region:'State or region',postal_code:'Postal code · optional',country:'Country or area'};
 const addLabels={education:'education',experiences:'experience',languages:'language',industries:'role preference',websites:'website',authorizations:'work authorization'};
 const confirmationTag='<span class="badge" data-profile-confirmation>Draft</span>';
-const disclosures=[['unknown','Not answered'],['yes','Yes'],['no','No'],['decline','Prefer not to disclose']];
+const yesNo=[['unknown','Not answered'],['yes','Yes'],['no','No']];
+const disclosures=[...yesNo,['decline','Prefer not to disclose']];
 let draft=null;
 const imports=[];
 
@@ -24,7 +25,10 @@ function field(name,key,value,options=null) {
 function sectionMarkup(section,profile,embedded=false) {
   const [title]=sections[section],renderRow=entryFields[section]?timelineRow:profileListRow;
   const heading=embedded?'h3':'h2';
-  return `<section class="${embedded?'profile-detail-list':'panel'}"><div class="panel-heading"><div><${heading}>${title}</${heading}></div>${embedded?'':confirmationTag}</div><div>${(profile[section]||[]).map((row,index)=>renderRow(section,row,index,addLabels[section])).join('')||'<p class="muted small">No entries.</p>'}</div><button type="button" class="quiet profile-add" data-add="${section}">Add ${addLabels[section]}</button></section>`;
+  const affiliations=section==='industries'?`<label for="relative-companies">Relatives’ company affiliations</label>
+    <textarea id="relative-companies" name="relative_companies" rows="2" aria-describedby="relative-companies-help">${h((profile.preferences.relative_companies||[]).join('\n'))}</textarea>
+    <p id="relative-companies-help" class="field-help">Enter one company name per line. Leave blank for no affiliations.</p>`:'';
+  return `<section class="${embedded?'profile-detail-list':'panel'}"><div class="panel-heading"><div><${heading}>${title}</${heading}></div>${embedded?'':confirmationTag}</div><div>${(profile[section]||[]).map((row,index)=>renderRow(section,row,index,addLabels[section])).join('')||'<p class="muted small">No entries.</p>'}</div><button type="button" class="quiet profile-add" data-add="${section}">Add ${addLabels[section]}</button>${affiliations}</section>`;
 }
 
 // Preserve nonrendered identity facts while reading explicit choices from the form.
@@ -42,8 +46,8 @@ function readForm(form) {
   result.skills=String(values.get('skills')||'').split(/[,\n]/).map(item=>item.trim()).filter(Boolean);
   result.preferences={levels:[...new Set(result.industries.flatMap(row=>row.levels))],disability:values.get('disability'),
     age_18_or_older:values.get('age_18_or_older')||'unknown',
-    application_answers:[...new Set(String(values.get('application_answers')||'').split(/\r?\n/).map(line=>line.trim()).filter(Boolean))],
-    veteran:values.get('veteran'),veteran_service:values.get('veteran_service')||'unknown',
+    relative_companies:[...new Set(String(values.get('relative_companies')||'').split(/\r?\n/).map(line=>line.trim()).filter(Boolean))],
+    disciplinary_action:values.get('disciplinary_action')||'unknown',veteran:values.get('veteran'),veteran_service:values.get('veteran_service')||'unknown',
     race:String(values.get('race')||'').trim(),hispanic:values.get('hispanic'),gender:String(values.get('gender')||'').trim()};
   result.confirmed=values.has('confirmed');
   return result;
@@ -77,7 +81,7 @@ export function renderProfile(root) {
   const identity=['legal_name','family_name','preferred_name','email','phone','phone_type','street_address','city','region','postal_code','country'].map(key=>key==='phone'?phoneFields(profile.identity):field('identity.'+key,key,profile.identity[key]||'',key==='country'?countryOptions:key==='phone_type'?[['','Not specified'],['mobile','Mobile'],['home','Home / landline']]:null)).join('');
   root.innerHTML=`<div class="page-head"><h1>Profile</h1><a class="small" href="/api/profile/export" download="applydesk-profile.json">Export JSON</a></div>
     <form id="profile-form">${importMarkup()}<section class="panel"><div class="panel-heading"><div><h2>Personal details</h2></div>${confirmationTag}</div>
-    <div class="form-grid three">${identity}${field('age_18_or_older','Are you 18 or older?',profile.preferences.age_18_or_older||'unknown',[['unknown','Not answered'],['yes','Yes'],['no','No']])}</div>${sectionMarkup('websites',profile,true)}</section>${Object.keys(sections).filter(section=>!['languages','industries','websites'].includes(section)).map(section=>sectionMarkup(section,profile)).join('')}${preferencesMarkup(profile)}<div class="form-footer"><label class="check-label"><input type="checkbox" name="confirmed" ${profile.confirmed?'checked':''}>I reviewed these facts and confirm they are accurate.</label><button class="primary" type="submit">Save profile</button></div></form>`;
+    <div class="form-grid three">${identity}${field('age_18_or_older','Are you 18 or older?',profile.preferences.age_18_or_older||'unknown',yesNo)}</div>${sectionMarkup('websites',profile,true)}</section>${Object.keys(sections).filter(section=>!['languages','industries','websites'].includes(section)).map(section=>sectionMarkup(section,profile)).join('')}${preferencesMarkup(profile)}<div class="form-footer"><label class="check-label"><input type="checkbox" name="confirmed" ${profile.confirmed?'checked':''}>I reviewed these facts and confirm they are accurate.</label><button class="primary" type="submit">Save profile</button></div></form>`;
   const form=root.querySelector('#profile-form');
   bindProfileControls(form);
   updateProfileBadges(form,profile.confirmed&&!draft);
@@ -118,10 +122,10 @@ function updateVeteranFollowUp(form,service) {
 function preferencesMarkup(profile) {
   const languages=(profile.languages||[]).map(languageRow).join('')||'<p class="muted small">No languages added.</p>';
   return `<section class="panel"><div class="panel-heading"><div><h2>Skills and preferences</h2></div>${confirmationTag}</div>
-    <div class="form-grid"><label class="wide">Skills<textarea name="skills" rows="3" placeholder="Python, project management, financial modeling">${h((profile.skills||[]).join(', '))}</textarea></label>
-    <label class="wide">Application answers<textarea name="application_answers" rows="3" placeholder="One answer per line">${h((profile.preferences.application_answers||[]).join('\n'))}</textarea></label></div><fieldset class="profile-languages"><legend>Languages</legend>${languages}<button type="button" class="quiet profile-add" data-add="languages">Add language</button></fieldset>${sectionMarkup('industries',profile,true)}</section>
+    <div class="form-grid"><label class="wide">Skills<textarea name="skills" rows="3" placeholder="Python, project management, financial modeling">${h((profile.skills||[]).join(', '))}</textarea></label></div><fieldset class="profile-languages"><legend>Languages</legend>${languages}<button type="button" class="quiet profile-add" data-add="languages">Add language</button></fieldset>${sectionMarkup('industries',profile,true)}</section>
     <section class="panel"><div class="panel-heading"><div><h2>Optional disclosures</h2></div>${confirmationTag}</div>
     <div class="form-grid">${field('disability','Disability',profile.preferences.disability,disclosures)}
+    ${field('disciplinary_action','Disciplinary action (terminated or asked to resign from a job or academic institution)',profile.preferences.disciplinary_action||'unknown',yesNo)}
     ${field('veteran_service','Are you a veteran?',profile.preferences.veteran_service||'unknown',disclosures)}
     <div data-protected-veteran ${profile.preferences.veteran_service==='no'?'hidden':''}>${field('veteran','Protected veteran status',profile.preferences.veteran,disclosures)}</div>${field('race','Race',profile.preferences.race||'')}${field('hispanic','Hispanic / Latino',profile.preferences.hispanic||'unknown',disclosures)}${field('gender','Gender',profile.preferences.gender||'')}</div></section>`;
 }
@@ -215,7 +219,7 @@ function showDraft(extracted,current,root) {
 
 // An older running server must never receive fields it would silently discard.
 async function persistProfile(payload) {
-  if(!Number.isInteger(state.data.profile_schema)||state.data.profile_schema<10){
+  if(!Number.isInteger(state.data.profile_schema)||state.data.profile_schema<11){
     throw new Error('ApplyDesk needs a full restart to save these fields. Your edits are still on this page; keep a copy before quitting.');
   }
   const saved=await api('profile',payload);
@@ -227,12 +231,12 @@ async function persistProfile(payload) {
   }
   if(payload.identity.phone_type!==undefined&&saved.identity.phone_type!==payload.identity.phone_type)throw new Error('The phone type was not saved. Restart ApplyDesk and try again.');
   if(payload.identity.postal_code!==undefined&&saved.identity.postal_code!==payload.identity.postal_code)throw new Error('The postal code was not saved. Your edits are still on this page. Restart ApplyDesk and try again.');
-  for(const key of ['disability','veteran','veteran_service','race','hispanic','gender']){
+  for(const key of ['disability','veteran','veteran_service','race','hispanic','gender','disciplinary_action']){
     if(saved.preferences[key]!==payload.preferences[key])throw new Error('ApplyDesk did not retain your disclosure choices. Your edits are still on this page.');
   }
   if(saved.preferences.age_18_or_older!==payload.preferences.age_18_or_older||
-     JSON.stringify(saved.preferences.application_answers)!==JSON.stringify(payload.preferences.application_answers)){
-    throw new Error('ApplyDesk did not retain your application answers. Your edits are still on this page.');
+     JSON.stringify(saved.preferences.relative_companies)!==JSON.stringify(payload.preferences.relative_companies)){
+    throw new Error('ApplyDesk did not retain your profile preferences. Your edits are still on this page.');
   }
   for(const [section,[,fields]] of Object.entries(sections)){
     const expected=payload[section],actual=saved[section];

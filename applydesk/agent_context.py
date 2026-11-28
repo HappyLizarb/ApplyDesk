@@ -6,7 +6,11 @@ import re
 from datetime import date
 from urllib.parse import urlsplit
 
+from .application_policy import EXPECTED_BASE_SALARY
+from .application_terms import disciplinary_question
+from .discovery import canonical_url
 from .profile import model_profile
+from .public_source import validate_public_source
 
 
 def screening_profile(workspace, profile, resume_choice):
@@ -21,12 +25,69 @@ def screening_profile(workspace, profile, resume_choice):
     return context
 
 
+def employer_answers(profile, job):
+    """Derive yes/no answers for this employer from confirmed company names."""
+    answers = []
+    if profile.get("confirmed") is not True:
+        return answers
+    def company_key(name):
+        words = " ".join(re.sub(r"[.,]", "", name.casefold()).split())
+        return re.sub(r"\s+(?:inc|incorporated|corp|corporation|llc|ltd|limited|plc)$", "", words)
+
+    company = str(job.get("company") or "").strip()
+    # A board or account label may name a recruiter instead of the employer on the requisition.
+    source = job.get("public_source")
+    if source is not None:
+        try:
+            validate_public_source(source)
+            targets = (job.get("url"), (job.get("recommendation_source") or {}).get("employer_url"))
+            if source["company"] != company and not any(url and canonical_url(url) == canonical_url(source["url"]) for url in targets):
+                return answers
+            company = source["company"].strip()
+        except ValueError:
+            return answers
+    name = company_key(company)
+    if name in {"", "unknown", "unknown company", "not assessed", "company", "employer", "n/a"}:
+        return answers
+    history = [company_key(row.get("company", "")) for row in profile.get("experiences", [])]
+    relatives = [company_key(value) for value in profile.get("preferences", {}).get("relative_companies", [])]
+    answers.append(("application.relative_affiliation", f"Relative affiliated with {company}: {'yes' if name in relatives else 'no'}."))
+    if name in history or (history and all(history)):
+        answers.append(("application.employment_history", f"Listed employment at {company}: {'yes' if name in history else 'no'}."))
+    return answers
+
+
+def application_facts(profile, job):
+    """Give each job fresh, citable company answers and the applicant's standing salary preference."""
+    answers = employer_answers(profile, job) + [("application.expected_base_salary", EXPECTED_BASE_SALARY)]
+    return [{"id": key, "kind": "salary_preference" if key == "application.expected_base_salary" else "application_answer",
+             "text": value, "confirmed": True} for key, value in answers]
+
+
+def form_profile(profile, wording, *, draft=False):
+    """Expose the disciplinary answer only on a corresponding form; keep other employers private."""
+    result = model_profile(profile) if draft else dict(profile)
+    pref = dict(result.get("preferences", {}))
+    pref.pop("relative_companies", None)
+    pref.pop("disciplinary_action", None)
+    facts = [fact for fact in result.get("facts", []) if fact["id"] != "preferences.disciplinary_action"]
+    if profile.get("confirmed"):
+        facts.extend(fact for fact in profile.get("facts", []) if fact["id"] == "preferences.disciplinary_action"
+                     and fact.get("confirmed") and disciplinary_question(wording, fact.get("text")))
+    if draft:
+        return {**result, "preferences": pref, "facts": facts}
+    return {**result, "preferences": pref, "facts": [fact for fact in facts if fact.get("kind") != "application_agreement"],
+            "chat_evidence": [fact for fact in result.get("chat_evidence", []) if fact.get("kind") != "application_agreement"]}
+
+
 def with_application_source(profile, job):
     """Supply the local signing date and known discovery source only while applying."""
     host = (urlsplit(job.get("url", "")).hostname or "").lower()
     today = date.today()
     facts = [item for item in profile.get("facts", []) if item.get("id") != "application.discovery_source"
-             and not item.get("id", "").startswith("application.signing_date.")]
+             and not item.get("id", "").startswith("application.signing_date.")
+             and item.get("id") not in {"application.relative_affiliation", "application.employment_history", "application.expected_base_salary"}]
+    facts.extend(application_facts(profile, job))
     facts.append({"id": f"application.signing_date.{today.isoformat()}", "kind": "application_date",
                   "text": f"Today's local date for a signature or certification: {today:%Y-%m-%d} ({today:%m/%d/%Y}).",
                   "confirmed": True})
@@ -84,8 +145,8 @@ def source_record(workspace, identity):
 
 
 def inputs_for(workspace, task):
-    """Keep passwords and voluntary disclosures outside every agent task context."""
-    profile = model_profile(workspace.profile())
+    """Provide only the profile information needed by this kind of draft."""
+    profile = workspace.profile()
     if task["kind"] == "profile":
         record = source_record(workspace, task["target_id"])
         readable = record.get("text", "").strip() or record.get("blocks") or record.get("image_paths")
@@ -96,7 +157,7 @@ def inputs_for(workspace, task):
         record = source_record(workspace, task["target_id"])
         if record.get("document_type") != "cover" or record["kind"] != "document":
             raise ValueError("Only a generated cover letter can receive chat edits.")
-        return {"profile": profile, "document": record, "instruction": task["instruction"],
+        return {"profile": model_profile(profile), "document": record, "instruction": task["instruction"],
                 "template": source_record(workspace, record["template_id"])}
     job = workspace.store.get("job", task["target_id"])
     if not job or job.get("removed_at") or job["status"] == "submitted" or job.get("manual_status") in {"submitted", "skipped"}:
@@ -105,7 +166,9 @@ def inputs_for(workspace, task):
     template = source_record(workspace, template_id) if template_id else None
     if template and (template["kind"] != "cover_template" or not template.get("confirmed")):
         template = None
-    return {"profile": profile, "job": {key: job.get(key, "") for key in ("id", "company", "title", "url", "details")},
+    context = form_profile(profile, (job.get("details") or "") + "\n" + task.get("instruction", ""), draft=True)
+    context["facts"].extend(application_facts(profile, job))
+    return {"profile": context, "job": {key: job.get(key, "") for key in ("id", "company", "title", "url", "details", "compensation")},
             "resume_categories": workspace.resumes.categories(), "resumes": resume_sources(workspace), "template": template}
 
 

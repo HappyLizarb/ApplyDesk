@@ -13,7 +13,7 @@ function workspace() {
   const template = {id: 'template', kind: 'cover_template', filename: 'Letter template.docx', confirmed: true, source_path: 'template/original.docx', pdf_path: 'template/preview.pdf'};
   return {
     settings: {cover_template_id: 'template'}, templates: [template], resumes: [resume], resume_categories: ['General', 'Publishing'],
-    documents: [], library: [], chat_tasks: [], profile_imports: [], tasks: [], discovery: {}, profile_schema: 10,
+    documents: [], library: [], chat_tasks: [], profile_imports: [], tasks: [], discovery: {}, profile_schema: 11,
     profile: {identity: {}, education: [], experiences: [], projects: [], authorizations: [], websites: [], skills: [],
       industries: [{name: 'Publishing', years: '0', levels: ['Entry level']}], preferences: {levels: ['Entry level'], disability: 'unknown', veteran: 'unknown'}, confirmed: true},
     jobs: [{id: 'job', company: 'Example', title: 'Publishing Assistant', status: 'submitted', resume_id: 'resume', cover_state: 'not_required', history: []}],

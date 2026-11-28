@@ -13,6 +13,10 @@ Download **ApplyDesk.dmg** from [GitHub Releases](https://github.com/HappyLizarb
 3. In **Chat**, describe the roles, locations, resume, and any application limit. Say whether to prepare drafts or submit applications. Shortcuts elsewhere in the app open an editable message. Send it when ready.
 4. Follow progress in **Applications**. ApplyDesk saves the attempt before submission and marks a job submitted once it sees an employer confirmation. If a required answer is missing or the outcome is uncertain, the tracker shows what needs attention.
 
+Under **Roles and job levels**, enter one company per line if you have relatives affiliated there. An empty list means no affiliations. The agent uses **Professional experience** for employer-history questions and the optional **Disciplinary action** answer for matching disclosures.
+
+For expected base pay, the agent uses the top of the posted base range for the role and location. When base pay is unlisted, it uses 80,000 per year in the requested currency or the equivalent for the form's pay period. The agent accepts required application terms and policies.
+
 Keep ApplyDesk open. While the agent is working, ApplyDesk prevents idle system sleep and allows the display to sleep. Stop in chat to pause. Closing the lid, locking the session, choosing Sleep, or losing access to the Chrome window can interrupt browser input. The optional automatic-start timer can resume unfinished chat work while the app is running.
 
 ## Data

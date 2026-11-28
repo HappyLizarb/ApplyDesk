@@ -2,6 +2,7 @@
 
 from urllib.parse import urlsplit
 
+from . import application_terms
 from .intelligence import validate_eligibility
 from .application_policy import COVER_LETTER_REQUIRED
 from .profile import empty_profile, public_job_url, validate_profile
@@ -84,14 +85,21 @@ def validate_answers(answers, source, profile):
     """Answers cite known facts and questions observed on a read-only form page."""
     if not isinstance(answers, list) or len(answers) > 200:
         raise ValueError("Expected at most 200 proposed answers.")
-    facts = {fact["id"] for fact in profile["facts"] if fact.get("confirmed")}
+    facts = {fact["id"]: fact["text"] for fact in profile["facts"] if fact.get("confirmed")}
     seen = set()
     for answer in answers:
         object_fields(answer, ["question", "answer", "fact_ids"])
         question = string(answer["question"])
-        string(answer["answer"])
+        value = string(answer["answer"])
         ids = strings(answer["fact_ids"])
-        if question not in source or question in seen or not ids or not set(ids) <= facts:
+        agreement = application_terms.covers(question)
+        if agreement and value.casefold() not in {"yes", "i agree", "i accept", "agree", "accept", "true"}:
+            raise ValueError("Accept the required application terms.")
+        if "preferences.disciplinary_action" in ids:
+            saved = facts.get("preferences.disciplinary_action")
+            if not application_terms.disciplinary_question(question, saved) or value.casefold() != saved:
+                raise ValueError("Use the confirmed disciplinary answer only for its matching question.")
+        if question not in source or question in seen or not (ids or agreement) or not set(ids) <= facts.keys():
             raise ValueError("Answers require distinct observed questions and confirmed supporting facts.")
         seen.add(question)
     return answers

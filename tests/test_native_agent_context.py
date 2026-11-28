@@ -52,6 +52,20 @@ class NativeAgentContextTests(unittest.TestCase):
         self.workspace.secrets.get.assert_not_called()
         self.agent.session.call.assert_not_called()
 
+    def test_salary_preference_uses_only_this_postings_compensation(self):
+        """Give the agent the posting's pay evidence separately from the applicant's expected-pay rule."""
+        for posted in ("Base salary: $90,000–$115,000 per year. Bonus: up to $20,000.",
+                       "Hourly rate: 25 to 38 per hour.", "Salary: 98000 per annum.", ""):
+            with self.subTest(posted=posted):
+                self.agent.job = self.store.job(self.job["id"], details=posted, details_origin="captured")
+                context = self.agent._context()
+                self.assertEqual(context["job"]["compensation"], posted)
+                rules = [fact for fact in context["profile"]["facts"] if fact["id"] == "application.expected_base_salary"]
+                self.assertEqual(len(rules), 1)
+                self.assertTrue(rules[0]["confirmed"])
+                self.assertIn("80,000", rules[0]["text"])
+                self.assertNotIn("$115,000", rules[0]["text"])
+
     def test_legacy_account_row_is_filtered_too(self):
         """The no-shared-account fallback still preserves explicit false credential status without old history."""
         self.store.delete("employer_account", self.account_id)

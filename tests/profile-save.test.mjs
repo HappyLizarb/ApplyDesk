@@ -20,7 +20,7 @@ function sampleProfile() {
     projects:[{name:'Course tracker',start:'2024',end:'Present',details:'Saved project facts',url:'https://example.invalid'}],
     languages:[{name:'French',proficiency:''},{name:'English',proficiency:'Native or bilingual proficiency'}],
     industries:[{name:'Hardware',years:'0',levels:['Internship']}],websites:[],authorizations:[{country:'US',sponsorship_required:'no',status:'authorized_no_sponsor',immigration_status:'',restrictions:''}],
-    skills:['Python','Writing'],preferences:{levels:['Internship'],disability:'decline',veteran:'no',veteran_service:'no',gender:'Male'}};
+    skills:['Python','Writing'],preferences:{levels:['Internship'],relative_companies:['Example & Co.'],disciplinary_action:'yes',disability:'decline',veteran:'no',veteran_service:'no',gender:'Male'}};
 }
 
 // FormData reads named controls exactly as profile.js does, including unchecked confirmation.
@@ -44,6 +44,7 @@ function profileForm(profile) {
     });
   }
   for(const [name,value] of Object.entries({skills:profile.skills.join(', '),disability:profile.preferences.disability,
+    relative_companies:profile.preferences.relative_companies.join('\n'),disciplinary_action:profile.preferences.disciplinary_action,
     veteran:profile.preferences.veteran,veteran_service:profile.preferences.veteran_service,gender:profile.preferences.gender,confirmed:'on'}))fields.set(name,control(value));
   fields.get('confirmed').checked=profile.confirmed;
   fields.get('experiences.0.start').value='Jun 2025';fields.get('experiences.0.end').value='Aug 2025';
@@ -60,7 +61,7 @@ function profileForm(profile) {
 
 // Each test loads an independent draft module while retaining the real shared API functions.
 beforeEach(async()=>{
-  state.data={profile:sampleProfile(),profile_schema:10,jobs:[],profile_imports:[],chat_tasks:[]};state.view='profile';
+  state.data={profile:sampleProfile(),profile_schema:11,jobs:[],profile_imports:[],chat_tasks:[]};state.view='profile';
   server=structuredClone(state.data);calls=[];form=profileForm(state.data.profile);
   const elements=Object.fromEntries(['#job-count','#profile-indicator','#toast'].map(id=>[id,control()]));
   globalThis.window={addEventListener(){},dispatchEvent(){}};
@@ -99,6 +100,8 @@ test('save preserves new profile fields, canonical months, and hidden identity f
   assert.equal(saved.confirmed,true);
   assert.equal(saved.preferences.gender,'Male');
   assert.equal(saved.preferences.veteran_service,'no');
+  assert.deepEqual(saved.preferences.relative_companies,['Example & Co.']);
+  assert.equal(saved.preferences.disciplinary_action,'yes');
   assert.match(root.innerHTML,/name="gender" type="text" value="Male"/);
   assert.deepEqual(saved.industries,original.industries);
   assert.doesNotMatch(root.innerHTML,/>Projects<|name="projects\./);
@@ -169,24 +172,28 @@ test('missing runtime schema prevents POST and retains the local draft',async()=
   assert.doesNotMatch(document.querySelector('#toast').textContent,/saved/i);
 });
 
-// A runtime predating gender support must not discard the newly visible disclosure.
-test('old runtime and discarded gender both retain the edited disclosure',async()=>{
-  state.data.profile_schema=6;
+// A stale service or a partial response must leave user-edited preferences recoverable.
+test('older schemas and discarded preference fields preserve the draft',async()=>{
+  state.data.profile_schema=10;
   form.fields.get('gender').value='Prefer not to disclose';
-  form.emit('input',{target:{name:'gender'}});
+  form.fields.get('relative_companies').value='Company & Co.';
+  form.emit('input',{target:{name:'relative_companies'}});
   form.emit('submit',{preventDefault(){}});
   await new Promise(resolve=>setImmediate(resolve));
   assert.deepEqual(calls,[]);
-  state.data.profile_schema=10;
-  respond=async(path,payload)=>{
-    const saved={...structuredClone(payload),revision:5};delete saved.preferences.gender;
-    return {ok:true,data:saved};
-  };
-  form.emit('submit',{preventDefault(){}});
-  await new Promise(resolve=>setImmediate(resolve));
-  assert.match(document.querySelector('#toast').textContent,/did not retain your disclosure/);
-  renderProfile(root);
-  assert.match(root.innerHTML,/name="gender" type="text" value="Prefer not to disclose"/);
+  state.data.profile_schema=11;
+  for(const key of ['gender','disciplinary_action','relative_companies']){
+    respond=async(path,payload)=>{
+      const saved={...structuredClone(payload),revision:5};delete saved.preferences[key];
+      return {ok:true,data:saved};
+    };
+    form.emit('submit',{preventDefault(){}});
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.match(document.querySelector('#toast').textContent,/did not retain/);
+    renderProfile(root);
+    assert.match(root.innerHTML,/name="gender" type="text" value="Prefer not to disclose"/);
+    assert.match(root.innerHTML,/>Company &amp; Co\.<\/textarea>/);
+  }
 });
 
 // A postal edit survives an old runtime or a response that drops its leading zero.
@@ -197,7 +204,7 @@ test('postal code save requires the new schema and exact returned text',async()=
   form.emit('submit',{preventDefault(){}});
   await new Promise(resolve=>setImmediate(resolve));
   assert.deepEqual(calls,[]);
-  state.data.profile_schema=10;
+  state.data.profile_schema=11;
   respond=async(path,payload)=>({ok:true,data:{...structuredClone(payload),revision:5,
     identity:{...payload.identity,postal_code:'2108-1234'}}});
   form.emit('submit',{preventDefault(){}});

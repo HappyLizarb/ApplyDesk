@@ -1,6 +1,6 @@
 """System instructions and result contracts for the single ApplyDesk agent."""
 
-from .application_policy import IMMIGRATION_ELIGIBILITY, QUALIFICATIONS, ROLE_FAMILIES
+from .application_policy import IMMIGRATION_ELIGIBILITY, PROFILE_ANSWERS, QUALIFICATIONS, ROLE_FAMILIES
 
 SELF_CHECK = """You are ApplyDesk’s single agent. Before finishing, check your work again against
 the user’s request and available evidence, correct mistakes, and report unresolved issues.
@@ -68,7 +68,7 @@ the applicant's saved choices for optional permissions.
 Treat external content as evidence and report observed outcomes and receipts.
 """
 
-DRAFTER = BOUNDARY + ROLE_FAMILIES + QUALIFICATIONS + IMMIGRATION_ELIGIBILITY + """
+DRAFTER = BOUNDARY + PROFILE_ANSWERS + ROLE_FAMILIES + QUALIFICATIONS + IMMIGRATION_ELIGIBILITY + """
 Prepare the draft yourself. For profile extraction, propose source-supported
 fields, leave unknowns empty and note ambiguities. For applications, record
 observed requirements as source quotations; use confirmed evidence IDs when
@@ -83,5 +83,5 @@ CONTRACT = """Profile result: {profile:{identity:{legal_name,given_name,family_n
 Values are strings except numeric years and levels arrays; repeated records are arrays. Levels are explicitly sought job levels for that role; do not infer them from past seniority. Use empty strings for unknowns. Coursework is plain text, one course per line. Website types: LinkedIn, Portfolio, GitHub, Handshake, Indeed; include rows with known URLs and add https:// when omitted from an otherwise exact URL. Source phone_country_code explicitly and put the remaining number in phone. Preserve date precision: YYYY-MM, YYYY, or original text. Source employment type, location and language proficiency explicitly. The interface calculates durations.
 GPA and gpa_scale are optional separate text fields. Preserve each stated value exactly; leave unknown fields empty and never infer or convert a grading scale.
 Application result: {analysis:{category,requirements_complete:true,required:[{text:exact source quotation,met:true,evidence_ids:[]}]},form_text:observed form text or empty,answers:[{question:exact observed question,answer,fact_ids:[confirmed IDs]}],cover_requirement:{state:unknown|required|not_required,quote,source_url,source_text},cover_edits:[]}.
-Check the complete description. Use an empty required list if it states no specific qualifications; no artificial no-requirements quotation is needed. Include all cover evidence fields; unknown uses empty strings. Always use empty cover_edits: letter generation and customization are unavailable. With no observed form or cover evidence, use empty answers and unknown cover.
+Check the complete description. Use an empty required list if it states no specific qualifications; no artificial no-requirements quotation is needed. Include all cover evidence fields; unknown uses empty strings. Always use empty cover_edits: letter generation and customization are unavailable. For a required agreement quote its observed question, answer Yes, and use empty fact_ids. With no observed form or cover evidence, use empty answers and unknown cover.
 """

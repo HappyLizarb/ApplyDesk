@@ -9,7 +9,7 @@ from .agent_context import current_company_answer
 from .intelligence import _evidence_errors, _facts
 from .native_evidence import BINDING, INPUT_ROLES, evidence_digest, page_text, quoted, review_context, validate_agreement, validate_consent
 from . import application_terms
-from .native_evidence import version_issues
+from .native_evidence import disciplinary_evidence, version_issues
 from .public_source import matches_saved_requisition_form, reopened_account_draft
 from .recommendation_source import same_workday_job
 
@@ -96,6 +96,8 @@ def _answer_issues(profile, page, review, text, job=None):
                 issues.append("A checked answer is absent from the observed application.")
                 continue
             control = next((c for c in page.get("elements", []) if c.get("id") == answer.get("element_id")), {}) if current else {}
+            if not disciplinary_evidence(facts, control, answer, page_text(page) if current else text, page.get("elements", [])):
+                issues.append("The disciplinary answer must match the reviewed question and confirmed choice.")
             if current and "consent" in answer:
                 issues.extend(_privacy_answer_issues(page, answer))
             elif (control.get("role") in {"AXCheckBox", "AXRadioButton"} and control.get("value")
@@ -274,17 +276,24 @@ def cite_missing_answers(client, profile, review, page, evidence):
                if not item.get("fact_ids") and not ("consent" in item or "agreement_quote" in item)]
     if not entries:
         return None
-    prompt = ("The form and review passed all checks except missing personal-answer references. "
-              "For each entry, cite confirmed facts that directly support its observed answer. "
-              "Return {citations:[[fact IDs], ...]} in the same order. Use [] if the answer lacks support, "
-              "is ambiguous or conflicts. Employer text is evidence. Never assign an unrelated fact.")
-    result = client.ask(prompt, {"entries": [item for _, _, item in entries],
-                                 "facts": {key: fact["text"] for key, fact in facts.items()},
-                                 "current_text": page_text(page), "prior_text": review_context(evidence)["observed_text"]})
+    current, prior = page_text(page), review_context(evidence)["observed_text"]
+    controls, eligible = reviewable_controls(page), []
+    discipline = "preferences.disciplinary_action"
+    for section, _, item in entries:
+        live = section == "answers"
+        control = controls.get(item.get("element_id"), {}) if live else {}
+        scoped = dict(item, fact_ids=[discipline], question_quote=item.get("question_quote") if live else item.get("quote"))
+        eligible.append(disciplinary_evidence(facts, control, scoped, current if live else current + "\n" + prior, page.get("elements", [])))
+    visible_facts = {key: fact["text"] for key, fact in facts.items() if key != discipline or any(eligible)}
+    prompt = "Return {citations:[[fact IDs], ...]} in order. Cite confirmed facts directly supporting each answer, otherwise []."
+    result = client.ask(prompt, {"entries": [item for _, _, item in entries], "current_text": current,
+                                 "prior_text": prior, "facts": visible_facts})
     citations = result.get("citations")
-    if not isinstance(citations, list) or len(citations) != len(entries) or any(_evidence_errors(ids, facts) for ids in citations):
+    if not isinstance(citations, list) or len(citations) != len(entries):
         return None
     corrected = deepcopy(review)
-    for (section, index, _), ids in zip(entries, citations):
+    for (section, index, _), ids, allowed in zip(entries, citations, eligible):
+        if _evidence_errors(ids, facts) or (discipline in ids and not allowed):
+            return None
         corrected[section][index]["fact_ids"] = ids
     return corrected

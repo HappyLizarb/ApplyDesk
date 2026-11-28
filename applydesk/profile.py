@@ -10,9 +10,9 @@ AUTH_STATUSES = {"authorized_no_sponsor", "authorized_need_sponsor", "not_author
 IMMIGRATION_STATUSES = {"", "us_citizen", "us_national", "permanent_resident", "f1_opt", "f1_stem_opt", "f1_cpt", "other_work_authorized", "other_unsure"}
 WEBSITE_TYPES = {"LinkedIn", "Portfolio", "GitHub", "Handshake", "Indeed"}
 DISCLOSURES = {"yes", "no", "decline", "unknown"}
-DISCLOSURE_FIELDS = ("disability", "veteran", "veteran_service", "race", "hispanic", "gender")
+DISCLOSURE_FIELDS = ("disability", "veteran", "veteran_service", "race", "hispanic", "gender", "disciplinary_action")
 # The browser checks this loaded schema before sending fields an older server would discard.
-PROFILE_SCHEMA_VERSION = 10
+PROFILE_SCHEMA_VERSION = 11
 ROW_FIELDS = {
     "education": ["institution", "degree", "field", "gpa", "gpa_scale", "start", "end", "coursework"],
     "experiences": ["company", "title", "job_type", "start", "end", "location", "details"],
@@ -29,15 +29,17 @@ def empty_profile():
     return {"identity": {key: "" for key in ["legal_name", "given_name", "family_name", "preferred_name", "email", "phone_country_code", "phone", "phone_type", "street_address", "city", "region", "postal_code", "country"]},
             **{key: [] for key in ROW_FIELDS}, "skills": [], "facts": [], "chat_evidence": [],
             "preferences": {"levels": [], "disability": "unknown", "veteran": "unknown", "veteran_service": "unknown",
-                            "race": "", "hispanic": "unknown", "gender": "", "age_18_or_older": "unknown", "application_answers": []},
+                            "race": "", "hispanic": "unknown", "gender": "", "age_18_or_older": "unknown",
+                            "relative_companies": [], "disciplinary_action": "unknown"},
             "confirmed": False, "revision": 0, "transcript_id": None}
 
 
 def profile_with_defaults(profile):
     """Add newly introduced fields on read without rewriting or reconfirming saved facts."""
-    result = {**empty_profile(), **copy.deepcopy(profile)}
-    result["identity"] = {**empty_profile()["identity"], **result["identity"]}
-    result["preferences"] = {**empty_profile()["preferences"], **result["preferences"]}
+    defaults = empty_profile()
+    result = {**defaults, **_current_fields(profile)}
+    result["identity"] = {**defaults["identity"], **result["identity"]}
+    result["preferences"] = {**defaults["preferences"], **result["preferences"]}
     for section, fields in ROW_FIELDS.items():
         if section != "industries":
             result[section] = [{**dict.fromkeys(fields, ""), **row} for row in result[section]]
@@ -46,6 +48,16 @@ def profile_with_defaults(profile):
     for row in result["authorizations"]:
         _normalize_immigration(row)
     result["industries"] = role_preferences(result)
+    return result
+
+
+def _current_fields(profile):
+    """Copy saved data without reusing retired free-text answers or their evidence IDs."""
+    result = copy.deepcopy(profile)
+    result.get("preferences", {}).pop("application_answers", None)
+    if "facts" in result:
+        result["facts"] = [fact for fact in result["facts"]
+                           if not fact["id"].startswith("preferences.application_answers.")]
     return result
 
 
@@ -96,7 +108,8 @@ def validate_profile(raw, previous):
                            if key == "levels" else text(row.get(key, "")) for key in fields} for row in rows]
     result["skills"] = _string_list(raw.get("skills", []))
     preferences = {**{key: previous.get("preferences", {}).get(key, default) for key, default in
-                      (("veteran_service", "unknown"), ("age_18_or_older", "unknown"), ("application_answers", []))},
+                      (("veteran_service", "unknown"), ("age_18_or_older", "unknown"),
+                       ("disciplinary_action", "unknown"), ("relative_companies", []))},
                    **raw.get("preferences", {})}
     result["preferences"] = _profile_preferences(preferences, result["industries"])
     _normalize_phone(result["identity"])
@@ -125,11 +138,15 @@ def _profile_preferences(pref, industries):
         raise ValueError("Review veteran status and protected veteran status. These answers conflict.")
     for key in ("race", "gender"):
         result[key] = text(pref.get(key, ""), 200)
-    age = pref.get("age_18_or_older", "unknown")
-    if age not in ("unknown", "yes", "no"):
-        raise ValueError("Choose Yes or No for age 18 or older, or leave it unanswered.")
-    result["age_18_or_older"] = age
-    result["application_answers"] = _string_list(pref.get("application_answers", []))
+    for key, label in (("age_18_or_older", "age 18 or older"), ("disciplinary_action", "disciplinary action")):
+        value = pref.get(key, "unknown")
+        if value not in ("unknown", "yes", "no"):
+            raise ValueError(f"Choose Yes or No for {label}, or leave it unanswered.")
+        result[key] = value
+    companies = pref.get("relative_companies", [])
+    if not isinstance(companies, list) or any(not isinstance(name, str) for name in companies):
+        raise ValueError("Enter company names as a list of text values.")
+    result["relative_companies"] = _string_list(companies)
     return result
 
 
@@ -213,9 +230,6 @@ def facts_for(profile):
     if age in ("yes", "no"):
         facts.append({"id": "preferences.age_18_or_older", "text": "18 years or older: " + age,
                       "kind": "application_answer", "confirmed": True})
-    for index, answer in enumerate(profile["preferences"].get("application_answers", [])):
-        facts.append({"id": f"preferences.application_answers.{index}", "text": answer,
-                      "kind": "application_answer", "confirmed": True})
     facts.extend(copy.deepcopy(profile.get("chat_evidence", [])))
     return facts
 
@@ -236,8 +250,8 @@ def public_job_url(url):
 
 def model_profile(profile):
     """Omit voluntary sensitive disclosures from document generation and job screening."""
-    result = copy.deepcopy(profile)
-    for key in DISCLOSURE_FIELDS:
+    result = _current_fields(profile)
+    for key in (*DISCLOSURE_FIELDS, "relative_companies"):
         result["preferences"].pop(key, None)
     result["facts"] = [fact for fact in result["facts"] if fact["kind"] != "disclosure"]
     return result

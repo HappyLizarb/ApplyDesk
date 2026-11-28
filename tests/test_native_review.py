@@ -6,7 +6,6 @@ import unittest
 from unittest.mock import Mock
 
 from native_pipeline_fixture import NativeReviewFixture
-
 from applydesk.native_evidence import observation, review_context, validate_operation
 from applydesk.native_review import cite_missing_answers, retained_resume, validate_review
 
@@ -107,15 +106,23 @@ class NativeReviewTests(NativeReviewFixture, unittest.TestCase):
     def test_citation_repair_preserves_form_values_and_requires_confirmed_evidence(self):
         """A missing citation can be repaired without making any browser edits or changing checked answers."""
         self.review["summaries"][0]["fact_ids"] = []
-        client = Mock()
-        client.ask.return_value = {"citations": [["name"]]}
+        discipline = "preferences.disciplinary_action"
+        self.profile["facts"].append({"id": discipline, "text": "no", "kind": "disclosure", "confirmed": True})
+        client = Mock(**{"ask.return_value": {"citations": [["name"]]}})
         fixed = cite_missing_answers(client, self.profile, self.review, self.page, self.evidence)
+        self.assertNotIn(discipline, client.ask.call_args.args[1]["facts"])
         self.assertEqual(fixed["summaries"][0], {"quote": "Name: Alex Test", "fact_ids": ["name"]})
         self.assertEqual(self.review["summaries"][0]["fact_ids"], [])
         self.assertTrue(validate_review(self.workspace, self.job, self.profile, self.page, self.ledger, self.evidence, fixed)["passed"])
-        for invalid in ([], [[]], [["absent"]], [["name"], ["name"]]):
+        for invalid in ([], [[]], [[discipline]], [["absent"]], [["name"], ["name"]]):
             client.ask.return_value = {"citations": invalid}
             self.assertIsNone(cite_missing_answers(client, self.profile, self.review, self.page, self.evidence))
+        self.page["text"] = "Have you ever been terminated or asked to resign from any job or academic institution?"
+        self.review["summaries"].append({"quote": self.page["text"]})
+        for citations, expected in (([[discipline], ["name"]], False), ([["name"], [discipline]], True)):
+            client.ask.return_value = {"citations": citations}
+            self.assertEqual(bool(cite_missing_answers(client, self.profile, self.review, self.page, self.evidence)), expected)
+            self.assertIn(discipline, client.ask.call_args.args[1]["facts"])
 
     def test_fabricated_quotes_and_unconfirmed_facts_are_rejected(self):
         self.review["summaries"][0]["quote"] = "Name: Someone Else"

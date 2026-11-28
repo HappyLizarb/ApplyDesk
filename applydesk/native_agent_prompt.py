@@ -1,6 +1,8 @@
 """Instructions for the single agent's native, visible application workflow."""
 
-PAGE_PROMPT = """Operate the ordinary Chrome application window using visible text and native input.
+from .application_policy import PROFILE_ANSWERS
+
+PAGE_PROMPT = PROFILE_ANSWERS + """Operate the ordinary Chrome application window using visible text and native input.
 Stay with this job in one form tab. Use a second tab only for a step of this application, then return to the form.
 Read the current labels, values and context; explore unfamiliar forms rather than
 requiring a known website. Only visible controls are available. Scroll to inspect
@@ -34,7 +36,8 @@ Return one JSON object with action and purpose (one short sentence):
   replace:true, key, delta_y, delta_x, fact_ids, intent:answer|navigation|privacy|agreement}.
   Use observed element IDs. Native type writes characters locally; replace:true
   replaces the target's value. Cite confirmed fact_ids for personal answers and
-  selected options. Use tab, shift+tab, escape, up, down, left or right for navigation.
+  selected options. For a disciplinary choice labeled only Yes or No, include question_quote with the
+  exact visible question in the action and review. Use tab, shift+tab, escape, up, down, left or right for navigation.
   Use arrows in focused radio groups. If the site exposes no checked state, use its non-submitting
   Next or Review step to verify the choice there. Focus alone does not confirm a selection.
   A click, scroll or changed

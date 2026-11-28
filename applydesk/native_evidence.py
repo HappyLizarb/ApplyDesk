@@ -146,6 +146,48 @@ def _agreement_control(page, operation, element):
     return matches[0]
 
 
+def _choice_question(control, elements):
+    """Locate the nearest question before a generically labeled radio or menu option in AX order."""
+    question = ""
+    for item in elements:
+        if item.get("id") == control.get("id"):
+            return question
+        if not item.get("web_content", True):
+            continue
+        label = str(item.get("label") or item.get("value") or "").strip(" *:")
+        if label and label.casefold() not in {"yes", "no", "required", "select", "select an option"}:
+            question = label
+    return ""
+
+
+def disciplinary_evidence(facts, control, entry, text, elements=()):
+    """Bind the disclosure citation to its visible question and corresponding yes/no value."""
+    identity = "preferences.disciplinary_action"
+    if identity not in (entry.get("fact_ids") or []):
+        return True
+    saved = facts.get(identity, {}).get("text")
+    label = str(control.get("label") or "").strip(" *:")
+    wording = label
+    if not label or label.casefold() in {"yes", "no", "select", "select an option", "please select"}:
+        wording = (entry.get("question_quote") or entry.get("quote")) if control else entry.get("quote")
+        if not quoted(wording, text) or (control and not quoted(wording, _choice_question(control, elements))):
+            return False
+    if not application_terms.disciplinary_question(wording, saved):
+        return False
+    answer = entry.get("text", entry.get("value", ""))
+    if label.casefold() in {"yes", "no"}:
+        answer = label
+    elif isinstance(answer, bool) and control.get("role") == "AXCheckBox":
+        answer = "yes" if answer else "no"
+    if isinstance(answer, str) and answer:
+        return answer.strip().casefold() == saved
+    if not control and isinstance(wording, str):
+        selected = re.search(r"(?:[?:]\s*|\n)(yes|no)\b", wording, re.I)
+        if selected:
+            return selected[1].casefold() == saved
+    return True
+
+
 def validate_operation(profile, page, operation, job=None):
     """Allow native exploration while keeping personal answers grounded and secrets private."""
     if not isinstance(operation, dict) or operation.get("action") not in {"click", "type", "key", "scroll"}:
@@ -159,6 +201,9 @@ def validate_operation(profile, page, operation, job=None):
         raise ValueError("Use authenticate for secure password fields.")
     if operation.get("point") is not None and not page.get("screenshot"):
         raise ValueError("Observe a screenshot before choosing a coordinate.")
+    if "preferences.disciplinary_action" in (operation.get("fact_ids") or []) and (
+            not element or operation.get("point") or not disciplinary_evidence(_facts(profile), element, operation, page_text(page), page.get("elements", []))):
+        raise ValueError("Use the confirmed disciplinary answer only on its matching visible control.")
     intent = operation.get("intent", "navigation")
     if intent == "agreement":
         element = _agreement_control(page, operation, element)
@@ -170,13 +215,10 @@ def validate_operation(profile, page, operation, job=None):
     elif intent == "privacy":
         validate_consent(page, operation.get("consent"))
     elif intent == "navigation" and operation.get("action") == "type" and job:
-        if _public_job_search(job, element, operation):
-            return operation
-        if _evidence_errors(operation.get("fact_ids"), _facts(profile)):
+        if not _public_job_search(job, element, operation) and _evidence_errors(operation.get("fact_ids"), _facts(profile)):
             raise ValueError("Use the saved job title, employer or published requisition in the employer search field.")
     elif operation.get("action") == "type" or intent == "answer":
-        errors = _evidence_errors(operation.get("fact_ids"), _facts(profile))
-        if errors:
+        if errors := _evidence_errors(operation.get("fact_ids"), _facts(profile)):
             raise ValueError("Personal answers need confirmed profile facts: " + "; ".join(errors))
     elif intent != "navigation":
         raise ValueError("Identify this action as navigation, a personal answer or ordinary privacy processing.")

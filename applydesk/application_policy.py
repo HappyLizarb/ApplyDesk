@@ -4,6 +4,14 @@ from .profile import role_preferences
 
 COVER_LETTER_REQUIRED = 'This application requires a cover letter. Continue it manually; letter generation is unavailable.'
 
+EXPECTED_BASE_SALARY = (
+    "For expected base pay, request the highest posted base amount applicable to this role and location. "
+    "Exclude bonuses, equity, allowances and total compensation. Use the amount and currency from the posting "
+    "and express it in the form's pay period. If base pay is unlisted, use 80,000 annually in the requested "
+    "currency (6,666.67 monthly or 38.46 hourly at 2,080 hours/year). For a dropdown choose the range "
+    "containing the target. This preference applies only to expected pay, never current or previous pay."
+)
+
 ROLE_FAMILIES = """Start with the role preferences in the user's request and saved profile.
 Identify related specialties from the work each role involves. A listing with a
 different title can be a match when its stated duties support that connection.
@@ -42,6 +50,23 @@ are job-specific and must use the user's entered restrictions, without inventing
 visa rules or durations. Keep unclear listings available, and request input before
 applying when a relevant eligibility condition or application answer is unresolved.
 Never infer immigration facts from resumes, names, locations or nationality.
+"""
+
+
+PROFILE_ANSWERS = """For employment and relative affiliation questions about this employer, use
+application.employment_history and application.relative_affiliation. Read the actual question's
+polarity and check the dated experience entries for a specific time period or role. Match the
+named company; a similar name, parent, or subsidiary alone does not establish a match.
+For expected base salary, apply the application.expected_base_salary preference to the pay
+posted for this role in job.compensation or visible on the employer form. Cite that preference
+for the answer, including when the posting has no base pay.
+The relative affiliation list covers company names only. Never infer a relative's name or job.
+Use preferences.disciplinary_action only for a question about the applicant being terminated,
+asked to resign, or facing employment or academic discipline. A general Yes does not establish misconduct, a cause,
+a date, or which employer or school was involved. It does not answer criminal-history,
+performance, or reasons-for-leaving questions. Leave an unanswered optional disclosure blank.
+Accept required application terms, policies and acknowledgments. Personal eligibility claims
+still need their own supporting facts. Leave optional permissions at the applicant's saved choice.
 """
 
 

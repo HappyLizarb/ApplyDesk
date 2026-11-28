@@ -27,6 +27,7 @@ REQUIRED_CUE = re.compile(r"\b(?:required|must|mandatory|necessary)\b", re.I)
 PAY_WORDS = re.compile(r"\b(?:compensation|salary|salaries|pay|hourly rate|wages?|earnings|remuneration|signing bonus|sign-on bonus)\b", re.I)
 MONEY = re.compile(r"(?:[$€£¥]\s*\d[\d,]*(?:\.\d+)?\s*[kKmM]?|\b(?:USD|EUR|GBP|CAD|AUD|NZD|CHF|SGD|HKD|JPY)\s*\d[\d,]*(?:\.\d+)?\s*[kKmM]?|\b\d[\d,]*(?:\.\d+)?\s*(?:USD|EUR|GBP|CAD|AUD|NZD|CHF|SGD|HKD|JPY)\b)")
 PAY_RANGE = re.compile(r"\b(?:\d[\d,]{3,}|\d+(?:\.\d+)?[kK])\s*(?:-|–|—|to)\s*(?:\d[\d,]{3,}|\d+(?:\.\d+)?[kK])\b")
+PAY_RATE = re.compile(r"\b\d[\d,]*(?:\.\d+)?[kK]?\s*(?:(?:per\s+|/)\s*(?:hr|hour|week|mo|month|yr|year|annum)|hourly|weekly|monthly|annually|yearly)\b", re.I)
 PERIOD = re.compile(r"(?:/\s*(?:hr|hour|yr|year|mo|month)\b|\bper (?:hour|year|month|week)\b|\b(?:hourly|annually|annual|yearly|monthly|weekly)\b)", re.I)
 NON_PAY = re.compile(r"\b(?:project budget|budgets?|revenue|sales target|project cost|401\s*\(?k\)?|retirement match|reimbursement)\b", re.I)
 BUSINESS_AMOUNT = re.compile(r"\b(?:budgets?|revenue|sales target|project cost)\b", re.I)
@@ -112,7 +113,7 @@ def _sections(text):
 def _pay_statement(block, labelled):
     """A money amount must describe pay, rather than experience, benefits percentages, or budgets."""
     for sentence in re.split(r"(?<=[.!?])\s+(?=[A-Z])|\n", block):
-        amount = MONEY.search(sentence) or PAY_RANGE.search(sentence)
+        amount = MONEY.search(sentence) or PAY_RANGE.search(sentence) or PAY_RATE.search(sentence)
         if BUSINESS_AMOUNT.search(sentence) or (amount and YEAR_RANGE.fullmatch(amount.group())):
             continue
         pay = PAY_WORDS.search(sentence)

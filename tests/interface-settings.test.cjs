@@ -4,7 +4,6 @@ const {workspace,routeRequest,origin,browserTest,screenshot}=require('./document
 // Only fictional files and explicit local mutations exist in this browser fixture.
 function fixture() {
   const data=workspace();
-  data.profile_schema=10;
   data.orchestrator.account.accounts=[{id:'fixture-account',label:'example@example.test · Sample'}];
   data.orchestrator.account.active='fixture-account';data.orchestrator.account.chatgpt_active='fixture-account';
   data.orchestrator.account.api_keys_saved={openai:false,anthropic:false,google:false,xai:false};
@@ -35,7 +34,6 @@ async function educationChecks(page,fixture) {
   await row.locator('[name="education.0.start.day"]').fill('20');
   await row.locator('[name="education.0.end.month"]').selectOption('05');
   await page.getByLabel('Are you 18 or older?').selectOption('yes');
-  await page.getByLabel('Application answers',{exact:true}).fill('I request the top of the posted base salary range.');
   await page.locator('#profile-form [type=submit]').click();
   await page.waitForFunction(()=>document.querySelector('#toast').textContent.includes('Changes saved'));
   assert.equal(fixture.data.profile.education[0].gpa,'91');
@@ -46,11 +44,31 @@ async function educationChecks(page,fixture) {
   assert.equal(await row.locator('[name="education.0.start.day"]').inputValue(),'20');
   assert.equal(await row.locator('[name="education.0.end.day"]').inputValue(),'');
   assert.equal(await page.getByLabel('Are you 18 or older?').inputValue(),'yes');
-  assert.deepEqual(fixture.data.profile.preferences.application_answers,['I request the top of the posted base salary range.']);
   assert.equal(await row.locator('[name="education.0.gpa"]').inputValue(),'91');
   assert.equal(await row.locator('[name="education.0.gpa_scale"]').inputValue(),'100');
   assert.equal(await row.locator('[name="education.0.end.month"]').inputValue(),'05');
   assert.equal(await row.locator('[name="education.0.end.year"]').inputValue(),'2017');
+}
+
+// Only named companies and an explicit disciplinary choice survive a profile save.
+async function affiliationChecks(page,fixture) {
+  const roles=page.locator('section.profile-detail-list').filter({has:page.getByRole('heading',{name:'Roles and job levels'})});
+  const companies=roles.getByLabel('Relatives’ company affiliations');
+  const discipline=page.getByLabel(/^Disciplinary action/);
+  assert.equal(await page.getByLabel('Application answers',{exact:true}).count(),0);
+  assert.equal(await companies.inputValue(),'');
+  assert.equal(await discipline.inputValue(),'unknown');
+  for(const [names,choice] of [[['Example, Inc.','A & B'],'yes'],[[],'no']]){
+    await companies.fill([...names,...names].join('\n'));
+    await discipline.selectOption(choice);
+    await Promise.all([page.waitForResponse(response=>response.url().endsWith('/api/profile')),
+      page.locator('#profile-form [type=submit]').click()]);
+    await page.reload();
+    assert.equal(await companies.inputValue(),names.join('\n'));
+    assert.equal(await discipline.inputValue(),choice);
+    assert.deepEqual(fixture.data.profile.preferences.relative_companies,names);
+    assert.equal(Object.hasOwn(fixture.data.profile.preferences,'application_answers'),false);
+  }
 }
 
 // Model selection and key management are simulated without contacting providers.
@@ -204,5 +222,5 @@ const data=fixture();
 browserTest('Model and API settings, profile edits, document deletion and responsive themes',
   {fixture:data,route,viewport:{width:1440,height:950}},async page=>{
     await sliderChecks(page,data);await providerChecks(page,data);
-    await websiteAndUploadChecks(page,data);await rolePreferenceChecks(page,data);await educationChecks(page,data);await layoutChecks(page);
+    await websiteAndUploadChecks(page,data);await rolePreferenceChecks(page,data);await educationChecks(page,data);await affiliationChecks(page,data);await layoutChecks(page);
   });
