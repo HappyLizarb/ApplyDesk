@@ -41,7 +41,7 @@ class AutomationTests(PublicApplicationFixture):
         content = b"synthetic chosen resume source"
         self.w.docs.asset(chosen["source_path"]).write_bytes(content)
         digest = hashlib.sha256(content).hexdigest()
-        chosen.update(source_sha256=digest, sha256=digest)
+        chosen.update(source_sha256=digest, sha256=digest, source_size=len(content))
         self.w.docs._save(chosen)
         self.w.resumes.add(chosen["id"])
         self.intent.update(resume_id=chosen["id"], instruction="Apply once in Boston using chosen.pdf unchanged.")
@@ -67,7 +67,7 @@ class AutomationTests(PublicApplicationFixture):
         content = b"synthetic replaced resume"
         self.w.docs.asset(changed["source_path"]).write_bytes(content)
         digest = hashlib.sha256(content).hexdigest()
-        self.w.docs._save({**changed, "source_sha256": digest, "sha256": digest})
+        self.w.docs._save({**changed, "source_sha256": digest, "sha256": digest, "source_size": len(content)})
         self.w.docs.verify("resume")
         current = self.engine.history.add("user", "Continue with the same resume, unchanged.")
         self.engine.active = {"message": current}

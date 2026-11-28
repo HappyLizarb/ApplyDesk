@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 from io import BytesIO
@@ -20,6 +21,41 @@ RUNTIME = Path.home() / ".cache/codex-runtimes/codex-primary-runtime/dependencie
 SOFFICE = os.environ.get("APPLYDESK_SOFFICE") or shutil.which("soffice") or RUNTIME / "bin/override/soffice"
 PDFTOPPM = os.environ.get("APPLYDESK_PDFTOPPM") or shutil.which("pdftoppm") or RUNTIME / "bin/override/pdftoppm"
 PART = re.compile(r"word/(document|header\d+|footer\d+|footnotes|endnotes)\.xml$")
+
+
+def selected_resume(path, expected=None):
+    """Read a bounded regular file through its parent directory and validate its picker identity."""
+    try:
+        if not path.is_absolute() or path.is_symlink():
+            raise ValueError("Choose the original resume file in place of a link.")
+        canonical = path.parent.resolve(strict=True) / path.name
+        flags = os.O_RDONLY | os.O_NOFOLLOW
+        parent = os.open(canonical.parent, flags | os.O_DIRECTORY)
+        try:
+            directory = os.fstat(parent)
+            info = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+            binding = {"path": str(path), "canonical": str(canonical), "device": info.st_dev, "inode": info.st_ino,
+                       "parent_device": directory.st_dev, "parent_inode": directory.st_ino,
+                       "birth_time": getattr(info, "st_birthtime", None)}
+            if expected is not None and binding != expected:
+                raise ValueError("The selected resume moved or was replaced. Choose the original file again.")
+            if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= MAX_UPLOAD:
+                raise ValueError("The selected resume must be a nonempty file no larger than 20 MB.")
+            with os.fdopen(os.open(path.name, flags | os.O_NONBLOCK, dir_fd=parent), "rb") as file:
+                before = os.fstat(file.fileno())
+                if not os.path.samestat(before, info):
+                    raise ValueError("The selected resume changed. Choose it again.")
+                data = file.read(MAX_UPLOAD + 1)
+                after = os.fstat(file.fileno())
+        finally:
+            os.close(parent)
+        if (len(data) != before.st_size or len(data) != after.st_size or after.st_mtime_ns != before.st_mtime_ns
+                or canonical != path.parent.resolve(strict=True) / path.name
+                or not os.path.samestat(info, path.stat(follow_symlinks=False))):
+            raise ValueError("The selected resume changed. Choose it again.")
+    except (OSError, RuntimeError):
+        raise ValueError("The selected resume is unavailable. Choose the original file again in Documents.") from None
+    return data, binding
 
 
 def validate_upload(filename, data):
@@ -112,22 +148,22 @@ def read_pdf(path):
     return {"text": text, "needs_manual_entry": not bool(text.strip())}
 
 
-def run_renderer(command):
+def run_renderer(command, input_bytes=None):
     # Never interpolate document names into a shell command.
     try:
         result = subprocess.run([str(item) for item in command], capture_output=True,
-                                text=True, timeout=90, check=False)
+                                input=input_bytes, timeout=90, check=False)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise RuntimeError(f"Document renderer is unavailable: {error}") from error
     if result.returncode:
-        detail = (result.stderr or result.stdout).strip()[-1200:]
+        detail = (result.stderr or result.stdout).decode(errors="replace").strip()[-1200:]
         raise RuntimeError(f"Document rendering failed: {detail}")
 
 
 def render_docx(source, directory):
     # Separate office profiles avoid profile locks when two documents render together.
     directory.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="applydesk-office-") as profile:
+    with tempfile.TemporaryDirectory(dir=directory, prefix=".office-") as profile:
         run_renderer([SOFFICE, f"-env:UserInstallation={Path(profile).as_uri()}",
                       "--headless", "--convert-to", "pdf", "--outdir", directory, source])
     result = directory / (source.stem + ".pdf")
@@ -138,12 +174,13 @@ def render_docx(source, directory):
 
 def render_pdf(source, directory):
     # Bound preview expansion; a valid PDF must render every page for later review.
-    with pdfplumber.open(source) as pdf:
+    data = source if isinstance(source, bytes) else None
+    with pdfplumber.open(BytesIO(data) if data is not None else source) as pdf:
         page_count = len(pdf.pages)
     if not 1 <= page_count <= MAX_PAGES:
         raise ValueError(f"PDF previews require between 1 and {MAX_PAGES} pages.")
     directory.mkdir(parents=True, exist_ok=True)
-    run_renderer([PDFTOPPM, "-scale-to", "1800", "-png", source, directory / "page"])
+    run_renderer([PDFTOPPM, "-scale-to", "1800", "-png", "-" if data is not None else source, directory / "page"], data)
     images = sorted(directory.glob("page-*.png"), key=lambda path: int(path.stem.split("-")[-1]))
     if len(images) != page_count:
         raise RuntimeError("Some PDF preview pages did not render.")

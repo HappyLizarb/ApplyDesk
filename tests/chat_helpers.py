@@ -1,12 +1,29 @@
 """Synthetic local fixtures shared by chat workflow and HTTP boundary checks."""
 
 import hashlib
+import json
 from pathlib import Path
 import tempfile
 import unittest
 
+from applydesk.document_import import selected_resume
 from applydesk.workspace import Workspace
 from test_workspace import FakeSecrets
+
+
+def selected_fixture(service, identity, source):
+    """Register a synthetic selection without running an office renderer for every pipeline test."""
+    data, binding = selected_resume(source)
+    directory = service.root / identity
+    directory.mkdir()
+    (directory / ".location").write_text(json.dumps(binding), encoding="utf-8")
+    (directory / "page.png").write_bytes(b"synthetic PNG page")
+    digest = hashlib.sha256(data).hexdigest()
+    alias = identity + "/selected-original"
+    return service._save({"id": identity, "kind": "resume", "document_type": "resume", "filename": source.name,
+                          "source_path": alias, "pdf_path": alias, "source_size": len(data), "source_sha256": digest,
+                          "sha256": digest, "image_paths": [identity + "/page.png"], "text": "Alex Test",
+                          "blocks": [{"id": "line:0", "text": "Alex Test", "editable": False}]})
 
 
 class ChatFixture(unittest.TestCase):
@@ -33,6 +50,10 @@ class ChatFixture(unittest.TestCase):
 
     def document(self, identity, kind):
         """Create known immutable source and preview bytes for version tests."""
+        if kind == "resume":
+            source = Path(self.temp.name) / (identity + ".pdf")
+            source.write_bytes(b"synthetic PDF source")
+            return selected_fixture(self.w.docs, identity, source)
         directory = self.w.docs.root / identity
         directory.mkdir()
         source, image = directory / "original.pdf", directory / "page.png"

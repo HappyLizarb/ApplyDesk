@@ -1,6 +1,6 @@
 """Uploaded resume replacement, selection, immutable bytes, and AI boundaries."""
 
-import base64
+import json
 import hashlib
 import tempfile
 import unittest
@@ -32,7 +32,9 @@ class ResumeTests(unittest.TestCase):
     def upload(self, filename="Resume.pdf", content=None):
         """Run the real import and renderer with synthetic documents."""
         content = sample_pdf() if content is None else content
-        return self.w.import_file({"filename": filename, "kind": "resume", "data": base64.b64encode(content).decode()})
+        source = Path(self.temp.name) / filename
+        source.write_bytes(content)
+        return self.w.import_local_resume(source)
 
     def tag(self, document, category):
         self.w.resumes.tag({"document_id": document["id"], "category": category})
@@ -103,13 +105,67 @@ class ResumeTests(unittest.TestCase):
         for filename, content in (("Original.pdf", sample_pdf()), ("Original.docx", sample_docx())):
             with self.subTest(filename=filename):
                 document = self.upload(filename, content)
-                path, _, digest = _document(self.w, {"resume_id": document["id"]}, {},
+                path, _, digest = _document(self.w, {"resume_id": document["id"]},
                                             {"kind": "resume", "document_id": document["id"]})
-                self.assertEqual(path.suffix, Path(filename).suffix)
+                self.assertEqual(path, Path(self.temp.name) / filename)
                 self.assertEqual(path.read_bytes(), content)
                 self.assertEqual(digest, hashlib.sha256(content).hexdigest())
                 self.assertTrue(document["blocks"])
                 self.assertNotIn("template_id", document)
+
+    def test_picker_preserves_name_location_permissions_and_keeps_the_path_private(self):
+        chosen = Path(self.temp.name) / "Folder chosen by applicant"
+        chosen.mkdir()
+        source = chosen / "Jane Example — Resume.PDF"
+        data = sample_pdf()
+        source.write_bytes(data)
+        source.chmod(0o640)
+        record = self.w.import_local_resume(source)
+        self.assertEqual(self.w.docs.source_file(record, for_upload=True), source)
+        self.assertEqual(self.w.docs.asset_bytes(record["source_path"]), (source.name, data))
+        self.assertNotIn(str(chosen), json.dumps(self.w.state(), default=str))
+        self.assertEqual({p.name for p in chosen.iterdir()}, {source.name})
+        self.assertEqual(source.stat().st_mode & 0o777, 0o640)
+        directory = self.w.docs.root / record["id"]
+        self.assertFalse(any(p.suffix.lower() == ".pdf" for p in directory.rglob("*")))
+        for private in ("manifest.json", record["id"] + "/.location", record["id"] + "/.location.pdf"):
+            with self.assertRaises(ValueError):
+                self.w.docs.asset_bytes(private)
+        DocumentDeletion(self.w).delete({"document_id": record["id"]})
+        self.assertFalse(directory.exists())
+        self.assertEqual(source.read_bytes(), data)
+
+    def test_moved_replaced_or_symlinked_source_requires_reselection_even_with_matching_bytes(self):
+        original = self.upload("Selected resume.pdf")
+        source = self.w.docs.source_file(original, for_upload=True)
+        moved = source.with_name("Moved resume.pdf")
+        source.rename(moved)
+        with self.assertRaisesRegex(ValueError, "unavailable"):
+            self.w.docs.source_file(original, for_upload=True)
+        source.write_bytes(moved.read_bytes())
+        with self.assertRaisesRegex(ValueError, "replaced"):
+            self.w.docs.asset_bytes(original["source_path"])
+        source.unlink()
+        source.symlink_to(moved)
+        with self.assertRaisesRegex(ValueError, "link"):
+            self.w.docs.source_file(original, for_upload=True)
+        with self.assertRaisesRegex(ValueError, "link"):
+            self.w.import_local_resume(source)
+
+    def test_legacy_resume_can_be_read_but_requires_a_new_native_selection_to_attach(self):
+        directory = self.w.docs.root / "legacy"
+        directory.mkdir()
+        data = sample_pdf()
+        source = directory / "Same Name.pdf"
+        source.write_bytes(data)
+        alias = "legacy/Same Name.pdf"
+        record = self.w.docs._save({"id": "legacy", "kind": "resume", "filename": source.name, "source_path": alias,
+                                    "pdf_path": alias, "source_sha256": hashlib.sha256(data).hexdigest()})
+        self.assertEqual(self.w.docs.asset_bytes(alias), (source.name, data))
+        with self.assertRaisesRegex(ValueError, "Choose the original resume again"):
+            _document(self.w, {"resume_id": record["id"]}, {"document_id": record["id"], "kind": "resume"})
+        with self.assertRaisesRegex(ValueError, "file picker"):
+            self.w.import_file({"kind": "resume", "filename": source.name, "data": ""})
 
     def test_changed_original_is_rejected(self):
         document = self.upload()
@@ -174,7 +230,7 @@ class RunResumeTests(ChatFixture):
         review.assert_called_once_with(self.chosen["id"])
         selected = self.w.store.get("job", self.job["id"])["resume_id"]
         self.assertEqual(selected, self.chosen["id"])
-        path, _, digest = _document(self.w, {"resume_id": selected}, {}, {"kind": "resume", "document_id": selected})
+        path, _, digest = _document(self.w, {"resume_id": selected}, {"kind": "resume", "document_id": selected})
         self.assertEqual(path.read_bytes(), b"synthetic PDF source")
         self.assertEqual(digest, self.choice["sha256"])
 
@@ -200,7 +256,7 @@ class RunResumeTests(ChatFixture):
         source = self.w.docs.asset(self.chosen["source_path"])
         source.write_bytes(b"new version")
         digest = hashlib.sha256(source.read_bytes()).hexdigest()
-        self.w.docs._save({**self.chosen, "source_sha256": digest, "sha256": digest})
+        self.w.docs._save({**self.chosen, "source_sha256": digest, "sha256": digest, "source_size": len(source.read_bytes())})
         self.assertTrue(self.w.docs.verify(self.chosen["id"]))
         with self.assertRaisesRegex(ValueError, "since this run"):
             self.w.resumes.selected(self.chosen["id"], self.choice["sha256"])

@@ -52,8 +52,9 @@ Return one JSON object with action and purpose (one short sentence):
 - observe: reread after a meaningful change.
 - return_from_notice: if a notice opened, return directly to the saved application.
 - screenshot: inspect the current window image when text is insufficient.
-- upload: element_id, document_id, kind:resume|transcript. Use the selected original
-  document unchanged. Inspect its visible filename and correct any autofilled answers.
+- upload: element_id, document_id, kind:resume. Attach the selected resume to the
+  employer's resume field. If another document is required, report needs_input.
+  Inspect the visible filename and correct any autofilled answers.
   If a web notice already opened the native Open dialog, use its observed dialog ID
   as element_id for upload. Only the upload action selects local files.
 - authenticate: mode:sign_in|create_account, username_id, password_ids (array),

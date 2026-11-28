@@ -185,12 +185,11 @@ dialog::backdrop {background:#0006;backdrop-filter:blur(2px)}
 .editor-dialog[open] {display:flex;flex-direction:column}
 .editor-dialog>.modal-head,.editor-dialog>.modal-foot {flex:none}
 .editor-dialog>.modal-body {flex:1;overflow:auto;min-height:0}
-.editor-preview {width:100%;height:100%;border:0;background:var(--soft)}
+.document-preview {background:var(--soft)}
+.document-page {display:block;width:100%;max-width:900px;height:auto;margin:0 auto 16px;background:white}
+.document-page[hidden] {display:none}
 .editor-dialog .modal-head {padding:16px 22px}
 .editor-dialog .modal-foot {min-height:79px;justify-content:space-between}
-.template-single {height:60vh}
-.template-single>div {height:100%;display:flex;flex-direction:column}
-.template-single iframe {flex:1;min-height:0}
 #toast {position:fixed;bottom:25px;left:50%;transform:translateX(-50%);padding:14px 20px;border:1px solid var(--border);border-radius:0;background:var(--panel);box-shadow:var(--modal-shadow);z-index:20;max-width:min(700px,calc(100vw - 32px));font-size:13px}
 .loading {padding:70px;color:var(--muted);text-align:center}
 @media(max-width:1200px) {
@@ -214,7 +213,6 @@ dialog::backdrop {background:#0006;backdrop-filter:blur(2px)}
   .toolbar {padding:12px}.tabs {gap:2px}.tabs button {padding:7px 8px;font-size:11px}.table-footer {flex-wrap:wrap;font-size:10px}
   .form-grid,.form-grid.three,.details-grid {grid-template-columns:1fr}.form-footer {align-items:flex-start;flex-direction:column;padding:16px}
   .empty {padding:42px 20px 46px}.modal-body {padding:20px}.modal-head {padding:18px 20px}.modal-foot {padding:16px 20px;flex-wrap:wrap}
-  .editor-preview {height:500px}
   .editor-dialog {width:calc(100vw - 16px);max-width:none}
 }
 @media(prefers-reduced-motion:reduce) {*{animation:none!important;transition:none!important}}

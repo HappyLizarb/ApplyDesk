@@ -100,7 +100,31 @@ static void rejectedCandidates(void) {
     NSCAssert(!ADNativeRefreshSurfaces(state,nil),@"Stop invalidates discovery");
 }
 
+// File selection must prove the full local URL, even if a different file shares the visible basename.
+static void approvedOpenSelection(void) {
+    NSString *path = @"/fixture/approved/original.pdf";
+    NSDictionary *button = @{@"id":@"open",@"parent_dialog_id":@"picker",@"enabled":@YES,@"role":@"AXButton",@"label":@"Open"};
+    NSDictionary *request = @{@"action":@"click",@"element_id":@"open",@"picker_id":@"picker",@"approved_file":path};
+    NSDictionary *table = @{@"id":@"table",@"parent_dialog_id":@"picker",@"role":@"AXOutline"};
+    ADNativeBrowserState *state = [ADNativeBrowserState new];
+    state.observation = @{@"controls":@[button,table],@"dialogs":@[@{@"id":@"picker",@"native":@YES}]};
+    state.elements = [@{@"table":@"browser"} mutableCopy];
+    nodes = [@{@"browser":@{@"AXSelectedRows":@[@"row"]},@"row":@{@"AXRole":@"AXRow",@"AXChildren":@[@"cell"]},
+               @"cell":@{@"AXRole":@"AXCell",@"AXChildren":@[@"name"]}} mutableCopy];
+    nodes[@"name"] = @{@"AXURL":[NSURL fileURLWithPath:path]};
+    NSCAssert(ADNativeSelectedUploadMatches(state,button,request),@"A sole selected file URL matches");
+    nodes[@"name"] = @{@"AXURL":@"file:///fixture/other/original.pdf"};
+    NSCAssert(!ADNativeSelectedUploadMatches(state,button,request),@"The same filename elsewhere cannot be attached");
+    nodes[@"name"] = @{@"AXTitle":@"original.pdf"};
+    NSCAssert(!ADNativeSelectedUploadMatches(state,button,request),@"A visible filename cannot replace the selected URL");
+    nodes[@"row"] = @{@"AXURL":[NSURL fileURLWithPath:path]};
+    nodes[@"browser"] = @{@"AXSelectedChildren":@[@"row"]};
+    NSCAssert(ADNativeSelectedUploadMatches(state,button,request),@"Selected children can expose a sole direct file URL");
+    nodes[@"browser"] = @{@"AXSelectedRows":@[@"row",@"other"]};
+    NSCAssert(!ADNativeSelectedUploadMatches(state,button,request),@"A multi-file selection must stop");
+}
+
 int main(void) {
-    @autoreleasepool { popupOwnership();sheetOwnership();rejectedCandidates();puts("Native attached surface ownership, remote-sheet scope, geometry, reparenting and Stop checks passed without browser access."); }
+    @autoreleasepool { popupOwnership();sheetOwnership();rejectedCandidates();approvedOpenSelection();puts("Verified attached native surfaces and approved-file selection using synthetic controls."); }
     return 0;
 }

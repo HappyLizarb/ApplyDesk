@@ -1,6 +1,5 @@
 """Bind the agent's visible self-review to the current profile, window and original files."""
 
-import hashlib
 import re
 from copy import deepcopy
 from difflib import get_close_matches
@@ -51,7 +50,7 @@ def validate_review(workspace, job, profile, page, uploads, evidence, review):
     employer = current_company_answer(profile)
     if employer and _conflicting_employer(evidence, page, employer[0]):
         issues.append("Revisit the Current company field and correct its autofilled value to the confirmed current employer.")
-    issues.extend(_upload_issues(workspace, job, profile, uploads, review, text))
+    issues.extend(_upload_issues(workspace, job, uploads, review, text))
     if issues:
         raise NativeReviewError("; ".join(dict.fromkeys(issues)))
     binding = {"snapshot_id": page["snapshot_id"], "profile_revision": profile["revision"],
@@ -207,24 +206,22 @@ def _original_matches(workspace, upload):
     """Recheck picker evidence against the current bytes of the selected original."""
     try:
         record = workspace.docs.get(upload["document_id"])
-        path = workspace.docs.asset(record["source_path"])
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        path = workspace.docs.source_file(record, for_upload=True)
         return (upload.get("source_verified") is True and upload.get("selection_method") == "native_file_chooser"
-                and digest == record.get("source_sha256") == upload.get("sha256")
-                and upload.get("filename") == path.name and upload.get("size") == path.stat().st_size)
+                and record["source_sha256"] == upload.get("sha256")
+                and upload.get("filename") == path.name and upload.get("size") == record["source_size"])
     except (KeyError, ValueError, OSError):
         return False
 
 
-def _upload_issues(workspace, job, profile, uploads, review, text):
+def _upload_issues(workspace, job, uploads, review, text):
     """Rehash local originals and require evidence of the native picker and selected filename."""
-    expected = {"resume": job.get("resume_id"), "transcript": profile.get("transcript_id")}
     if not isinstance(uploads, list) or sum(item.get("kind") == "resume" for item in uploads) != 1:
         return ["The selected original resume needs a verified native file selection."]
     issues = []
     for upload in uploads:
         identity = upload.get("document_id")
-        if not identity or identity != expected.get(upload.get("kind")):
+        if upload.get("kind") != "resume" or not identity or identity != job.get("resume_id"):
             issues.append("A selected attachment is no longer the requested document.")
             continue
         if not _original_matches(workspace, upload):

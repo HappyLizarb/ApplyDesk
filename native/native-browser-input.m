@@ -107,9 +107,11 @@ static NSDictionary *setPickerPath(ADNativeBrowserState *state, id target, NSStr
 // Only a confirmed private chooser control uses the path setter; browser fields keep ordinary keyboard input.
 static NSDictionary *typeTarget(ADNativeBrowserState *state, NSDictionary *params, NSDictionary *control, NSError **error) {
     NSString *text = params[@"text"];id target = state.elements[control[@"id"]];
+    BOOL chooserPath = [params[@"private"] boolValue] && ![control[@"secure"] boolValue];
     NSSet *editable = [NSSet setWithArray:@[@"AXTextField",@"AXTextArea",@"AXComboBox",@"AXIncrementor"]];
     if (![text isKindOfClass:NSString.class] || text.length>12000 || ![editable containsObject:control[@"role"]]
-        || ([params[@"private"] boolValue] && ![control[@"secure"] boolValue] && !control[@"parent_dialog_id"])) {
+        || (chooserPath && (![params[@"replace"] boolValue] || ![control[@"parent_dialog_id"] length] || [control[@"web_content"] boolValue]
+            || ![ADNativeAttribute((__bridge AXUIElementRef)target,kAXIdentifierAttribute) isEqual:@"PathTextField"]))) {
         if (error) *error = ADNativeError(@"Typing requires an observed editable control with the correct privacy scope.");return nil;
     }
     Boolean numericEditable = false;
@@ -123,15 +125,10 @@ static NSDictionary *typeTarget(ADNativeBrowserState *state, NSDictionary *param
         usleep(50000);if (!focusedTarget(state,target,@"after clicking the field",error)) return nil;
     }
     if ([params[@"private"] boolValue]) { if (!state.redactions) state.redactions = [NSMutableArray new];[state.redactions addObject:text]; }
-    if ([params[@"private"] boolValue] && [params[@"replace"] boolValue] && ![control[@"secure"] boolValue]
-        && ![control[@"web_content"] boolValue] && [control[@"parent_dialog_id"] length]
-        && [ADNativeAttribute((__bridge AXUIElementRef)target,kAXIdentifierAttribute) isEqual:@"PathTextField"])
-        return setPickerPath(state,target,text,error);
+    if (chooserPath) return setPickerPath(state,target,text,error);
     if ([params[@"replace"] boolValue] && !prepareReplacement(state,target,text,error)) return nil;
     if (!typeCharacters(state,target,text,error)) return nil;
-    id matches = NSNull.null;
-    if ([params[@"private"] boolValue] && ![control[@"secure"] boolValue]) matches = @([ADNativeAttribute((__bridge AXUIElementRef)target,kAXValueAttribute) isEqual:text]);
-    return @{@"typed":@YES,@"private_value_matches":matches};
+    return @{@"typed":@YES,@"private_value_matches":NSNull.null};
 }
 
 // An email-method chooser opens credential fields; it cannot already contain inputs to submit.
@@ -162,6 +159,13 @@ static BOOL requiresFinalPermit(NSDictionary *page, NSDictionary *control, NSStr
 
 // Backend authentication authority is boolean; durable application attempt IDs can be consumed only once.
 BOOL ADNativeAuthorizeEvent(ADNativeBrowserState *state, NSDictionary *params, NSDictionary *control, NSError **error) {
+    BOOL open = [control[@"parent_dialog_id"] length] && ![control[@"web_content"] boolValue] && [control[@"label"] isEqual:@"Open"];
+    BOOL activate = [params[@"action"] isEqual:@"click"] || [@[@"enter",@"return"] containsObject:params[@"key"] ?: @""];
+    if ((params[@"approved_file"] || (open && activate)) && !ADNativeSelectedUploadMatches(state,control,params)) {
+        if (error) *error = [NSError errorWithDomain:@"ApplyDeskNativeBrowser" code:5 userInfo:
+            @{NSLocalizedDescriptionKey:@"The file chooser selection could not be verified.",@"native_code":@"unverified_file_selection"}];
+        return NO;
+    }
     id permit = params[@"final_permit"];
     BOOL permitted = [permit isKindOfClass:NSString.class] ? [permit length]>=8 : [permit isKindOfClass:NSNumber.class] && [permit boolValue];
     if (requiresFinalPermit(state.observation,control,params[@"action"],params[@"key"] ?: @"") && !permitted) {

@@ -127,6 +127,19 @@ class NativeNavigationTests(unittest.TestCase):
         self.assertEqual(self.manager.tabs, {})
         self.assertFalse(any(params.get("action") == "type" for _, params in self.manager.browser.calls))
 
+    def test_replaced_selection_blocks_open_even_after_the_path_was_entered(self):
+        """The picker must revalidate the selected file after navigation and before clicking Open."""
+        from test_native_application_io import upload_pages
+        _, picker, _, _, selected, _ = upload_pages()
+        session = Mock()
+        unchanged = Mock(side_effect=[None, ValueError("Selected resume was replaced")])
+        with patch("applydesk.native_application_io._enter_path", return_value=selected) as enter:
+            with self.assertRaisesRegex(ValueError, "replaced"):
+                _select_file(session, picker, "picker", "/fixture/resume.pdf", unchanged)
+        enter.assert_called_once()
+        self.assertEqual(unchanged.call_count, 2)
+        session.call.assert_not_called()
+
     def test_only_unsent_open_can_retry_in_the_same_picker_and_tab(self):
         """A stale pre-click observation can recover; a changed tab or uncertain click cannot replay."""
         from test_native_application_io import upload_pages
@@ -140,12 +153,12 @@ class NativeNavigationTests(unittest.TestCase):
             error = BrowserError("Rejected")
             error.code = code
             session.call.side_effect = [error, dict(picker, active_tab_id=tab), done]
-            with patch("applydesk.native_application_io._unchanged"), self.subTest(code=code, tab=tab), patch("applydesk.native_application_io._enter_path", return_value=selected) as enter:
+            with self.subTest(code=code, tab=tab), patch("applydesk.native_application_io._enter_path", return_value=selected) as enter:
                 if succeeds:
-                    self.assertEqual(_select_file(session, picker, "picker", "/fixture/original.pdf", "digest"), done)
+                    self.assertEqual(_select_file(session, picker, "picker", "/fixture/original.pdf", Mock()), done)
                 else:
                     with self.assertRaises(BrowserError):
-                        _select_file(session, picker, "picker", "/fixture/original.pdf", "digest")
+                        _select_file(session, picker, "picker", "/fixture/original.pdf", Mock())
                 self.assertEqual(enter.call_count, 2 if succeeds else 1)
 
     def test_closes_only_chromes_optional_password_suggestion(self):

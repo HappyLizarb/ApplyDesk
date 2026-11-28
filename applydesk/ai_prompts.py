@@ -61,7 +61,7 @@ process_restrictions:[{kind:"application_limit"|"availability_statement"|"other"
 identity_consistent:boolean,employment_type_consistent:boolean,consistency_issues:[string].
 Quote every process prerequisite, including affiliated-employer limits, prior
 applications and availability statements. Outside-application counts remain unknown
-unless supplied. Handle resume, cover-letter and transcript uploads separately.
+unless supplied. Flag required attachments other than the resume for the user.
 Set process_complete false for missing listing prerequisites. Check sign-in, account
 creation and form completion on the employer form. Draft status and submission receipts belong to the application workflow.
 Compare company, title and

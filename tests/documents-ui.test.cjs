@@ -8,7 +8,7 @@ const origin = 'http://127.0.0.1:63498', web = path.resolve(__dirname, '../web')
 
 // Fictional documents and an existing application exercise deletion without personal files.
 function workspace() {
-  const resume = {id: 'resume', kind: 'resume', filename: 'Resume <example>.pdf', category: 'General', source_path: 'resume/original.pdf', pdf_path: 'resume/original.pdf'};
+  const resume = {id: 'resume', kind: 'resume', filename: 'Resume <example>.pdf', category: 'General', image_paths: ['resume/page.png'], source_path: 'resume/original.pdf', pdf_path: 'resume/original.pdf'};
   const template = {id: 'template', kind: 'cover_template', filename: 'Letter template.docx', confirmed: true, source_path: 'template/original.docx', pdf_path: 'template/preview.pdf'};
   return {
     settings: {cover_template_id: 'template'}, templates: [template], resumes: [resume], resume_categories: ['General', 'Publishing'],
@@ -29,34 +29,51 @@ async function routeRequest(route, fixture) {
   const request = route.request(), url = new URL(request.url());
   assert.equal(url.origin, origin);
   if (url.pathname === '/api/state') return route.fulfill({json: fixture.data});
-  if (url.pathname === '/api/document') return route.fulfill({json: (fixture.data.uploads||[]).find(row=>row.id===url.searchParams.get('id'))||(fixture.data.resumes||[]).find(row=>row.id===url.searchParams.get('id'))||{id:'old-cover',kind:'document',document_type:'cover',title:'Saved letter',pdf_path:'old-cover/letter.pdf',docx_path:'old-cover/letter.docx',blocks:[]}});
-  if (url.pathname.startsWith('/asset/')) return route.fulfill({body:'Synthetic document preview',contentType:'text/plain'});
-  if (request.method() === 'POST') {
-    const data = request.postDataJSON();
-    fixture.writes.push({path: url.pathname, data});
-    if (url.pathname === '/api/document/delete') {
-      if (fixture.failDelete) return route.fulfill({status: 400, json: {error: 'Pause the agent before deleting a file.'}});
-      fixture.data.resumes = fixture.data.resumes.filter(item => item.id !== data.document_id);
-      fixture.data.templates = fixture.data.templates.filter(item => item.id !== data.document_id);
-      fixture.data.uploads=(fixture.data.uploads||[]).filter(item=>item.id!==data.document_id);
-      fixture.data.profile_imports=fixture.data.profile_imports.filter(item=>item.id!==data.document_id);
-      if(fixture.data.profile.transcript_id===data.document_id)fixture.data.profile.transcript_id=null;
-      fixture.data.jobs.forEach(job=>{if(job.resume_id===data.document_id)job.resume_id=null;});
-      if (fixture.data.settings.cover_template_id === data.document_id) fixture.data.settings.cover_template_id = '';
-      return route.fulfill({json: {removed: true, application_copies_kept: false, cleanup_pending: data.document_id === 'template'}});
-    }
-    if (url.pathname === '/api/orchestrator/send') return route.fulfill({json: {status: 'queued', message_id: 'message'}});
-    if (url.pathname === '/api/orchestrator/show-application') {
-      fixture.data.tasks = [{id: 'show-application', status: 'done', result: {visible: true}}];
-      return route.fulfill({json: {task: 'show-application'}});
-    }
-    if (url.pathname === '/api/recommendations/begin') return route.fulfill({json: {platform: data.platform, run_id: 'connect'}});
-    throw new Error('Unexpected mutation: ' + url.pathname);
+  if (url.pathname === '/api/document') {
+    const records=[...(fixture.data.uploads||[]),...(fixture.data.resumes||[]),...fixture.data.documents];
+    const record=records.find(item=>item.id===url.searchParams.get('id'));
+    if(!record)return route.fulfill({status:400,json:{error:'Document not found.'}});
+    return route.fulfill({json:record});
   }
+  if (url.pathname.endsWith('/page.png')) {
+    const pixel=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZ1sAAAAASUVORK5CYII=','base64');
+    return route.fulfill({body:pixel,contentType:'image/png'});
+  }
+  if (url.pathname.startsWith('/asset/')) return route.fulfill({body:'Synthetic document',contentType:'text/plain'});
+  if (request.method() === 'POST') return routeWrite(route,fixture,url);
   const file = path.resolve(web, '.' + (url.pathname === '/' ? '/index.html' : url.pathname));
   assert.ok(file.startsWith(web + path.sep));
   const headers={'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-src 'self'; object-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'"};
   return route.fulfill({body: fs.readFileSync(file), headers, contentType: file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html'});
+}
+
+// Mutate only the synthetic workspace used by the browser fixture.
+async function routeWrite(route,fixture,url) {
+  const request=route.request();
+  const data = request.postDataJSON();
+  fixture.writes.push({path: url.pathname, data});
+  if (url.pathname === '/api/choose-resume') {
+    fixture.data.tasks=[{id:'choose-resume',status:'done',result:{selected:!!fixture.picked}}];
+    return route.fulfill({json:{task:'choose-resume'}});
+  }
+  if (url.pathname === '/api/document/delete') {
+    if (fixture.failDelete) return route.fulfill({status: 400, json: {error: 'Pause the agent before deleting a file.'}});
+    fixture.data.resumes = fixture.data.resumes.filter(item => item.id !== data.document_id);
+    fixture.data.templates = fixture.data.templates.filter(item => item.id !== data.document_id);
+    fixture.data.uploads=(fixture.data.uploads||[]).filter(item=>item.id!==data.document_id);
+    fixture.data.profile_imports=fixture.data.profile_imports.filter(item=>item.id!==data.document_id);
+    if(fixture.data.profile.transcript_id===data.document_id)fixture.data.profile.transcript_id=null;
+    fixture.data.jobs.forEach(job=>{if(job.resume_id===data.document_id)job.resume_id=null;});
+    if (fixture.data.settings.cover_template_id === data.document_id) fixture.data.settings.cover_template_id = '';
+    return route.fulfill({json: {removed: true, application_copies_kept: false, cleanup_pending: data.document_id === 'template'}});
+  }
+  if (url.pathname === '/api/orchestrator/send') return route.fulfill({json: {status: 'queued', message_id: 'message'}});
+  if (url.pathname === '/api/orchestrator/show-application') {
+    fixture.data.tasks = [{id: 'show-application', status: 'done', result: {visible: true}}];
+    return route.fulfill({json: {task: 'show-application'}});
+  }
+  if (url.pathname === '/api/recommendations/begin') return route.fulfill({json: {platform: data.platform, run_id: 'connect'}});
+  throw new Error('Unexpected mutation: ' + url.pathname);
 }
 
 // Cancellation and failures keep the row; success removes only the selected library entry.
@@ -146,15 +163,45 @@ async function modelCatalogChecks(page, fixture) {
   }
 }
 
-// Archived letters remain readable without controls that generate or edit them.
+// The board and detail view open the recorded attachment even when the library choice differs.
 async function readOnlyDocumentChecks(page, fixture) {
+  const archived={id:'archive',kind:'document',title:'Earlier resume',document_type:'resume',
+    image_paths:['archive/page.png'],pdf_path:'archive/record.pdf',docx_path:'archive/record.docx'};
+  fixture.data=workspace();
+  fixture.data.documents=[archived];
+  fixture.data.jobs[0].attachments=[{kind:'resume',document_id:'archive',filename:'Earlier resume.pdf'}];
+  await page.goto(origin+'/#applications');
+  await page.reload();
   const before=fixture.writes.length;
-  await page.evaluate(() => import('/documents.js').then(module=>module.openEditor('old-cover')));
-  await page.getByTitle('Saved document preview').waitFor();
-  assert.equal(await page.locator('#save-document,#agent-toggle,[data-block],#ask-document-agent').count(),0);
-  assert.equal(await page.getByRole('link',{name:'Download PDF'}).count(),1);
+  for(const detail of [false,true]){
+    if(detail)await page.click('[data-detail="job"]');
+    const button=detail?page.locator('#modal [data-doc="archive"]'):page.locator('tr [data-doc="archive"]');
+    await button.click();
+    await page.waitForFunction(()=>document.querySelector('.document-page')?.naturalWidth===1);
+    assert.equal(await page.getByRole('heading',{name:'Earlier resume'}).count(),1);
+    assert.equal(await page.locator('#modal iframe,#save-document,#ask-document-agent').count(),0);
+    assert.equal(await page.getByRole('link',{name:'Download PDF'}).getAttribute('download'),'Earlier resume.pdf');
+    await page.locator('#modal .close').click();
+  }
   assert.equal(fixture.writes.length,before);
-  await page.locator('#modal .close').click();
+  fixture.data.documents=[];
+  await page.reload();
+  await page.getByText('Earlier resume.pdf · removed').waitFor();
+}
+
+// Selection and cancellation pass no path or bytes through the web interface.
+async function resumePickerChecks(page,fixture) {
+  fixture.data=workspace();
+  await page.goto(origin+'/#documents');
+  await page.reload();
+  assert.equal(await page.locator('#resume-upload').count(),0);
+  for(const selected of [false,true]){
+    fixture.picked=selected;
+    await page.click('#upload-resume');
+    await page.waitForFunction(()=>!document.querySelector('#upload-resume').disabled);
+    assert.deepEqual(fixture.writes.at(-1),{path:'/api/choose-resume',data:{}});
+    if(selected)await page.getByText('Resume selected. Choose a tag.').waitFor();
+  }
 }
 
 // Watching the active application restores its window without sending another agent message.
@@ -195,6 +242,7 @@ async function main() {
     await modelCatalogChecks(page, fixture);
     await applicationWindowChecks(page, fixture);
     await readOnlyDocumentChecks(page, fixture);
+    await resumePickerChecks(page, fixture);
     await requiredLetterChecks(page, fixture);
     assert.deepEqual(errors, []);
     console.log('Document deletion, public Google search, removed platform controls, model availability and responsive layouts passed.');

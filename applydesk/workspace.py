@@ -63,7 +63,7 @@ class Workspace:
                 "uploads": [{key: record.get(key) for key in ("id", "kind", "filename", "title")}
                             for record in self.docs.manifest.copy().values() if record["kind"] != "document"],
                 "resumes": self.resumes.list(), "resume_categories": self.resumes.categories(),
-                "tasks": list(self.tasks.values()), "data_path": str(self.root)}
+                "tasks": list(self.tasks.values())}
 
     def client(self, role):
         """Provider access is disabled; this experiment uses only the user's chat."""
@@ -106,19 +106,29 @@ class Workspace:
         """Decode bounded uploads and retain transcript identity in the profile."""
         if data.get("kind") in {"resume_template", "cover_template"}:
             raise ValueError("Template uploads are no longer available. Upload a finished resume instead.")
+        if data.get("kind") == "resume":
+            raise ValueError("Choose the original resume file using the local file picker.")
         try:
             content = base64.b64decode(data["data"], validate=True)
         except (ValueError, KeyError):
             raise ValueError("Invalid file upload.") from None
         record = self.docs.import_file(data["filename"], content, data["kind"])
-        if data["kind"] == "resume":
-            self.resumes.add(record["id"])
         if data["kind"] == "transcript":
             profile = self.profile()
             profile["transcript_id"] = record["id"]
             profile["revision"] += 1
             self.store.put("profile", "main", profile)
             self.invalidate_profile_jobs("Transcript changed. Prepare again to check the attachment.")
+        return record
+
+    def import_local_resume(self, path):
+        """Register the selected original and add its verified document ID to the resume library."""
+        record = self.docs.register_resume(path)
+        try:
+            self.resumes.add(record["id"])
+        except Exception:
+            self.docs.remove_upload(record["id"])
+            raise
         return record
 
     def start(self, name, action, *args):

@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from . import PROGRAM_ROOT
 from .document_deletion import DocumentDeletion
 from .employer_accounts import EmployerAccounts
+from . import native_browser
 from .orchestrator_http import orchestrator_action
 
 WEB_ROOT = PROGRAM_ROOT / "web"
@@ -90,23 +91,24 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/state":
             return self._json(self.server.workspace.state())
         if parsed.path == "/api/document":
-            document = self.server.workspace.docs.get(query.get("id", [""])[0])
+            service = self.server.workspace.docs
+            identity = query.get("id", [""])[0]
+            document = service.preview(identity) if query.get("preview") == ["1"] else service.get(identity)
             document["review"] = self.server.workspace.store.get("document_review", document["id"])
             return self._json(document)
         if parsed.path == "/api/profile/export":
             return self._json(self.server.workspace.profile())
         if parsed.path.startswith("/asset/"):
-            return self._file(self.server.workspace.docs.asset(unquote(parsed.path[7:])))
+            return self._file(*self.server.workspace.docs.asset_bytes(unquote(parsed.path[7:])))
         relative = "index.html" if parsed.path == "/" else unquote(parsed.path).lstrip("/")
         candidate = (WEB_ROOT / relative).resolve()
         if not candidate.is_relative_to(WEB_ROOT) or not candidate.is_file():
             return self._json({"error": "Not found."}, 404)
-        self._file(candidate)
+        self._file(candidate.name, candidate.read_bytes())
 
-    def _file(self, path):
-        """Serve an already-validated local asset with its real content type."""
-        body = path.read_bytes()
-        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    def _file(self, filename, body):
+        """Send the exact bytes already read from an authorized local asset."""
+        mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         self._headers(200, mime, len(body))
         self.wfile.write(body)
 
@@ -143,6 +145,10 @@ class Handler(BaseHTTPRequestHandler):
         w = self.server.workspace
         if path.startswith("/api/orchestrator/"):
             return orchestrator_action(w, path.removeprefix("/api/orchestrator/"), data)
+        if path == "/api/choose-resume":
+            if data:
+                raise ValueError("Use the native file chooser to select your resume.")
+            return w.start("choose-resume", self._choose_resume)
         routes = {"/api/profile": lambda: w.save_profile(data),
                   "/api/job/add": lambda: w.add_job(data), "/api/jobs/remove": lambda: w.remove_jobs(data),
                   "/api/import": lambda: w.start("import", w.import_file, data),
@@ -153,6 +159,13 @@ class Handler(BaseHTTPRequestHandler):
         if path not in routes:
             raise ValueError("Unknown action.")
         return routes[path]()
+
+    def _choose_resume(self):
+        """Only a native selection grants access, and its path stays on the backend."""
+        selected = native_browser.choose_resume()
+        if selected is not None:
+            self.server.workspace.import_local_resume(selected)
+        return {"selected": selected is not None}
 
     def _shutdown(self):
         """End the server after this response has been returned."""

@@ -8,6 +8,7 @@ static NSMutableString *retainedValue;
 static NSUInteger clockMicros, selectedStart, selectedLength, selectionDue, unicodeEvents, selectionWaits;
 static NSUInteger revokeAt, loseFocusAt, chordEvents, backspaceEvents;
 static NSUInteger pathWrites;
+static NSString *fieldIdentifier;
 
 // The fixture models the captured 22ms deferred Cmd-A selection, without posting any system event.
 static void fixturePost(CGEventTapLocation tap, CGEventRef event) {
@@ -48,7 +49,7 @@ static BOOL fixtureValidate(ADNativeBrowserState *state, BOOL front, NSError **e
     return fixtureLease(state,error);
 }
 static id fixtureAttribute(AXUIElementRef element, CFStringRef name) {
-    if (CFEqual(name,kAXIdentifierAttribute)) return @"PathTextField";
+    if (CFEqual(name,kAXIdentifierAttribute)) return fieldIdentifier;
     if (CFEqual(name,kAXValueAttribute)) return retainedValue;
     return CFEqual(name,kAXFocusedUIElementAttribute) ? fixtureFocus : nil;
 }
@@ -145,6 +146,9 @@ static void repeatedChooserPath(void) {
     field[@"parent_dialog_id"] = @"native-chooser";
     NSDictionary *args = @{@"text":@"/fixture/original.pdf",@"replace":@YES,@"private":@YES};
     pathWrites = 0;
+    fieldIdentifier = @"FolderName";
+    NSCAssert(!typeTarget(fixtureState,args,field,nil) && !unicodeEvents && !chordEvents && !pathWrites,@"Unrelated native field gets no input");
+    fieldIdentifier = @"PathTextField";
     for (int pass=0; pass<2; pass++)
         NSCAssert([typeTarget(fixtureState,args,field,nil)[@"private_value_matches"] boolValue],@"Chooser preserved exact path");
     NSCAssert(pathWrites==1 && unicodeEvents==0,@"The repeated path requires no input");

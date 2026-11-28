@@ -152,6 +152,8 @@ static void walkVisible(ADNativeBrowserState *state, id object, NSDictionary *sc
     NSMutableDictionary *record = [roles containsObject:role] ? controlRecord(state,object,clip,dialogID) : nil;
     if (record) {
         record[@"web_content"] = @(web);
+        if (dialogID && !web && [ADNativeAttribute(element,kAXIdentifierAttribute) isEqual:@"PathTextField"])
+            record[@"picker_path_field"] = @YES;
         [output[@"controls"] addObject:record];
         if (tabs && [role isEqual:@"AXRadioButton"]) {
             if (![record[@"selected"] boolValue] && [record[@"value"] isKindOfClass:NSNumber.class]) record[@"selected"] = @([record[@"value"] boolValue]);

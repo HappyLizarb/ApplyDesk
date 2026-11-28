@@ -9,9 +9,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from chat_helpers import ChatFixture
+from chat_helpers import ChatFixture, selected_fixture
 from test_orchestrator import response
 from applydesk import ai_prompts
+from applydesk.documents import DocumentService
 from applydesk.application_client import STEP_BOUNDARY
 from applydesk.application_intent import INTENT_PROMPT
 from applydesk.application_policy import SCOPE_PROMPT
@@ -200,7 +201,7 @@ class NativePipelineFixture(ChatFixture):
                     "element_id": "upload", "document_id": next(doc["id"] for doc in data["documents"] if doc["kind"] == "resume"), "kind": "resume"}
         answer = {"quote": "Name: Alex Test", "fact_ids": fact}
         review = {"final_element_id": "send", "company_quote": job["company"], "title_quote": job["title"],
-            "resume_quote": "Resume: original.pdf", "required_complete": True, "checked_all_steps": True,
+            "resume_quote": "Resume: " + next(doc["filename"] for doc in data["documents"] if doc["kind"] == "resume"), "required_complete": True, "checked_all_steps": True,
             "no_unapproved_agreements": True, "answers": [], "summaries": []}
         review["answers" if name else "summaries"] = [{**answer, "element_id": "name", "value": "Alex Test"} if name else answer]
         return {"action": "review", "purpose": "Check all answers and the selected file.", "review": review}
@@ -240,7 +241,8 @@ class NativeReviewFixture:
         self.evidence = [observation(self.page)]
         self.store = Store(Path(self.directory.name) / "store")
         self.store.put("job", "job", self.job)
-        docs = Mock(get=Mock(return_value={"source_path": "resume.pdf", "source_sha256": digest}), asset=Mock(return_value=self.source))
+        docs = DocumentService(Path(self.directory.name) / "documents")
+        selected_fixture(docs, "resume-v1", self.source)
         self.workspace = SimpleNamespace(store=self.store, docs=docs, profile=lambda: self.profile,
                                         lock=threading.RLock(), sessions={})
 

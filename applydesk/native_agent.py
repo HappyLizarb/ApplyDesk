@@ -131,10 +131,9 @@ class NativeAgent:
         """Keep secrets and file paths private while retaining concise prior-step evidence."""
         self.profile = with_application_source(self.profile, self.job)
         documents = []
-        for kind, identity in (("resume", self.job.get("resume_id")), ("transcript", self.profile.get("transcript_id"))):
-            if identity:
-                record = self.w.docs.get(identity)
-                documents.append({"id": identity, "kind": kind, "filename": record.get("filename", "")})
+        if identity := self.job.get("resume_id"):
+            record = self.w.docs.get(identity)
+            documents.append({"id": identity, "kind": "resume", "filename": record.get("filename", "")})
         # Account context excludes stored job history and previous blockers.
         accounts = EmployerAccounts(self.w)
         account = accounts.display(self.job)

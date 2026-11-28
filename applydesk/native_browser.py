@@ -8,7 +8,7 @@ import subprocess
 import threading
 import uuid
 
-from .lifecycle import CHROME
+from .lifecycle import CHROME, launcher_path
 
 METHODS = {"status", "use_existing", "attach", "observe", "action", "show", "stop", "close"}
 MAX_RESPONSE = 32 * 1024 * 1024
@@ -17,6 +17,21 @@ OBSERVATION_TIMEOUT = 60
 
 class BrowserError(RuntimeError):
     """A rejected action or unavailable browser session."""
+
+
+def choose_resume():
+    """Return only the path chosen in ApplyDesk's native panel, or None on cancellation."""
+    try:
+        result = subprocess.run([str(launcher_path()), "--choose-resume"], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=300)
+    except (OSError, subprocess.TimeoutExpired):
+        raise BrowserError("The file picker could not finish. Reopen Documents and choose your resume again.") from None
+    if result.returncode == 0 and not result.stdout:
+        return None
+    path = Path(os.fsdecode(result.stdout))
+    if result.returncode or not path.is_absolute() or "\x00" in str(path):
+        raise BrowserError("The file picker could not confirm the selected resume.")
+    return path
 
 
 class NativeBrowser:
@@ -34,11 +49,8 @@ class NativeBrowser:
 
     def _start(self):
         """Use the installed launcher or an explicit development artifact, never Chrome debug flags."""
-        packaged = Path(__file__).resolve().parents[3] / "MacOS" / "ApplyDesk"
-        executable = self.launcher or os.environ.get("APPLYDESK_LAUNCHER")
-        if not executable and "/Contents/Resources/Program/" in str(Path(__file__).resolve()):
-            executable = str(packaged)
-        if not executable or not Path(executable).is_file():
+        executable = self.launcher or launcher_path()
+        if not Path(executable).is_file():
             raise BrowserError("The native browser helper is unavailable. Open the installed ApplyDesk app.")
         self.process = subprocess.Popen([str(executable), "--native-browser"], stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
@@ -97,7 +109,7 @@ class NativeBrowser:
         if reply.get("error"):
             message = "The private browser action could not be completed." if parameters.get("private") else str(reply["error"])[:1000]
             error = BrowserError(self._redact(message))
-            error.code = reply.get("error_code") if reply.get("error_code") in {"window_closed", "stale_observation"} else None
+            error.code = reply.get("error_code") if reply.get("error_code") in {"window_closed", "stale_observation", "unverified_file_selection"} else None
             # The installed helper uses these two acquisition errors before it has bound any window.
             if method == "use_existing" and reply["error"] in {
                 "Open ordinary Chrome and enable Accessibility/input permission.",

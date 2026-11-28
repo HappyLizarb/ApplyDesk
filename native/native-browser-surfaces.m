@@ -159,6 +159,52 @@ CGRect ADNativeWorkspaceBounds(ADNativeBrowserState *state) {
     return bounds;
 }
 
+// Inspect only the selected row and its cells. Never walk the file browser's listing.
+static void collectSelectedFileURLs(id item, NSUInteger depth, NSMutableSet *paths) {
+    AXUIElementRef element = (__bridge AXUIElementRef)item;
+    id raw = ADNativeAttribute(element,kAXURLAttribute);
+    if (raw) {
+        NSURL *url = [raw isKindOfClass:NSURL.class] ? raw :
+            ([raw isKindOfClass:NSString.class] ? [NSURL URLWithString:raw] : nil);
+        BOOL local = url.isFileURL && (!url.host.length || [url.host isEqual:@"localhost"])
+            && !url.query && !url.fragment && !url.user && !url.password && !url.port;
+        [paths addObject:local && url.path.length ? url.path : @""];
+        return;
+    }
+    id role = ADNativeAttribute(element,kAXRoleAttribute);
+    if (depth >= 2 || ![@[@"AXRow",@"AXCell"] containsObject:role ?: @""]) return;
+    id children = ADNativeAttribute(element,kAXChildrenAttribute);
+    if (![children isKindOfClass:NSArray.class] || [children count] > 32) return;
+    for (id child in children) collectSelectedFileURLs(child,depth+1,paths);
+}
+
+// A single verified file URL must still be selected in the original native Open panel.
+BOOL ADNativeSelectedUploadMatches(ADNativeBrowserState *state, NSDictionary *button, NSDictionary *params) {
+    NSString *path = params[@"approved_file"], *picker = params[@"picker_id"];
+    if (![path isKindOfClass:NSString.class] || !path.isAbsolutePath || ![picker isKindOfClass:NSString.class] || !picker.length
+        || ![params[@"action"] isEqual:@"click"] || ![params[@"element_id"] isEqual:button[@"id"]] || params[@"x"] || params[@"y"]
+        || ![button[@"parent_dialog_id"] isEqual:picker] || [button[@"web_content"] boolValue] || ![button[@"enabled"] boolValue]
+        || ![button[@"role"] isEqual:@"AXButton"] || ![button[@"label"] isEqual:@"Open"] || [state.observation[@"controls_truncated"] boolValue]) return NO;
+    NSArray *dialogs = state.observation[@"dialogs"];
+    if (dialogs.count != 1 || ![dialogs[0][@"native"] boolValue] || ![dialogs[0][@"id"] isEqual:picker]) return NO;
+    BOOL verified = NO;
+    for (NSDictionary *control in state.observation[@"controls"]) {
+        if (![control[@"parent_dialog_id"] isEqual:picker] || [control[@"web_content"] boolValue] || [control[@"subrole"] isEqual:@"AXSourceList"]
+            || ![@[@"AXOutline",@"AXTable",@"AXBrowser"] containsObject:control[@"role"] ?: @""]) continue;
+        AXUIElementRef browser = (__bridge AXUIElementRef)state.elements[control[@"id"]];
+        if (!browser) return NO;
+        id selected = ADNativeAttribute(browser,kAXSelectedRowsAttribute);
+        if (![selected isKindOfClass:NSArray.class] || ![selected count]) selected = ADNativeAttribute(browser,kAXSelectedChildrenAttribute);
+        if (![selected isKindOfClass:NSArray.class] || ![selected count]) continue;
+        if ([selected count] != 1) return NO;
+        NSMutableSet *paths = [NSMutableSet new];
+        collectSelectedFileURLs([selected firstObject],0,paths);
+        if (paths.count != 1 || ![paths containsObject:path]) return NO;
+        verified = YES;
+    }
+    return verified;
+}
+
 // Acquire an existing regular Chrome window on explicit open.
 BOOL ADNativeUseExisting(ADNativeBrowserState *state, NSError **error) {
     NSRunningApplication *app = ADNativeDefaultChrome();

@@ -143,6 +143,22 @@ class DocumentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "changed on disk"):
             reopened.verify(letter["id"])
 
+    def test_legacy_application_preview_recovers_pages_without_changing_saved_files(self):
+        """Recover a missing legacy PNG from the exact saved version, keeping downloads intact."""
+        _, letter = saved_letter(self.service, "example-job")
+        self.service.asset(letter["image_paths"][0]).unlink()
+        pdf = self.service.asset(letter["pdf_path"])
+        original = pdf.read_bytes()
+        preview = self.service.preview(letter["id"])
+        page = self.service.asset(preview["image_paths"][0])
+        self.assertEqual(page.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(pdf.read_bytes(), original)
+        self.assertEqual(DocumentService(self.service.root).preview(letter["id"]), preview)
+        # An interrupted write can leave a valid header on an unreadable page.
+        page.write_bytes(page.read_bytes()[:16])
+        pdf.write_bytes(b"changed")
+        self.assertEqual(self.service.preview(letter["id"])["image_paths"], [])
+
     def test_template_uploads_and_paths_outside_the_document_root_are_rejected(self):
         """Only current upload kinds enter the manifest, and downloads stay in the private root."""
         for kind in ("resume_template", "cover_template"):

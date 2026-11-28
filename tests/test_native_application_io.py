@@ -9,6 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from chat_helpers import selected_fixture
+from applydesk.documents import DocumentService
 from applydesk.account_scope import employer_key
 from applydesk.native_application_io import NativeInputRequired, _account_controls, authenticate, upload
 from applydesk.native_application_browser import normalize_observation
@@ -38,7 +40,7 @@ def upload_pages():
         control("files", "AXOutline", "Files", parent_dialog_id="picker"),
         control("open", label="Open", parent_dialog_id="picker"), control("cancel", label="Cancel", parent_dialog_id="picker")]}
     folder = {"snapshot_id": "folder", "text": "Go to Folder", "dialogs": [dialog("picker"), dialog("folder", "picker")],
-              "elements": [*picker["elements"], control("path", "AXTextField", "", parent_dialog_id="folder", focused=True),
+              "elements": [*picker["elements"], control("path", "AXTextField", "", parent_dialog_id="folder", focused=True, picker_path_field=True),
                            control("close", parent_dialog_id="folder"), control("suggestions", "AXTable", parent_dialog_id="folder")]}
     typed = {**folder, "snapshot_id": "typed", "action_result": {"typed": True, "private_value_matches": True}}
     selected = {**picker, "snapshot_id": "selected", "text": "resume.pdf Open Cancel"}
@@ -108,9 +110,9 @@ class NativeIOTests(unittest.TestCase):
         self.profile = {"confirmed": True, "revision": 4, "identity": {"email": "example@applicant.test"}, "transcript_id": "transcript"}
         self.secrets = {}
         vault = Mock(get=lambda key: self.secrets.get(key), set=lambda key, value: self.secrets.__setitem__(key, value))
-        document = {"id": "resume", "kind": "resume", "source_path": "resume.pdf", "source_sha256": self.digest}
-        self.workspace = SimpleNamespace(store=self.store, secrets=vault, profile=lambda: self.profile,
-                                         docs=Mock(get=Mock(return_value=document), asset=Mock(return_value=self.source)))
+        docs = DocumentService(Path(self.temp.name) / "documents")
+        selected_fixture(docs, "resume", self.source)
+        self.workspace = SimpleNamespace(store=self.store, secrets=vault, profile=lambda: self.profile, docs=docs)
         self.upload_decision = {"element_id": "upload", "document_id": "resume", "kind": "resume"}
 
     def tearDown(self):
@@ -144,7 +146,7 @@ class NativeIOTests(unittest.TestCase):
         operations = [item.args[1] for item in session.call.call_args_list if item.args[0] == "native_action"]
         self.assertEqual([item["action"] for item in operations], ["click", "key", "type", "key", "click"])
         self.assertEqual(operations[1]["key"], "cmd+shift+g")
-        self.assertEqual(operations[2]["text"], str(self.source))
+        self.assertEqual((operations[2]["text"], operations[-1]["approved_file"], operations[-1]["picker_id"]), (str(self.source), str(self.source), "picker"))
         self.assertTrue(operations[2]["private"])
         self.assertEqual(operations[3]["element_id"], "path")
         self.assertEqual(evidence["sha256"], self.digest)
@@ -199,23 +201,23 @@ class NativeIOTests(unittest.TestCase):
                 pages[2]["elements"].append(control("second-path", "AXTextField", parent_dialog_id="folder"))
             session = native_session(pages[:3])
             with self.subTest(mode=mode), patch("applydesk.native_application_io.time.monotonic", side_effect=[0, 0, 6]):
-                with self.assertRaisesRegex(ValueError, "file picker"):
+                with self.assertRaisesRegex(NativeInputRequired, "file picker.*List view"):
                     upload(session, self.workspace, self.job, self.profile, pages[0], self.upload_decision)
             self.assertFalse(any(item.args[1].get("action") == "type" for item in session.call.call_args_list))
 
     def test_inline_folder_input_needs_go_and_cannot_be_plain_picker_search(self):
         """An inline Go layout remains supported; a search field without that evidence is rejected."""
-        for has_go in (True, False):
+        for has_go, path_field in ((True, True), (False, True), (True, False)):
             pages = upload_pages()
             for index in (2, 3):
                 pages[index]["dialogs"] = [dialog("picker")]
                 pages[index]["elements"] = [*pages[1]["elements"],
-                    control("path", "AXTextField", parent_dialog_id="picker", focused=True)]
+                    control("path", "AXTextField", parent_dialog_id="picker", focused=True, picker_path_field=path_field)]
                 if has_go:
                     pages[index]["elements"].append(control("go", label="Go", parent_dialog_id="picker"))
             session = native_session(pages)
-            with self.subTest(has_go=has_go):
-                if has_go:
+            with self.subTest(has_go=has_go, path_field=path_field):
+                if has_go and path_field:
                     self.assertEqual(upload(session, self.workspace, self.job, self.profile, pages[0], self.upload_decision)[1]["visible_filename"], "resume.pdf")
                 else:
                     with patch("applydesk.native_application_io.time.monotonic", side_effect=[0, 0, 6]), self.assertRaisesRegex(ValueError, "file picker"):
@@ -227,34 +229,31 @@ class NativeIOTests(unittest.TestCase):
         session = Mock()
         session.call.return_value = pages[0]
         self.source.write_bytes(b"changed bytes")
-        with self.assertRaisesRegex(ValueError, "original document changed"):
+        with self.assertRaisesRegex(ValueError, "resume changed"):
             upload(session, self.workspace, self.job, self.profile, pages[0], self.upload_decision)
         self.assertEqual(session.call.call_count, 1)
         with self.assertRaises(NativeInputRequired):
             upload(session, self.workspace, self.job, self.profile, pages[0], {**self.upload_decision, "document_id": "other"})
+        with self.assertRaises(NativeInputRequired):
+            upload(session, self.workspace, self.job, self.profile, pages[0],
+                   {**self.upload_decision, "kind": "transcript", "document_id": self.profile["transcript_id"]})
+        self.assertTrue(all(call.args[0] == "native_observe" for call in session.call.call_args_list))
 
     def test_unverified_native_path_never_reaches_return_or_open(self):
         """Neither failed private readback nor a lost path-field focus permits Return or Open."""
-        for failure in ("readback", "focus"):
+        for failure in ("readback", "missing", "focus"):
             pages = upload_pages()
             if failure == "readback":
                 pages[3]["action_result"]["private_value_matches"] = False
+            elif failure == "missing":
+                pages[3]["action_result"].pop("private_value_matches")
             else:
                 next(item for item in pages[3]["elements"] if item["id"] == "path")["focused"] = False
             session = native_session(pages)
             with self.subTest(failure=failure), self.assertRaisesRegex(ValueError, "document path was not confirmed"):
                 upload(session, self.workspace, self.job, self.profile, pages[0], self.upload_decision)
-            self.assertEqual(session.call.call_count, 4)
-
-    def test_missing_private_path_proof_never_reaches_return_or_open(self):
-        """A typed acknowledgement without an exact native value match cannot finish selection."""
-        pages = upload_pages()
-        pages[3]["action_result"] = {"typed": True}
-        session = native_session(pages)
-        with self.assertRaisesRegex(ValueError, "document path was not confirmed"):
-            upload(session, self.workspace, self.job, self.profile, pages[0], self.upload_decision)
-        operations = [item.args[1] for item in session.call.call_args_list if item.args[0] == "native_action"]
-        self.assertEqual([item["action"] for item in operations], ["click", "key", "type"])
+            operations = [item.args[1] for item in session.call.call_args_list if item.args[0] == "native_action"]
+            self.assertEqual([item["action"] for item in operations], ["click", "key", "type"])
 
     def test_account_creation_reserves_keychain_secret_and_uses_secure_native_typing(self):
         page = self.account_page()

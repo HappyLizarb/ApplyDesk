@@ -199,12 +199,17 @@ class HttpBoundaryTests(unittest.TestCase):
         self.assertEqual(self.request("GET", "/api/state")[0], 200)
         self.assertEqual(self.request("GET", "/start?token=wrong", authenticated=False)[0], 403)
 
-    def test_resume_generation_route_is_removed_and_tags_require_authentication(self):
+    def test_resume_actions_require_authenticated_explicit_file_selection(self):
         # Hiding generation controls must also remove the provider-calling route.
         self.assertEqual(self.request("POST", "/api/document/generate", {})[0], 400)
         data = {"document_id": "missing", "category": "General"}
         self.assertEqual(self.request("POST", "/api/resume/tag", data, authenticated=False)[0], 403)
         self.assertEqual(self.request("POST", "/api/resume/tag", data)[0], 400)
+
+        with patch("applydesk.native_browser.choose_resume") as chooser:
+            self.assertEqual(self.request("POST", "/api/choose-resume", {}, authenticated=False)[0], 403)
+            self.assertEqual(self.request("POST", "/api/choose-resume", {"path": "/example/file.pdf"})[0], 400)
+            chooser.assert_not_called()
 
     def test_removal_route_validates_session_and_selection(self):
         # The same local authorization boundary protects bulk removal.

@@ -9,7 +9,7 @@ Download **ApplyDesk.dmg** from [GitHub Releases](https://github.com/HappyLizarb
 ## Apply and track
 
 1. Open **Account setup** and connect ChatGPT or a supported provider. Select the connection and model for the agent.
-2. Confirm your information in **Profile**. Upload your resume under **Documents** and choose the industry tag it should be used for.
+2. Confirm your information in **Profile**. In **Documents**, choose a finished PDF or DOCX resume from your Mac and set its industry tag. ApplyDesk attaches that exact file from that location. If you move or edit it, choose it again. Resumes imported before version 1.0.2 also need to be selected again for future applications.
 3. In **Chat**, describe the roles, locations, resume, and any application limit. Say whether to prepare drafts or submit applications. Shortcuts elsewhere in the app open an editable message. Send it when ready.
 4. Follow progress in **Applications**. ApplyDesk saves the attempt before submission and marks a job submitted once it sees an employer confirmation. If a required answer is missing or the outcome is uncertain, the tracker shows what needs attention.
 
@@ -17,7 +17,9 @@ Keep ApplyDesk open. While the agent is working, ApplyDesk prevents idle system 
 
 ## Data
 
-ApplyDesk stores profiles, documents, conversations, and the application tracker under `~/Library/Application Support/ApplyDesk`. Provider credentials and saved employer passwords use macOS Keychain. Application sign-ins stay in your Chrome profile. The selected provider receives the task content it needs, which can include personal information from messages and uploaded documents.
+ApplyDesk keeps each selected resume in place. It stores previews, file references, profile imports, conversations, and the application tracker under `~/Library/Application Support/ApplyDesk`. Open **Applications** to view the saved resume pages for a job. Removing a linked resume from ApplyDesk leaves your own file in place.
+
+Provider credentials and saved employer passwords use macOS Keychain. Application sign-ins stay in your Chrome profile. The selected provider receives the task content it needs, which can include personal information from messages and selected documents.
 
 ## Run from source
 
@@ -28,7 +30,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e .
 mkdir -p build
-xcrun clang -fobjc-arc -mmacosx-version-min=14.0 -framework Cocoa -framework ApplicationServices -framework ScreenCaptureKit native/*.m -o build/ApplyDesk
+xcrun clang -fobjc-arc -mmacosx-version-min=14.0 -framework Cocoa -framework ApplicationServices -framework ScreenCaptureKit -framework UniformTypeIdentifiers native/*.m -o build/ApplyDesk
 export APPLYDESK_LAUNCHER="$PWD/build/ApplyDesk"
 python run.py
 ```

@@ -52,11 +52,21 @@ function statusControl(job) {
     ${options.map(key=>`<option value="${h(key)}" ${key===status?'selected':''} ${automatic&&key===status?'disabled':''}>${h(labels[key]||key)}</option>`).join('')}</select></label>`;
 }
 
+// An employer upload is historical evidence even after the current resume selection changes.
+function applicationResume(job,label,css) {
+  const ledger=Array.isArray(job.attachments)?job.attachments:[];
+  const receipt=ledger.findLast(item=>item?.kind==='resume'&&item.document_id);
+  const id=receipt?.document_id||job.resume_id;
+  if(!id)return css==='doc-link'?'<span class="muted">—</span>':'No resume selected';
+  const known=[...(state.data.documents||[]),...(state.data.resumes||[])].some(record=>record.id===id);
+  if(!known&&receipt)return `<span class="muted">${h(receipt.filename||'Resume')} · removed</span>`;
+  return `<button class="${css}" data-doc="${h(id)}">${css==='doc-link'?icon('document'):''}${label}</button>`;
+}
+
 // Each resume and letter cell names a concrete immutable document version.
 function jobRow(job) {
-  const docCell=(id,label)=>id?`<button class="doc-link" data-doc="${h(id)}" data-job="${h(job.id)}">${icon('document')}${label}</button>`:'<span class="muted">—</span>';
-  const cover=job.cover_id?docCell(job.cover_id,'View letter'):job.cover_state==='not_required'?'<span title="Checked: not required">/</span>':`<span class="muted small">${job.cover_state==='required'?'Manual handling':'Not checked'}</span>`;
-  return `<tr><td><div class="company-cell" title="${h(job.company)}">${h(job.company||'—')}</div></td><td><button class="job-title" data-detail="${h(job.id)}" title="${h(job.title)}">${h(job.title)}</button>${job.analysis?.category?`<div class="company">${h(job.analysis.category)}</div>`:''}</td><td><div class="compensation-cell">${h(compensationLabel(job.compensation))||'<span class="muted">Not stated</span>'}</div></td><td>${docCell(job.resume_id,'Resume')}</td><td>${cover}</td><td><button class="doc-link account-link" data-account="${h(job.id)}" title="${h(job.account)}">${h(job.account||'Add account')}</button></td><td>${statusControl(job)}</td><td class="job-selection"><input type="checkbox" data-select-job="${h(job.id)}" aria-label="Select ${h(job.title)} at ${h(job.company||'unknown company')}" ${selectedJobs.has(job.id)?'checked':''} ${removingJobs?'disabled':''}></td></tr>`;
+  const cover=job.cover_id?`<button class="doc-link" data-doc="${h(job.cover_id)}">${icon('document')}View letter</button>`:job.cover_state==='not_required'?'<span title="Checked: not required">/</span>':`<span class="muted small">${job.cover_state==='required'?'Manual handling':'Not checked'}</span>`;
+  return `<tr><td><div class="company-cell" title="${h(job.company)}">${h(job.company||'—')}</div></td><td><button class="job-title" data-detail="${h(job.id)}" title="${h(job.title)}">${h(job.title)}</button>${job.analysis?.category?`<div class="company">${h(job.analysis.category)}</div>`:''}</td><td><div class="compensation-cell">${h(compensationLabel(job.compensation))||'<span class="muted">Not stated</span>'}</div></td><td>${applicationResume(job,'Resume','doc-link')}</td><td>${cover}</td><td><button class="doc-link account-link" data-account="${h(job.id)}" title="${h(job.account)}">${h(job.account||'Add account')}</button></td><td>${statusControl(job)}</td><td class="job-selection"><input type="checkbox" data-select-job="${h(job.id)}" aria-label="Select ${h(job.title)} at ${h(job.company||'unknown company')}" ${selectedJobs.has(job.id)?'checked':''} ${removingJobs?'disabled':''}></td></tr>`;
 }
 
 // Give a clear first action without pretending any applications already exist.
@@ -69,7 +79,7 @@ function bindRows(root) {
   root.querySelectorAll('[data-job-status]').forEach(select=>select.onchange=()=>saveBoardStatus(select));
   root.querySelectorAll('[data-detail]').forEach(button=>button.onclick=()=>jobDetails(button.dataset.detail));
   root.querySelectorAll('[data-account]').forEach(button=>button.onclick=()=>accountDialog(button.dataset.account));
-  root.querySelectorAll('[data-doc]').forEach(button=>button.onclick=()=>openEditor(button.dataset.doc,button.dataset.job));
+  root.querySelectorAll('[data-doc]').forEach(button=>button.onclick=()=>openEditor(button.dataset.doc));
 }
 
 // A manual edit updates the tracker and filter counts through the same persisted request.
@@ -150,7 +160,7 @@ export function jobDetails(id) {
   const job=state.data.jobs.find(item=>item.id===id);
   if(!job)return;
   const issues=[...new Set([...(job.exceptions||[]),...(job.recommendation_source?.issues||[])])].map(issue=>`<div class="notice warning">${h(issue)}</div>`).join('');
-  const body=`<div class="modal-body"><div class="actions">${statusControl(job)}<a href="${h(job.url)}" target="_blank" rel="noreferrer">Job description ↗</a></div>${issues}<p class="muted small">${h(job.progress||'Not prepared yet. No employer form has been changed.')}</p><div class="details-grid"><div><h3>Company</h3>${h(job.company||'Not assessed')}</div><div><h3>Documents</h3>${job.resume_id?`<button class="inline-link" data-doc="${h(job.resume_id)}" data-job="${h(id)}">View resume</button>`:'No resume selected'}<br>${job.cover_id?`<button class="inline-link" data-doc="${h(job.cover_id)}" data-job="${h(id)}">View saved letter</button>`:h(job.cover_state==='not_required'?'/ · not required':job.cover_state==='required'?'Cover letter required · continue manually':'Cover letter: not checked')}</div><div class="wide"><h3>Compensation</h3><div class="job-details" data-compensation>${h(compensationLabel(job.compensation))||'<span class="muted">Not stated</span>'}</div></div></div>${descriptionSections(job)}<section class="detail-section"><h3>Activity</h3><ol class="timeline">${job.history.slice(-8).map(item=>`<li>${h(item.message)}</li>`).join('')||'<li>No preparation activity yet.</li>'}</ol></section><p class="muted small">Ask in chat to submit applications; application count and target locations are optional.</p></div>`;
+  const body=`<div class="modal-body"><div class="actions">${statusControl(job)}<a href="${h(job.url)}" target="_blank" rel="noreferrer">Job description ↗</a></div>${issues}<p class="muted small">${h(job.progress||'Not prepared yet. No employer form has been changed.')}</p><div class="details-grid"><div><h3>Company</h3>${h(job.company||'Not assessed')}</div><div><h3>Documents</h3>${applicationResume(job,'View resume','inline-link')}<br>${job.cover_id?`<button class="inline-link" data-doc="${h(job.cover_id)}">View saved letter</button>`:h(job.cover_state==='not_required'?'/ · not required':job.cover_state==='required'?'Cover letter required · continue manually':'Cover letter: not checked')}</div><div class="wide"><h3>Compensation</h3><div class="job-details" data-compensation>${h(compensationLabel(job.compensation))||'<span class="muted">Not stated</span>'}</div></div></div>${descriptionSections(job)}<section class="detail-section"><h3>Activity</h3><ol class="timeline">${job.history.slice(-8).map(item=>`<li>${h(item.message)}</li>`).join('')||'<li>No preparation activity yet.</li>'}</ol></section><p class="muted small">Ask in chat to submit applications; application count and target locations are optional.</p></div>`;
   const draft=(state.data.chat_tasks||[]).find(task=>task.kind==='application'&&task.target_id===id);
   const footer=`${draft?'<button id="view-draft">View draft</button>':''}<button id="prepare-job" class="primary" ${job.status==='submitted'||['submitted','skipped'].includes(job.manual_status)?'disabled':''}>Prepare draft in chat</button>`;
   const dialog=modal(job.title,body,footer,'job-detail-dialog');

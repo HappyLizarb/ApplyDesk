@@ -78,14 +78,18 @@ class LocalInstance:
         self.handle.close()
 
 
+def launcher_path():
+    """Find this installation's native executable or the configured development build."""
+    if override := os.environ.get("APPLYDESK_LAUNCHER"):
+        return Path(override)
+    module = Path(__file__).resolve()
+    bundle = next((parent for parent in module.parents if parent.suffix == ".app"), None)
+    return (bundle or module.parent.parent / "ApplyDesk.app") / "Contents/MacOS/ApplyDesk"
+
+
 def focus_window(root):
     """Ask macOS to activate only the browser using this workspace's interface profile."""
-    launcher = Path(__file__).resolve().parent.parent / "ApplyDesk.app/Contents/MacOS/ApplyDesk"
-    bundle = next((parent for parent in Path(__file__).resolve().parents if parent.suffix == ".app"), None)
-    if bundle:
-        launcher = bundle / "Contents/MacOS/ApplyDesk"
-    launcher = os.environ.get("APPLYDESK_LAUNCHER", str(launcher))
-    result = subprocess.run([str(launcher), "--focus-interface", str(root / "interface")],
+    result = subprocess.run([str(launcher_path()), "--focus-interface", str(root / "interface")],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
     if result.returncode not in {0, 1}:
         raise RuntimeError("ApplyDesk could not focus its existing window. Select it from your open windows.")

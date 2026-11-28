@@ -6,12 +6,26 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from applydesk.native_browser import BrowserError, NativeBrowser, command_timeout
+from applydesk.native_browser import BrowserError, NativeBrowser, choose_resume, command_timeout
 
 
 class NativeBrowserBridgeTests(unittest.TestCase):
+    def test_resume_picker_returns_only_the_chosen_path_or_cancellation(self):
+        """Preserve the exact basename, including whitespace, across the native picker pipe."""
+        path = Path("/fixture/Chosen directory/Résumé #2 .PDF")
+        with patch("applydesk.native_browser.subprocess.run") as dialog:
+            dialog.return_value = Mock(stdout=bytes(path), returncode=0)
+            self.assertEqual(choose_resume(), path)
+            self.assertEqual(dialog.call_args.args[0][1:], ["--choose-resume"])
+            dialog.return_value = Mock(stdout=b"", returncode=0)
+            self.assertIsNone(choose_resume())
+            for output in (b"relative.pdf", b"/folder/invalid\x00.pdf"):
+                dialog.return_value = Mock(stdout=output, returncode=0)
+                with self.assertRaises(BrowserError):
+                    choose_resume()
+
     def setUp(self):
         """The executable fixture accepts the native protocol without invoking any OS browser."""
         self.folder = tempfile.TemporaryDirectory()

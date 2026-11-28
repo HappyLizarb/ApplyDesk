@@ -68,6 +68,7 @@ BOOL ADNativePostKey(ADNativeBrowserState *state, CGKeyCode key, CGEventFlags fl
 NSDictionary *ADNativeKeyDefinition(NSString *name);
 BOOL ADNativeValidateObservation(NSDictionary *prior, NSDictionary *fresh, NSDictionary *params, NSError **error);
 BOOL ADNativeAuthorizeEvent(ADNativeBrowserState *state, NSDictionary *params, NSDictionary *control, NSError **error);
+BOOL ADNativeSelectedUploadMatches(ADNativeBrowserState *state, NSDictionary *control, NSDictionary *params);
 BOOL ADNativeMove(ADNativeBrowserState *state, NSDictionary *params, NSError **error);
 
 // Capture only the already-authorized window; missing screen-recording permission never opens a prompt.

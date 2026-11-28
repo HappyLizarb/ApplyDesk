@@ -119,6 +119,7 @@ class Applications:
         """Honor a run's exact uploaded resume; only unspecified choices use category fallback."""
         record = (self.w.resumes.selected(self.resume_choice["id"], self.resume_choice["sha256"])
                   if self.resume_choice is not None else self.w.resumes.select(analysis["category"]))
+        self.w.docs.source_file(record, for_upload=True)
         self.checkpoint()
         job["resume_id"] = record["id"]
         self.w.store.job(job["id"], resume_id=record["id"])

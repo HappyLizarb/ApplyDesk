@@ -1,7 +1,27 @@
 #import <Cocoa/Cocoa.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "native-browser.h"
 #import <ApplicationServices/ApplicationServices.h>
 #include <unistd.h>
+
+// A user-initiated Open panel grants exactly one file. Its path stays in the local service.
+static int chooseResume(void) {
+    NSApplication *application = NSApplication.sharedApplication;
+    [application setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    [application activateIgnoringOtherApps:YES];
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.title = @"Choose a resume for ApplyDesk";
+    panel.message = @"ApplyDesk will use this file from its current location when you ask it to apply.";
+    panel.allowedContentTypes = @[UTTypePDF, [UTType typeWithFilenameExtension:@"docx"]];
+    panel.canChooseDirectories = NO;
+    panel.canCreateDirectories = NO;
+    panel.allowsMultipleSelection = NO;
+    panel.resolvesAliases = NO;
+    if ([panel runModal] != NSModalResponseOK) return 0;
+    const char *path = panel.URL.fileSystemRepresentation;
+    if (!path || fputs(path, stdout) == EOF || fflush(stdout) == EOF) return 1;
+    return 0;
+}
 
 // Chrome's private profile lock identifies this workspace, not the user's browser.
 static NSRunningApplication *interfaceApplication(NSString *profile) {
@@ -111,6 +131,7 @@ static int focusInterface(NSString *profile) {
 // AppKit supplies Finder lifecycle events and visible error dialogs.
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
+        if (argc == 2 && strcmp(argv[1], "--choose-resume") == 0) return chooseResume();
         if (argc == 2 && strcmp(argv[1], "--native-browser") == 0) return ADNativeBrowserMain();
         if (argc == 3 && strcmp(argv[1], "--focus-interface") == 0)
             return focusInterface([NSString stringWithUTF8String:argv[2]]);

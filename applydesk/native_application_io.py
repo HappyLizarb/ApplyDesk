@@ -1,6 +1,5 @@
 """Private account and original-document operations through the visible native Chrome window."""
 
-import hashlib
 import re
 import time
 
@@ -8,6 +7,7 @@ from .account_scope import NativeInputRequired, employer_key, native_account_sco
 from .native_browser import BrowserError
 from .employer_accounts import EmployerAccounts
 
+LIST_VIEW_HINT = "In the macOS file picker, switch to List view (Command-2) and retry the upload."
 
 def authenticate(session, workspace, job, profile, page, decision, *, registration_route=None):
     """Keep credentials in the backend while the actual browser receives ordinary native input."""
@@ -85,15 +85,18 @@ def _after_login(session, page):
 def upload(session, workspace, job, profile, page, decision):
     """Choose only the current unchanged source, then record its visible filename without claiming remote byte proof."""
     page = _fresh(session, workspace, job, profile, page)
-    path, record, digest = _document(workspace, job, profile, decision)
+    path, record, digest = _document(workspace, job, decision)
     target_id = decision.get("element_id")
     page, picker = _upload_picker(session, page, target_id)
-    page = _select_file(session, page, picker["id"], path, digest)
+    def check_original():
+        if workspace.docs.source_file(record, for_upload=True) != path:
+            raise ValueError("The selected original changed. Choose it again in Documents.")
+    page = _select_file(session, page, picker["id"], path, check_original)
     page = _await_page(session, page, lambda value: not any(item["id"] == picker["id"] for item in value.get("dialogs", []))
                        and path.name in value.get("text", ""), "The file was selected. Check the employer’s upload result and filename.")
-    _unchanged(path, digest)
+    check_original()
     evidence = {"kind": decision["kind"], "document_id": record["id"], "filename": path.name, "element_id": target_id,
-                "sha256": digest, "size": path.stat().st_size, "source_verified": True,
+                "sha256": digest, "size": record["source_size"], "source_verified": True,
                 "browser_bytes_verified": False, "upload_confirmed": False,
                 "selection_method": "native_file_chooser", "visible_filename": path.name,
                 "snapshot_id": page["snapshot_id"]}
@@ -104,9 +107,11 @@ def _upload_picker(session, page, target_id):
     """An employer notice can open the attached picker before the agent requests document selection."""
     existing = _picker(page, set())
     if page.get("native_modal") or any(item.get("native") for item in page.get("dialogs", [])):
-        if existing and existing["id"] == target_id:
+        if existing:
+            if existing["id"] != target_id:
+                raise ValueError("Choose the observed native upload control.")
             return page, existing
-        raise ValueError("Choose the observed native upload control.")
+        raise NativeInputRequired("Inspect the open system dialog. " + LIST_VIEW_HINT)
     control = _element(page, target_id)
     if control.get("secure") or control.get("role") not in {"AXButton", "AXLink", "AXTextField"}:
         raise ValueError("Choose the observed native upload control.")
@@ -129,16 +134,20 @@ def _enter_path(session, page, picker_id, path):
     return _act(session, page, action="key", key="return", element_id=field["id"])
 
 
-def _select_file(session, page, picker_id, path, digest):
+def _select_file(session, page, picker_id, path, check_original):
     """When Open was rejected before dispatch, reselect the original file in the same picker and tab."""
     owner = tuple(page.get(key) for key in ("pid", "window_id", "active_tab_id", "generation"))
     for attempt in range(3):
+        check_original()
         page = _enter_path(session, page, picker_id, path)
         page = _await_page(session, page, lambda value: _open_button(value, picker_id) is not None, "The file picker could not select the original file. Inspect the open dialog.")
-        _unchanged(path, digest)
+        check_original()
         try:
-            return _act(session, page, action="click", element_id=_open_button(page, picker_id)["id"])
+            return _act(session, page, action="click", element_id=_open_button(page, picker_id)["id"],
+                        picker_id=picker_id, approved_file=str(path))
         except BrowserError as error:
+            if getattr(error, "code", None) == "unverified_file_selection":
+                raise NativeInputRequired("The selected file could not be verified. " + LIST_VIEW_HINT) from None
             if getattr(error, "code", None) != "stale_observation" or attempt == 2 or None in owner:
                 raise
             page = session.call("native_observe", {"screenshot": False})
@@ -196,25 +205,16 @@ def _account_controls(page, decision):
     return username, passwords, submit
 
 
-def _document(workspace, job, profile, decision):
+def _document(workspace, job, decision):
     """Model choices resolve to a selected private source, never to a model-written filesystem path."""
-    expected = {"resume": job.get("resume_id"), "transcript": profile.get("transcript_id")}
     kind, identity = decision.get("kind"), decision.get("document_id")
-    if kind not in expected or not identity or identity != expected[kind]:
-        raise NativeInputRequired("Choose the current uploaded resume or confirmed transcript.")
+    if kind != "resume" or not identity or identity != job.get("resume_id"):
+        raise NativeInputRequired("Only the current resume selected for this application can be attached.")
     record = workspace.docs.get(identity)
     if record.get("kind") != kind:
         raise ValueError("The selected document kind changed.")
-    path = workspace.docs.asset(record["source_path"])
-    digest = record.get("source_sha256")
-    _unchanged(path, digest)
-    return path, record, digest
-
-
-def _unchanged(path, digest):
-    """Verify current local bytes without claiming access to browser or employer file storage."""
-    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest) or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
-        raise ValueError("The original document changed. Select its current uploaded version before continuing.")
+    path = workspace.docs.source_file(record, for_upload=True)
+    return path, record, record["source_sha256"]
 
 
 def _native_dialog(page, identity):
@@ -257,7 +257,7 @@ def _picker(page, previous):
 
 
 def _folder_field(page, picker_id, previous):
-    """A fresh nested folder sheet needs one input; an inline picker input still needs an explicit Go action."""
+    """Only the OS-identified path field in a fresh child sheet or inline Go view can take a private path."""
     candidates = []
     if not _native_dialog(page, picker_id):
         return None
@@ -269,7 +269,7 @@ def _folder_field(page, picker_id, previous):
         fields = [item for item in controls if item.get("role") in {"AXTextField", "AXComboBox"} and item.get("enabled") and not item.get("secure")]
         if len(fields) == 1 and (nested or any(item.get("role") == "AXButton" and item.get("label") == "Go" for item in controls)):
             candidates.extend(fields)
-    return candidates[0] if len(candidates) == 1 else None
+    return candidates[0] if len(candidates) == 1 and candidates[0].get("picker_path_field") is True else None
 
 
 def _open_button(page, picker_id):
@@ -287,6 +287,8 @@ def _await_page(session, page, ready, timeout_message="The expected native file 
     deadline = time.monotonic() + 5
     while not ready(page):
         if time.monotonic() >= deadline:
+            if page.get("native_modal") or any(item.get("native") for item in page.get("dialogs", [])):
+                raise NativeInputRequired(f"{timeout_message} {LIST_VIEW_HINT}")
             raise ValueError(timeout_message)
         time.sleep(0.1)
         page = session.call("native_observe", {"screenshot": False})

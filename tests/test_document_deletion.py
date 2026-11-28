@@ -142,7 +142,7 @@ class DocumentDeletionTests(ChatFixture):
             result = self.deletion.delete({"document_id": "resume"})
         staged = self.w.docs.root / ".deleting-resume"
         self.assertTrue(result["cleanup_pending"])
-        self.assertTrue((staged / "original.pdf").is_file())
+        self.assertTrue((staged / ".location").is_file())
         self.assertEqual(self.w.state()["resumes"], [])
         self.assertNotIn("resume", self.w.docs.manifest)
         DocumentService(self.w.docs.root)
